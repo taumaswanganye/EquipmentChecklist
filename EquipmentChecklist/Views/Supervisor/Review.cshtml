@@ -1,0 +1,93 @@
+@model EquipmentChecklist.Models.ChecklistSubmission
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Review Submission";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<a href="/Supervisor" class="btn btn-ghost" style="margin-bottom:16px">← Back to Queue</a>
+
+<div style="display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start">
+
+    <!-- Left: full checklist -->
+    <div>
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:20px;margin-bottom:16px">
+            <h2 style="font-size:20px;margin-bottom:4px">@Model.Machine.MachineName</h2>
+            <p style="color:var(--text-muted);font-size:13px">
+                Machine #@Model.Machine.MachineNumber ·
+                Operator: <strong>@Model.Operator.FullName</strong> (@Model.Operator.EmployeeNumber) ·
+                @Model.SubmittedAt.ToString("yyyy-MM-dd HH:mm") · Shift: @Model.Shift
+            </p>
+            @if (Model.KmOrHourMeter.HasValue)
+            {
+                <p style="color:var(--text-muted);font-size:13px">KM/Hours: @Model.KmOrHourMeter</p>
+            }
+        </div>
+
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Item</th>
+                    <th>Result</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in Model.Items.OrderBy(i => i.TemplateItem.SortOrder))
+                {
+                    <tr>
+                        <td>
+                            @item.TemplateItem.ItemName
+                            @if (item.TemplateItem.IsNoGoItem)
+                            {
+                                <span style="color:var(--red-nogo);font-size:11px;margin-left:4px">⚠ NO-GO</span>
+                            }
+                        </td>
+                        <td>
+                            @if (item.Status == ItemStatus.InOrder)
+                            {
+                                <span class="badge badge-go">✓ In Order</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-nogo">✕ Defect</span>
+                            }
+                        </td>
+                        <td style="color:var(--text-muted);font-size:13px">@(item.Notes ?? "–")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        @if (Model.OperatorRemarks != null)
+        {
+            <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:14px;margin-top:16px">
+                <p style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px">Operator Remarks</p>
+                <p>@Model.OperatorRemarks</p>
+            </div>
+        }
+    </div>
+
+    <!-- Right: sign-off panel -->
+    <div style="background:var(--steel-mid);border:1px solid var(--amber);border-radius:8px;padding:20px;position:sticky;top:72px">
+        <h3 style="font-size:16px;margin-bottom:14px">⚠ Supervisor Sign-Off</h3>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
+            This submission has defects but no critical NO-GO items.
+            Select the appropriate resolution below.
+        </p>
+
+        <form method="post" action="/Supervisor/SignOff">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="id" value="@Model.Id" />
+
+            <button name="resolution" value="2" type="submit"
+                    class="btn btn-warning" style="width:100%;margin-bottom:8px">
+                ✍ Approve – Repair Within 24H
+            </button>
+            <button name="resolution" value="3" type="submit"
+                    class="btn btn-ghost" style="width:100%">
+                ✍ Approve – Repair By Next Service (30 days)
+            </button>
+        </form>
+    </div>
+</div>

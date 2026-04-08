@@ -1,0 +1,60 @@
+@model int
+@{
+    var step = Model;  // 1, 2, or 3
+}
+
+<style>
+.wiz-bar { display:flex; align-items:center; margin:16px 0 8px; }
+.wiz-step {
+    display:flex; flex-direction:column; align-items:center; position:relative; z-index:1;
+}
+.wiz-circle {
+    width:36px; height:36px; border-radius:50%; border:2px solid var(--steel-border);
+    background:var(--steel-dark); color:var(--text-muted);
+    display:flex; align-items:center; justify-content:center;
+    font-size:14px; font-weight:700; transition:.3s;
+}
+.wiz-circle.done   { background:#0d9488; border-color:#0d9488; color:#fff; }
+.wiz-circle.active { background:#2d6a9f; border-color:#2d6a9f; color:#fff; }
+.wiz-label {
+    font-size:11px; margin-top:6px; color:var(--text-muted); white-space:nowrap;
+}
+.wiz-label.active { color:var(--text-main); font-weight:600; }
+.wiz-line {
+    flex:1; height:2px; background:var(--steel-border); margin:0 -2px;
+    position:relative; top:-14px;
+}
+.wiz-line.done { background:#0d9488; }
+</style>
+
+<div class="wiz-bar">
+    <!-- Step 1 -->
+    <div class="wiz-step">
+        <div class="wiz-circle @(step > 1 ? "done" : step == 1 ? "active" : "")">
+            @if (step > 1) { <span>✓</span> } else { <span>1</span> }
+        </div>
+        <div class="wiz-label @(step == 1 ? "active" : "")">Machine/Vehicle Details</div>
+    </div>
+
+    <!-- Line 1→2 -->
+    <div class="wiz-line @(step > 1 ? "done" : "")"></div>
+
+    <!-- Step 2 -->
+    <div class="wiz-step">
+        <div class="wiz-circle @(step > 2 ? "done" : step == 2 ? "active" : "")">
+            @if (step > 2) { <span>✓</span> } else { <span>2</span> }
+        </div>
+        <div class="wiz-label @(step == 2 ? "active" : "")">More Info</div>
+    </div>
+
+    <!-- Line 2→3 -->
+    <div class="wiz-line @(step > 2 ? "done" : "")"></div>
+
+    <!-- Step 3 -->
+    <div class="wiz-step">
+        <div class="wiz-circle @(step == 3 ? "active" : "")">
+            <span>3</span>
+        </div>
+        <div class="wiz-label @(step == 3 ? "active" : "")">Save the Vehicle</div>
+    </div>
+</div>

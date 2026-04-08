@@ -1,0 +1,438 @@
+@model EquipmentChecklist.Models.Machine
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = $"Pre-Use – {Model.MachineNumber}";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    string Icon(string n) {
+        n = n.ToUpper();
+        // Licences & identity
+        if (n.Contains("LICENCE") || n.Contains("LICENSE"))              return "🪪";
+        // Fire & safety
+        if (n.Contains("FIRE EXT"))                                       return "🧯";
+        if (n.Contains("EMERGENCY STOP"))                                 return "🔴";
+        if (n.Contains("ISOLATION"))                                      return "🔴";
+        if (n.Contains("EMERGENCY TRIANGLE"))                             return "🔺";
+        // Seatbelts & safety restraints
+        if (n.Contains("SEAT BELT") || n.Contains("SEATBELT"))           return "🔒";
+        // Brakes (before LIGHT so "BRAKE LIGHT" → brake)
+        if (n.Contains("BRAKE"))                                          return "🛑";
+        // Lights
+        if (n.Contains("ROTATING LIGHT") || n.Contains("FLASH LIGHT"))   return "🔆";
+        if (n.Contains("HEAD LIGHT"))                                     return "💡";
+        if (n.Contains("TAIL LIGHT"))                                     return "🔴";
+        if (n.Contains("REVERSE LIGHT"))                                  return "⬆️";
+        if (n.Contains("INDICATOR") || n.Contains("HAZARD LIGHT"))       return "🔶";
+        if (n.Contains("ACCESS LIGHT") || n.Contains("AREA LIGHT") || n.Contains("REAR LIGHT")) return "💡";
+        if (n.Contains("FRONT LIGHT") || n.Contains("LAMP"))             return "💡";
+        if (n.Contains("LIGHT"))                                          return "💡";
+        // Mirrors
+        if (n.Contains("MIRROR"))                                         return "🪞";
+        // Tyres & wheels
+        if (n.Contains("TYRE") || n.Contains("TIRE"))                    return "🛞";
+        if (n.Contains("WHEEL NUT"))                                      return "🔩";
+        if (n.Contains("WHEEL"))                                          return "🛞";
+        // Oil, fuel, fluids
+        if (n.Contains("HYDRAULIC"))                                      return "🔧";
+        if (n.Contains("COOLANT") || n.Contains("RADIATOR"))             return "💧";
+        if (n.Contains("WATER LEVEL"))                                    return "💧";
+        if (n.Contains("FUEL"))                                           return "⛽";
+        if (n.Contains("OIL"))                                            return "🛢️";
+        // Audio / alarms
+        if (n.Contains("HOOTER") || n.Contains("HORN"))                  return "📢";
+        if (n.Contains("ALARM") || n.Contains("BUZZER"))                 return "🔔";
+        // Communications
+        if (n.Contains("RADIO") || n.Contains("TWO-WAY") || n.Contains("TWO WAY")) return "📻";
+        // Windscreen/windows
+        if (n.Contains("WIPER") || n.Contains("WINDSCREEN") || n.Contains("SCREEN WIPER")) return "🌧️";
+        if (n.Contains("WINDOW"))                                         return "🪟";
+        // Climate
+        if (n.Contains("AIR COND"))                                       return "❄️";
+        // Access
+        if (n.Contains("DOOR") || n.Contains("HANDLE"))                  return "🚪";
+        if (n.Contains("STEP"))                                           return "🪜";
+        if (n.Contains("HAND RAIL") || n.Contains("HANDRAIL") || n.Contains("HAND GRIP") || n.Contains("KICK PLATE")) return "🪜";
+        // Seating
+        if (n.Contains("SEAT"))                                           return "💺";
+        // Tracks & running gear
+        if (n.Contains("TRACK") || n.Contains("SPROCKET") || n.Contains("ROLLER")) return "⛓️";
+        if (n.Contains("CHAIN"))                                          return "⛓️";
+        // Attachments / working tools
+        if (n.Contains("BUCKET"))                                         return "🪣";
+        if (n.Contains("BLADE") || n.Contains("RIPPER"))                 return "⚒️";
+        if (n.Contains("FORK"))                                           return "🍴";
+        if (n.Contains("BOOM"))                                           return "🏗️";
+        if (n.Contains("CRANE") || n.Contains("CRANE ATTACH"))           return "🏗️";
+        if (n.Contains("OUT RIGGER") || n.Contains("OUTRIGGER"))        return "📐";
+        if (n.Contains("DRIFTER"))                                        return "🔩";
+        if (n.Contains("CAROUSEL") || n.Contains("CAROUSAL"))            return "🔄";
+        if (n.Contains("DUMP BODY") || n.Contains("BIN"))                return "🪣";
+        if (n.Contains("LIFTING CHAIN"))                                  return "⛓️";
+        if (n.Contains("HOOK"))                                           return "🪝";
+        if (n.Contains("LOAD CHART"))                                     return "📋";
+        // Keys & controls
+        if (n.Contains("KEY"))                                            return "🔑";
+        if (n.Contains("STEERING") || n.Contains("STEER CONTROL"))       return "🎡";
+        if (n.Contains("LEVER") || n.Contains("JOYSTICK"))               return "🕹️";
+        if (n.Contains("CONTROL"))                                        return "🕹️";
+        if (n.Contains("GAUGE") || n.Contains("DASHBOARD") || n.Contains("INSTRUMENT") || n.Contains("DASH BOARD")) return "🎛️";
+        // Pipes, hoses
+        if (n.Contains("HOSE"))                                           return "🌀";
+        if (n.Contains("PIPE"))                                           return "🌀";
+        if (n.Contains("NOZZLE"))                                         return "🚿";
+        if (n.Contains("PUMP"))                                           return "⚙️";
+        if (n.Contains("GUARD") || n.Contains("GAURD"))                  return "🛡️";
+        // Stops & blocks
+        if (n.Contains("STOP BLOCK") || n.Contains("STOPBLOCK"))         return "🧱";
+        // Warning / reflective
+        if (n.Contains("REFLECTIVE") || n.Contains("TAPE"))              return "⚠️";
+        // Physical damage
+        if (n.Contains("BUMP"))                                           return "🔍";
+        // Pins & fasteners
+        if (n.Contains("PIN"))                                            return "📌";
+        // Tow / trailer
+        if (n.Contains("TOW BAR") || n.Contains("SAFETY CHAIN") || n.Contains("TOW PIN")) return "🔗";
+        // Flags
+        if (n.Contains("FLAG"))                                           return "🚩";
+        // Declaration
+        if (n.Contains("DECLARATION"))                                    return "📝";
+        return "🔍";
+    }
+}
+
+<div style="max-width:1100px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+        <div>
+            <a href="/Checklist" class="btn btn-ghost" style="margin-bottom:8px">← Back</a>
+            <h2 class="page-title">@Model.MachineName</h2>
+            <p class="page-subtitle">Machine #@Model.MachineNumber · @Model.Type · Pre-Use Inspection</p>
+        </div>
+        <span class="badge badge-pending" id="statusPreview" style="font-size:14px;padding:8px 16px">◉ Not started</span>
+    </div>
+
+    <form id="checklistForm" method="post" action="/Checklist/Submit">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="MachineId" value="@Model.Id" />
+
+        <!-- REQUIRED Header Fields -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px;margin-bottom:20px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Shift <span style="color:var(--red-nogo)">*</span></label>
+                    <select name="Shift" class="form-control" required>
+                        <option value="">-- Select --</option>
+                        <option value="1">Day Shift (A)</option>
+                        <option value="2">Afternoon Shift (B)</option>
+                        <option value="3">Night Shift (C)</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">KM / Hour Meter <span style="color:var(--red-nogo)">*</span></label>
+                    <input type="number" name="KmOrHourMeter" class="form-control"
+                           placeholder="Current reading" required min="0" />
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Date &amp; Time</label>
+                    <input type="text" class="form-control" value="@DateTime.Now.ToString("yyyy-MM-dd HH:mm")"
+                           readonly style="color:var(--text-muted)" />
+                </div>
+            </div>
+        </div>
+
+        <!-- Checklist Items – two-column grid matching the Excel template -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden;margin-bottom:20px">
+
+            <!-- Section header -->
+            <div style="padding:12px 20px;border-bottom:2px solid var(--steel-border);display:flex;justify-content:space-between;align-items:center;background:var(--steel-dark)">
+                <h3 style="font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.08em">
+                    Inspection Items
+                    @if (Model.Template?.Items != null)
+                    {
+                        <span style="font-weight:400;color:var(--text-muted);text-transform:none;letter-spacing:0">
+                            (@Model.Template.Items.Count items)
+                        </span>
+                    }
+                </h3>
+                <span style="font-size:11px;color:var(--red-nogo)">⚠ Red border = critical NO-GO item</span>
+            </div>
+
+            <!-- Column labels (matching Excel: In Order | Defect columns) -->
+            <div style="display:grid;grid-template-columns:1fr 2px 1fr;background:var(--steel-dark);border-bottom:1px solid var(--steel-border)">
+                @for (int col = 0; col < 2; col++)
+                {
+                    if (col == 1) { <div style="background:var(--steel-border)"></div> }
+                    <div style="display:grid;grid-template-columns:1fr 72px 72px;padding:6px 12px 6px 12px">
+                        <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)">Item</span>
+                        <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#22c55e;text-align:center">In Order</span>
+                        <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--red-nogo);text-align:center">Defect</span>
+                    </div>
+                }
+            </div>
+
+            @if (Model.Template?.Items != null)
+            {
+                var allItems = Model.Template.Items.OrderBy(i => i.SortOrder).ToList();
+                int half = (int)Math.Ceiling(allItems.Count / 2.0);
+                var leftItems  = allItems.Take(half).ToList();
+                var rightItems = allItems.Skip(half).ToList();
+                int rows = Math.Max(leftItems.Count, rightItems.Count);
+
+                for (int r = 0; r < rows; r++)
+                {
+                    // left item index in the full list = r
+                    // right item index in the full list = half + r
+                    int leftIdx  = r;
+                    int rightIdx = half + r;
+                    string rowBg = r % 2 == 0 ? "" : "background:var(--steel-dark);";
+
+                    <div style="display:grid;grid-template-columns:1fr 2px 1fr;border-bottom:1px solid var(--steel-border);@rowBg">
+
+                        <!-- LEFT COLUMN -->
+                        @if (leftIdx < leftItems.Count)
+                        {
+                            var item = leftItems[leftIdx];
+                            <div class="checklist-item-row @(item.IsNoGoItem ? "no-go-item" : "")"
+                                 data-item-id="@item.Id"
+                                 style="border-radius:0;border:none;display:grid;grid-template-columns:1fr 72px 72px;align-items:center;gap:0;min-height:44px;padding:0 4px 0 8px">
+
+                                <div style="display:flex;align-items:center;gap:8px;padding:8px 4px 8px 0;min-width:0">
+                                    <span style="font-size:17px;flex-shrink:0;line-height:1">@Icon(item.ItemName)</span>
+                                    <div style="min-width:0">
+                                        <span class="item-name" style="font-size:12px;display:block;white-space:normal;line-height:1.3">@item.ItemName</span>
+                                        @if (item.IsNoGoItem) {
+                                            <span style="font-size:9px;color:var(--red-nogo);font-weight:700">NO-GO</span>
+                                        }
+                                    </div>
+                                </div>
+
+                                <div style="display:flex;justify-content:center;align-items:center;height:100%">
+                                    <label style="display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;padding:6px 0">
+                                        <input type="radio" id="ok_@item.Id" name="Items[@leftIdx].Status" value="1"
+                                               checked style="width:18px;height:18px;accent-color:#22c55e;cursor:pointer" />
+                                        <span style="font-size:9px;color:#22c55e">✓</span>
+                                    </label>
+                                </div>
+
+                                <div style="display:flex;justify-content:center;align-items:center;height:100%">
+                                    <label style="display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;padding:6px 0">
+                                        <input type="radio" id="def_@item.Id" name="Items[@leftIdx].Status" value="2"
+                                               style="width:18px;height:18px;accent-color:var(--red-nogo);cursor:pointer" />
+                                        <span style="font-size:9px;color:var(--red-nogo)">✕</span>
+                                    </label>
+                                </div>
+
+                                <input type="hidden" name="Items[@leftIdx].TemplateItemId" value="@item.Id" />
+
+                                <!-- Defect notes panel -->
+                                <div class="defect-panel" id="notes_@item.Id"
+                                     style="display:none;grid-column:1/-1;padding:8px 4px;border-top:1px dashed var(--red-dark)">
+                                    <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+                                        <input type="text" class="form-control item-notes"
+                                               name="Items[@leftIdx].Notes"
+                                               placeholder="Describe the defect…"
+                                               style="flex:1;min-width:140px;font-size:12px" />
+                                        <button type="button" class="btn btn-ghost voice-btn"
+                                                data-field="Items[@leftIdx].Notes"
+                                                style="padding:5px 10px;font-size:12px;flex-shrink:0">🎤</button>
+                                        <span class="voice-status" style="font-size:11px;color:var(--text-muted);align-self:center"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <div></div>
+                        }
+
+                        <!-- Divider -->
+                        <div style="background:var(--steel-border)"></div>
+
+                        <!-- RIGHT COLUMN -->
+                        @if (rightIdx < allItems.Count)
+                        {
+                            var item = allItems[rightIdx];
+                            <div class="checklist-item-row @(item.IsNoGoItem ? "no-go-item" : "")"
+                                 data-item-id="@item.Id"
+                                 style="border-radius:0;border:none;display:grid;grid-template-columns:1fr 72px 72px;align-items:center;gap:0;min-height:44px;padding:0 4px 0 8px">
+
+                                <div style="display:flex;align-items:center;gap:8px;padding:8px 4px 8px 0;min-width:0">
+                                    <span style="font-size:17px;flex-shrink:0;line-height:1">@Icon(item.ItemName)</span>
+                                    <div style="min-width:0">
+                                        <span class="item-name" style="font-size:12px;display:block;white-space:normal;line-height:1.3">@item.ItemName</span>
+                                        @if (item.IsNoGoItem) {
+                                            <span style="font-size:9px;color:var(--red-nogo);font-weight:700">NO-GO</span>
+                                        }
+                                    </div>
+                                </div>
+
+                                <div style="display:flex;justify-content:center;align-items:center;height:100%">
+                                    <label style="display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;padding:6px 0">
+                                        <input type="radio" id="ok_@item.Id" name="Items[@rightIdx].Status" value="1"
+                                               checked style="width:18px;height:18px;accent-color:#22c55e;cursor:pointer" />
+                                        <span style="font-size:9px;color:#22c55e">✓</span>
+                                    </label>
+                                </div>
+
+                                <div style="display:flex;justify-content:center;align-items:center;height:100%">
+                                    <label style="display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;padding:6px 0">
+                                        <input type="radio" id="def_@item.Id" name="Items[@rightIdx].Status" value="2"
+                                               style="width:18px;height:18px;accent-color:var(--red-nogo);cursor:pointer" />
+                                        <span style="font-size:9px;color:var(--red-nogo)">✕</span>
+                                    </label>
+                                </div>
+
+                                <input type="hidden" name="Items[@rightIdx].TemplateItemId" value="@item.Id" />
+
+                                <!-- Defect notes panel -->
+                                <div class="defect-panel" id="notes_@item.Id"
+                                     style="display:none;grid-column:1/-1;padding:8px 4px;border-top:1px dashed var(--red-dark)">
+                                    <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+                                        <input type="text" class="form-control item-notes"
+                                               name="Items[@rightIdx].Notes"
+                                               placeholder="Describe the defect…"
+                                               style="flex:1;min-width:140px;font-size:12px" />
+                                        <button type="button" class="btn btn-ghost voice-btn"
+                                                data-field="Items[@rightIdx].Notes"
+                                                style="padding:5px 10px;font-size:12px;flex-shrink:0">🎤</button>
+                                        <span class="voice-status" style="font-size:11px;color:var(--text-muted);align-self:center"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <div></div>
+                        }
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="alert alert-warning" style="margin:16px">
+                    No checklist template found for this machine. Ask an admin to set up a template first.
+                </div>
+            }
+        </div>
+
+        <!-- Operator Remarks with voice -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px;margin-bottom:20px">
+            <label class="form-label">Operator Remarks (optional)</label>
+            <div style="display:flex;gap:8px;align-items:flex-start">
+                <textarea name="OperatorRemarks" id="operatorRemarks"
+                          class="form-control" rows="3"
+                          placeholder="Any additional observations about this machine..."></textarea>
+                <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">
+                    <button type="button" class="btn btn-ghost voice-btn"
+                            data-field="OperatorRemarks" title="Record voice remark"
+                            style="padding:7px 12px">🎤 Voice</button>
+                    <span class="voice-status" style="font-size:11px;color:var(--text-muted);text-align:center"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Declaration -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px;margin-bottom:24px">
+            <p style="font-size:13px;font-style:italic;color:var(--text-muted);margin-bottom:14px;line-height:1.6">
+                "I am healthy, in good physical condition and mental state, well rested and do not feel
+                fatigued in order to operate this equipment."
+            </p>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;font-size:14px">
+                <input type="checkbox" name="FitnessDeclarationSigned" value="true" id="fitCheck"
+                       style="width:18px;height:18px;accent-color:var(--green-go)" />
+                I confirm the above declaration
+            </label>
+        </div>
+
+        <div style="display:flex;gap:12px;align-items:center">
+            <button type="submit" class="btn btn-success" style="font-size:15px;padding:12px 32px">
+                ✓ Submit Checklist
+            </button>
+            <a href="/Checklist" class="btn btn-ghost">Cancel</a>
+        </div>
+    </form>
+</div>
+
+@section Scripts {
+<script>
+// Show/hide defect note panel
+document.querySelectorAll('input[value="2"]').forEach(r =>
+    r.addEventListener('change', () => {
+        document.getElementById('notes_' + r.closest('[data-item-id]').dataset.itemId).style.display = 'block';
+        updateStatus();
+    }));
+document.querySelectorAll('input[value="1"]').forEach(r =>
+    r.addEventListener('change', () => {
+        document.getElementById('notes_' + r.closest('[data-item-id]').dataset.itemId).style.display = 'none';
+        updateStatus();
+    }));
+
+function updateStatus() {
+    const def   = document.querySelectorAll('input[value="2"]:checked').length;
+    const nogo  = document.querySelectorAll('.no-go-item input[value="2"]:checked').length;
+    const el    = document.getElementById('statusPreview');
+    if (!el) return;
+    if (def === 0)      { el.className = 'badge badge-go';    el.textContent = '✓ GO'; }
+    else if (nogo > 0)  { el.className = 'badge badge-nogo';  el.textContent = '✕ NO-GO – ' + nogo + ' critical'; }
+    else                { el.className = 'badge badge-gobut'; el.textContent = '⚠ GO-BUT – ' + def + ' defect(s)'; }
+}
+
+// Voice recording
+let recorder = null, chunks = [];
+document.querySelectorAll('.voice-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const fieldName = btn.getAttribute('data-field');
+        const status    = btn.nextElementSibling;
+        const input     = document.querySelector(`[name="${fieldName}"]`);
+
+        if (recorder?.state === 'recording') {
+            recorder.stop();
+            btn.textContent = '🎤 Voice';
+            btn.style.cssText = '';
+            return;
+        }
+        if (!navigator.mediaDevices?.getUserMedia) {
+            alert('Microphone not available. Please type your notes.');
+            return;
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            chunks   = [];
+            recorder = new MediaRecorder(stream);
+            recorder.ondataavailable = e => chunks.push(e.data);
+            recorder.onstop = () => {
+                stream.getTracks().forEach(t => t.stop());
+                const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (SpeechRec) {
+                    const sr = new SpeechRec();
+                    sr.lang = 'en-ZA';
+                    sr.onresult = ev => {
+                        const text = ev.results[0][0].transcript;
+                        if (input) input.value = (input.value ? input.value + ' ' : '') + text;
+                        if (status) status.textContent = '✓ Transcribed';
+                    };
+                    sr.onerror = () => { if (status) status.textContent = '⚠ Type manually'; };
+                    sr.start();
+                } else {
+                    if (status) status.textContent = '⚠ Type your notes';
+                }
+            };
+            recorder.start();
+            btn.textContent = '⏹ Stop';
+            btn.style.background = 'var(--red-nogo)';
+            btn.style.color = '#fff';
+            btn.style.borderColor = 'var(--red-nogo)';
+            if (status) status.textContent = '● Recording…';
+        } catch {
+            alert('Microphone permission denied. Please type your notes.');
+        }
+    });
+});
+
+// Guard fitness declaration
+document.getElementById('checklistForm').addEventListener('submit', e => {
+    if (!document.getElementById('fitCheck')?.checked) {
+        e.preventDefault();
+        alert('Please confirm the fitness declaration before submitting.');
+    }
+});
+</script>
+}

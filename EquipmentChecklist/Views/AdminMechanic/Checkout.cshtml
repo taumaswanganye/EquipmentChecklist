@@ -1,0 +1,132 @@
+@model List<EquipmentChecklist.Models.DefectOrder>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Checkout – Order Parts";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var adminEmail = ViewBag.AdminEmail as string ?? "";
+    var adminName  = ViewBag.AdminName  as string ?? "";
+}
+
+<div style="max-width:760px">
+    <a href="/Admin/Mechanic/Cart" class="btn btn-ghost" style="margin-bottom:16px">← Back to Defect List</a>
+
+    <h2 class="page-title" style="margin-bottom:4px">Checkout</h2>
+    <p class="page-subtitle" style="margin-bottom:24px">
+        Fill in the part details for each defect, then submit to record the order and send a confirmation email.
+    </p>
+
+    <form method="post" action="/Admin/Mechanic/SubmitOrder">
+        @Html.AntiForgeryToken()
+
+        <!-- Line items -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden;margin-bottom:20px">
+            <div style="padding:12px 20px;background:var(--steel-dark);border-bottom:1px solid var(--steel-border)">
+                <h3 style="font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.08em">
+                    @Model.Count Part Order@(Model.Count > 1 ? "s" : "")
+                </h3>
+            </div>
+
+            @for (int i = 0; i < Model.Count; i++)
+            {
+                var d = Model[i];
+                <input type="hidden" name="lines[@i].DefectOrderId" value="@d.Id" />
+
+                <div style="padding:18px 20px;border-bottom:1px solid var(--steel-border)">
+                    <!-- Item info -->
+                    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+                        <div>
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <strong>@d.SubmissionItem.TemplateItem.ItemName</strong>
+                                @if (d.SubmissionItem.TemplateItem.IsNoGoItem)
+                                {
+                                    <span class="badge badge-nogo" style="font-size:9px">CRITICAL</span>
+                                }
+                            </div>
+                            <div style="font-size:12px;color:var(--text-muted);margin-top:3px">
+                                Machine: <strong>@d.Submission.Machine.MachineNumber</strong> – @d.Submission.Machine.MachineName
+                                @if (d.Submission.Machine.IsImmobilised)
+                                {
+                                    <span class="badge badge-nogo" style="font-size:9px;margin-left:4px">🚫 NO-GO</span>
+                                }
+                            </div>
+                            @if (d.SubmissionItem.Notes != null)
+                            {
+                                <div style="font-size:12px;color:var(--amber);font-style:italic;margin-top:3px">
+                                    Defect note: @d.SubmissionItem.Notes
+                                </div>
+                            }
+                        </div>
+                        <form method="post" action="/Admin/Mechanic/RemoveFromCart" style="display:inline">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="defectOrderId" value="@d.Id" />
+                            <button type="submit" class="btn btn-ghost btn-sm"
+                                    style="color:var(--red-nogo);border-color:var(--red-dark)">✕ Remove</button>
+                        </form>
+                    </div>
+
+                    <!-- Part fields -->
+                    <div style="display:grid;grid-template-columns:1fr 200px;gap:12px">
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Part / Component Required <span style="color:var(--red-nogo)">*</span></label>
+                            <input type="text" name="lines[@i].PartRequired" class="form-control"
+                                   placeholder="e.g. Hydraulic Seal Kit, Brake Pad Set" required />
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Part Number (optional)</label>
+                            <input type="text" name="lines[@i].PartNumber" class="form-control"
+                                   placeholder="e.g. CAT-4552-HYD" />
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        <!-- Email section -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px;margin-bottom:20px">
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px">📧 Send Confirmation Email</h3>
+
+            <div class="form-group" style="margin-bottom:14px">
+                <label class="form-label">Send confirmation to</label>
+                <input type="email" name="toEmail" class="form-control"
+                       value="@adminEmail"
+                       placeholder="yourname@belfast.co.za" />
+                <p style="font-size:11px;color:var(--text-muted);margin-top:5px">
+                    A confirmation email with all ordered parts will be sent to this address.
+                    Leave blank to skip email.
+                </p>
+            </div>
+
+            <div class="form-group" style="margin:0">
+                <label class="form-label">Order Notes (optional)</label>
+                <textarea name="notes" class="form-control" rows="2"
+                          placeholder="Any additional instructions for the supplier or workshop..."></textarea>
+            </div>
+        </div>
+
+        <!-- Order summary -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:16px 20px;margin-bottom:20px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                    <span style="font-size:13px;color:var(--text-muted)">Total line items:</span>
+                    <strong style="font-size:16px;margin-left:8px">@Model.Count</strong>
+                </div>
+                <div>
+                    @{
+                        var noGoCnt = Model.Count(d => d.Submission.Machine.IsImmobilised);
+                    }
+                    @if (noGoCnt > 0)
+                    {
+                        <span class="badge badge-nogo">🚫 @noGoCnt NO-GO machine@(noGoCnt > 1 ? "s" : "") affected</span>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:12px;align-items:center">
+            <button type="submit" class="btn btn-success" style="font-size:15px;padding:12px 32px">
+                ✓ Submit Order
+            </button>
+            <a href="/Admin/Mechanic/Cart" class="btn btn-ghost">Cancel</a>
+        </div>
+    </form>
+</div>

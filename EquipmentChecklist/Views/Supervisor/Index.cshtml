@@ -1,0 +1,127 @@
+@model List<EquipmentChecklist.Models.ChecklistSubmission>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Supervisor – Sign-Off Queue";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var mechanics = ViewBag.Mechanics as IList<ApplicationUser> ?? new List<ApplicationUser>();
+}
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:56px;margin-bottom:12px">✅</div>
+        <h2 style="font-size:24px">All clear!</h2>
+        <p style="margin-top:8px">No submissions awaiting your sign-off.</p>
+    </div>
+}
+else
+{
+    <div class="alert alert-warning" style="margin-bottom:20px">
+        <strong>@Model.Count submission(s)</strong> require your supervisor sign-off.
+    </div>
+
+    @foreach (var s in Model)
+    {
+        var defects = s.Items.Where(i => i.Status == ItemStatus.Defect).ToList();
+
+        <div style="background:var(--steel-mid);border:1px solid var(--amber);border-radius:8px;padding:20px;margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px">
+                <div>
+                    <h3 style="font-size:18px">@s.Machine.MachineName – #@s.Machine.MachineNumber</h3>
+                    <p style="color:var(--text-muted);font-size:13px">
+                        Operator: <strong>@s.Operator.FullName</strong> (@s.Operator.EmployeeNumber) ·
+                        @s.SubmittedAt.ToString("yyyy-MM-dd HH:mm") · Shift: @s.Shift
+                    </p>
+                </div>
+                <span class="badge badge-gobut">⚠ GO-BUT</span>
+            </div>
+
+            @if (defects.Any())
+            {
+                <div style="margin-bottom:14px">
+                    <p style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:8px">
+                        Defects Reported (@defects.Count)
+                    </p>
+                    @foreach (var item in defects)
+                    {
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+                            <span class="badge badge-gobut" style="font-size:10px">⚠</span>
+                            <span style="font-size:14px">@item.TemplateItem.ItemName</span>
+                            @if (item.Notes != null)
+                            {
+                                <span style="color:var(--text-muted);font-size:12px">– @item.Notes</span>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (s.OperatorRemarks != null)
+            {
+                <div style="background:var(--steel-light);border-radius:6px;padding:10px;margin-bottom:14px;font-size:13px">
+                    <strong>Operator remarks:</strong>
+                    <span style="color:var(--text-muted)">@s.OperatorRemarks</span>
+                </div>
+            }
+
+            <!-- Approve Buttons -->
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+                <form method="post" action="/Supervisor/SignOff" style="display:contents">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="id" value="@s.Id" />
+                    <button name="resolution" value="2" type="submit" class="btn btn-warning">
+                        ✍ Approve – Repair Within 24H
+                    </button>
+                    <button name="resolution" value="3" type="submit" class="btn btn-ghost">
+                        ✍ Approve – Repair By Next Service
+                    </button>
+                </form>
+                <a href="/Supervisor/Review/@s.Id" class="btn btn-ghost">View Full Checklist</a>
+            </div>
+
+            <!-- Reject Panel -->
+            <details style="border:1px solid #7f1d1d;border-radius:6px;overflow:hidden">
+                <summary style="background:rgba(220,38,38,0.12);padding:10px 14px;cursor:pointer;font-size:13px;font-weight:600;color:#ef4444;list-style:none;display:flex;align-items:center;gap:6px">
+                    ✕ Reject Submission
+                    <span style="font-size:11px;font-weight:400;color:var(--text-muted)">— immobilise machine and send defects to mechanic</span>
+                </summary>
+
+                <div style="padding:14px 16px;background:var(--steel-dark)">
+                    <form method="post" action="/Supervisor/Reject">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="id" value="@s.Id" />
+
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+                            <div class="form-group" style="margin:0">
+                                <label class="form-label" style="color:#ef4444">
+                                    Rejection Reason <span>*</span>
+                                </label>
+                                <input type="text" name="rejectionReason" class="form-control"
+                                       placeholder="e.g. Critical safety defect – machine unfit to operate"
+                                       required style="border-color:#7f1d1d" />
+                            </div>
+
+                            <div class="form-group" style="margin:0">
+                                <label class="form-label" style="color:#ef4444">
+                                    Assign Mechanic <span>*</span>
+                                </label>
+                                <select name="mechanicId" class="form-control" required style="border-color:#7f1d1d">
+                                    <option value="">-- Select Mechanic --</option>
+                                    @foreach (var mec in mechanics)
+                                    {
+                                        <option value="@mec.Id">@mec.FullName (@mec.EmployeeNumber)</option>
+                                    }
+                                </select>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-nogo"
+                                onclick="return confirm('Reject this submission? The machine will be immobilised and all defects sent to the selected mechanic.')">
+                            🚫 Confirm Rejection &amp; Assign to Mechanic
+                        </button>
+                    </form>
+                </div>
+            </details>
+        </div>
+    }
+}

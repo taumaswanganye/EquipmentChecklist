@@ -1,0 +1,441 @@
+@model EquipmentChecklist.Models.Machine
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Manage Checklist Items";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var items = Model.Template?.Items?.OrderBy(i => i.SortOrder).ToList() ?? new();
+}
+
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+    <a href="/Admin/EditMachine/@Model.Id" class="btn btn-ghost" style="font-size:12px">← Back to Edit Machine</a>
+</div>
+
+<!-- Header -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h2 style="font-size:20px;font-weight:700;margin:0">Checklist Items</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:3px 0 0">
+            @Model.MachineNumber – @Model.MachineName
+            <span style="margin-left:8px;color:var(--accent)">@items.Count item(s)</span>
+        </p>
+    </div>
+    <button type="button" onclick="openAddModal()" class="btn btn-primary" style="font-size:13px">
+        + Add Item
+    </button>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div style="padding:10px 16px;background:rgba(34,197,94,0.12);border:1px solid #166534;border-radius:6px;color:#86efac;font-size:13px;margin-bottom:16px">
+        ✓ @TempData["Success"]
+    </div>
+}
+@if (TempData["Error"] != null)
+{
+    <div style="padding:10px 16px;background:#450a0a;border:1px solid #7f1d1d;border-radius:6px;color:#fca5a5;font-size:13px;margin-bottom:16px">
+        ✕ @TempData["Error"]
+    </div>
+}
+
+<!-- Items table -->
+@if (!items.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted);background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px">
+        <div style="font-size:48px;margin-bottom:12px">📋</div>
+        <p>No checklist items yet. Click <strong>+ Add Item</strong> to get started.</p>
+    </div>
+}
+else
+{
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;overflow:hidden">
+        <table class="data-table" data-paginate="5" style="font-size:13px">
+            <thead>
+                <tr>
+                    <th style="width:40px">#</th>
+                    <th style="width:54px">Image</th>
+                    <th>Item Name</th>
+                    <th style="width:80px">Critical</th>
+                    <th>Status</th>
+                    <th>Action / Check</th>
+                    <th style="width:80px;text-align:right">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in items)
+                {
+                    <tr>
+                        <td style="color:var(--text-muted)">@item.SortOrder</td>
+                        <td>
+                            @if (!string.IsNullOrEmpty(item.IconPath))
+                            {
+                                <img src="@item.IconPath"
+                                     alt="item image"
+                                     data-caption="@item.ItemName"
+                                     style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid var(--steel-border);cursor:pointer"
+                                     onclick="previewImage(this.src, this.dataset.caption)" />
+                            }
+                            else
+                            {
+                                <span style="color:var(--text-muted);font-size:11px">–</span>
+                            }
+                        </td>
+                        <td>
+                            <strong>@item.ItemName</strong>
+                            @if (!string.IsNullOrEmpty(item.InOrderCondition) || !string.IsNullOrEmpty(item.DefectCondition))
+                            {
+                                <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+                                    @if (!string.IsNullOrEmpty(item.InOrderCondition))
+                                    {
+                                        <span style="color:#22c55e">R: @(item.InOrderCondition!.Length > 40 ? item.InOrderCondition[..40] + "…" : item.InOrderCondition)</span>
+                                    }
+                                    @if (!string.IsNullOrEmpty(item.DefectCondition))
+                                    {
+                                        <span style="color:#ef4444;margin-left:8px">W: @(item.DefectCondition!.Length > 40 ? item.DefectCondition[..40] + "…" : item.DefectCondition)</span>
+                                    }
+                                </div>
+                            }
+                        </td>
+                        <td>
+                            <span class="badge @(item.IsNoGoItem ? "badge-nogo" : "badge-go")" style="font-size:10px">
+                                @(item.IsNoGoItem ? "YES" : "No")
+                            </span>
+                        </td>
+                        <td style="font-size:12px;color:var(--text-muted)">
+                            @(item.StatusLabel is { Length: > 0 } s ? s : "–")
+                        </td>
+                        <td style="font-size:12px;color:var(--text-muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                            title="@item.Action">
+                            @(item.Action is { Length: > 0 } a ? (a.Length > 50 ? a[..50] + "…" : a) : "–")
+                        </td>
+                        <td style="text-align:right">
+                            <div style="display:flex;gap:4px;justify-content:flex-end">
+                                <!-- All item data stored in data-* attributes — no inline JS quoting issues -->
+                                <button type="button"
+                                        class="btn btn-ghost btn-sm edit-item-btn"
+                                        style="padding:2px 8px;font-size:13px"
+                                        title="Edit item"
+                                        data-item-id="@item.Id"
+                                        data-machine-id="@Model.Id"
+                                        data-name="@item.ItemName"
+                                        data-nogo="@item.IsNoGoItem.ToString().ToLower()"
+                                        data-status="@(item.StatusLabel ?? "")"
+                                        data-action="@(item.Action ?? "")"
+                                        data-inorder="@(item.InOrderCondition ?? "")"
+                                        data-defect="@(item.DefectCondition ?? "")"
+                                        data-icon="@(item.IconPath ?? "")">✏</button>
+
+                                <form method="post" action="/Admin/DeleteTemplateItem" style="display:inline"
+                                      data-item-name="@item.ItemName"
+                                      onsubmit="return confirm('Delete item \'' + this.dataset.itemName + '\'?')">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="itemId"    value="@item.Id" />
+                                    <input type="hidden" name="machineId" value="@Model.Id" />
+                                    <button type="submit" class="btn btn-ghost btn-sm"
+                                            style="color:var(--red-nogo);padding:2px 8px;font-size:14px">✕</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<!-- ══ ADD ITEM MODAL ══════════════════════════════════════════════════════════ -->
+<div id="addItemModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:12px;width:700px;max-width:96vw;max-height:92vh;overflow-y:auto">
+
+        <div style="padding:16px 24px;border-bottom:1px solid var(--steel-border);display:flex;justify-content:space-between;align-items:center">
+            <h3 style="margin:0;font-size:16px;font-weight:700">Add Checklist Item</h3>
+            <button type="button" onclick="closeAddModal()" style="background:none;border:none;color:var(--text-muted);font-size:22px;cursor:pointer;line-height:1">×</button>
+        </div>
+
+        <form method="post" action="/Admin/AddTemplateItem" enctype="multipart/form-data">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="machineId" value="@Model.Id" />
+
+            <div style="padding:20px 24px;display:grid;grid-template-columns:1fr 1fr;gap:14px">
+
+                <!-- Name -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Item Name <span style="color:var(--red-nogo)">*</span></label>
+                    <input type="text" name="itemName" class="form-control" placeholder="e.g. Engine Oil Level" required />
+                </div>
+
+                <!-- Status Label -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Status Label</label>
+                    <input type="text" name="statusLabel" class="form-control" placeholder="e.g. Go till next Service" />
+                </div>
+
+                <!-- Action -->
+                <div class="form-group" style="margin:0;grid-column:1/-1">
+                    <label class="form-label">ACTION <span style="color:var(--red-nogo)">*</span></label>
+                    <textarea name="action" class="form-control" rows="3"
+                              placeholder="What must the operator check or do?" required></textarea>
+                </div>
+
+                <!-- IN ORDER -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">IN ORDER <span style="color:#22c55e">'R'</span></label>
+                    <textarea name="inOrderCondition" class="form-control" rows="3"
+                              placeholder="Describe the acceptable / in-order condition..."></textarea>
+                </div>
+
+                <!-- DEFECT -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">DEFECT <span style="color:#ef4444">'W'</span></label>
+                    <textarea name="defectCondition" class="form-control" rows="3"
+                              placeholder="Describe what constitutes a defect..."></textarea>
+                </div>
+
+                <!-- Image Upload -->
+                <div class="form-group" style="margin:0;grid-column:1/-1">
+                    <label class="form-label">
+                        Reference Image
+                        <span style="color:var(--text-muted);font-weight:400">(optional – jpg/png/gif/webp)</span>
+                    </label>
+                    <input type="file" name="imageFile" id="addImageFile" class="form-control"
+                           accept=".jpg,.jpeg,.png,.gif,.webp" style="padding:6px"
+                           onchange="previewFile(this, 'addImagePreview')" />
+                    <img id="addImagePreview" src="" alt=""
+                         style="display:none;margin-top:8px;max-height:120px;border-radius:6px;border:1px solid var(--steel-border)" />
+                </div>
+
+                <!-- Is Critical -->
+                <div style="grid-column:1/-1;padding:10px 14px;background:var(--steel-dark);border:1px solid var(--steel-border);border-radius:6px">
+                    <p style="color:var(--red-nogo);font-size:12px;margin:0 0 8px">
+                        Is this a <strong>critical / NO-GO</strong> item? If the operator reports a defect here the machine must be immobilised.
+                    </p>
+                    <div style="display:flex;gap:20px">
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                            <input type="radio" name="isNoGoItem" value="true" style="accent-color:var(--red-nogo)" />
+                            <span>Yes – Critical NO-GO</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                            <input type="radio" name="isNoGoItem" value="false" checked style="accent-color:var(--green-go)" />
+                            <span>No – Normal Item</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div style="padding:14px 24px;border-top:1px solid var(--steel-border);display:flex;justify-content:flex-end;gap:10px">
+                <button type="button" onclick="closeAddModal()" class="btn btn-ghost">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Item</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ══ EDIT ITEM MODAL ═════════════════════════════════════════════════════════ -->
+<div id="editItemModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:12px;width:700px;max-width:96vw;max-height:92vh;overflow-y:auto">
+
+        <div style="padding:16px 24px;border-bottom:1px solid var(--steel-border);display:flex;justify-content:space-between;align-items:center">
+            <h3 style="margin:0;font-size:16px;font-weight:700">Edit Checklist Item</h3>
+            <button type="button" onclick="closeEditModal()" style="background:none;border:none;color:var(--text-muted);font-size:22px;cursor:pointer;line-height:1">×</button>
+        </div>
+
+        <form id="editItemForm" method="post" action="/Admin/UpdateTemplateItem" enctype="multipart/form-data">
+            @Html.AntiForgeryToken()
+            <input type="hidden" id="editItemId"      name="itemId" />
+            <input type="hidden" id="editMachineId"   name="machineId" />
+            <input type="hidden" id="editRemoveImage" name="removeImage" value="false" />
+
+            <div style="padding:20px 24px;display:grid;grid-template-columns:1fr 1fr;gap:14px">
+
+                <!-- Name -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Item Name <span style="color:var(--red-nogo)">*</span></label>
+                    <input type="text" id="editItemName" name="itemName" class="form-control" required />
+                </div>
+
+                <!-- Status Label -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Status Label</label>
+                    <input type="text" id="editStatusLabel" name="statusLabel" class="form-control" />
+                </div>
+
+                <!-- Action -->
+                <div class="form-group" style="margin:0;grid-column:1/-1">
+                    <label class="form-label">ACTION <span style="color:var(--red-nogo)">*</span></label>
+                    <textarea id="editAction" name="action" class="form-control" rows="3" required></textarea>
+                </div>
+
+                <!-- IN ORDER -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">IN ORDER <span style="color:#22c55e">'R'</span></label>
+                    <textarea id="editInOrder" name="inOrderCondition" class="form-control" rows="3"></textarea>
+                </div>
+
+                <!-- DEFECT -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">DEFECT <span style="color:#ef4444">'W'</span></label>
+                    <textarea id="editDefect" name="defectCondition" class="form-control" rows="3"></textarea>
+                </div>
+
+                <!-- Current Image + Replace -->
+                <div style="grid-column:1/-1">
+                    <label class="form-label">Reference Image</label>
+
+                    <div id="editCurrentImageBox" style="display:none;margin-bottom:10px;padding:10px;background:var(--steel-dark);border:1px solid var(--steel-border);border-radius:6px">
+                        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                            <img id="editCurrentImg" src="" alt="Current image"
+                                 style="height:80px;border-radius:4px;border:1px solid var(--steel-border)" />
+                            <div>
+                                <p style="font-size:12px;color:var(--text-muted);margin:0 0 6px">Current image</p>
+                                <button type="button" class="btn btn-ghost btn-sm"
+                                        style="color:var(--red-nogo);font-size:12px"
+                                        onclick="removeCurrentImage()">🗑 Remove image</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <label class="form-label" style="font-size:12px;font-weight:400;margin-top:4px">
+                        Upload new image (replaces existing) — jpg/png/gif/webp
+                    </label>
+                    <input type="file" id="editImageFile" name="imageFile" class="form-control"
+                           accept=".jpg,.jpeg,.png,.gif,.webp" style="padding:6px"
+                           onchange="previewFile(this, 'editImagePreview')" />
+                    <img id="editImagePreview" src="" alt=""
+                         style="display:none;margin-top:8px;max-height:120px;border-radius:6px;border:1px solid var(--steel-border)" />
+                </div>
+
+                <!-- Is Critical -->
+                <div style="grid-column:1/-1;padding:10px 14px;background:var(--steel-dark);border:1px solid var(--steel-border);border-radius:6px">
+                    <p style="color:var(--red-nogo);font-size:12px;margin:0 0 8px">
+                        Is this a <strong>critical / NO-GO</strong> item?
+                    </p>
+                    <div style="display:flex;gap:20px">
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                            <input type="radio" id="editIsNoGoYes" name="isNoGoItem" value="true" style="accent-color:var(--red-nogo)" />
+                            <span>Yes – Critical NO-GO</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                            <input type="radio" id="editIsNoGoNo"  name="isNoGoItem" value="false" style="accent-color:var(--green-go)" />
+                            <span>No – Normal Item</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div style="padding:14px 24px;border-top:1px solid var(--steel-border);display:flex;justify-content:flex-end;gap:10px">
+                <button type="button" onclick="closeEditModal()" class="btn btn-ghost">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ══ IMAGE LIGHTBOX ═════════════════════════════════════════════════════════ -->
+<div id="imgLightbox"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:2000;align-items:center;justify-content:center;cursor:pointer"
+     onclick="closeLightbox()">
+    <div style="position:relative;max-width:90vw;max-height:90vh">
+        <img id="lightboxImg" src="" alt=""
+             style="max-width:90vw;max-height:90vh;border-radius:8px;object-fit:contain;box-shadow:0 4px 32px rgba(0,0,0,0.8)" />
+        <div id="lightboxCaption"
+             style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.5);color:#fff;text-align:center;padding:8px;border-radius:0 0 8px 8px;font-size:13px"></div>
+        <button type="button" onclick="event.stopPropagation();closeLightbox()"
+                style="position:absolute;top:-14px;right:-14px;background:#374151;border:none;color:#fff;border-radius:50%;width:30px;height:30px;font-size:18px;cursor:pointer;line-height:1">×</button>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+// ── Shared helpers ────────────────────────────────────────────────────────────
+function previewFile(input, previewId) {
+    var img = document.getElementById(previewId);
+    if (input.files && input.files[0]) {
+        img.src = URL.createObjectURL(input.files[0]);
+        img.style.display = 'block';
+    }
+}
+
+// ── Add modal ─────────────────────────────────────────────────────────────────
+var addModal  = document.getElementById('addItemModal');
+var editModal = document.getElementById('editItemModal');
+
+function openAddModal() {
+    addModal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+function closeAddModal() {
+    addModal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+addModal.addEventListener('click', function(e) { if (e.target === addModal) closeAddModal(); });
+
+// ── Edit modal — reads all data from data-* attributes ────────────────────────
+document.querySelectorAll('.edit-item-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        var d = btn.dataset;
+
+        document.getElementById('editItemId').value      = d.itemId;
+        document.getElementById('editMachineId').value   = d.machineId;
+        document.getElementById('editItemName').value    = d.name;
+        document.getElementById('editStatusLabel').value = d.status;
+        document.getElementById('editAction').value      = d.action;
+        document.getElementById('editInOrder').value     = d.inorder;
+        document.getElementById('editDefect').value      = d.defect;
+        document.getElementById('editRemoveImage').value = 'false';
+
+        // Critical radio
+        document.getElementById('editIsNoGoYes').checked = (d.nogo === 'true');
+        document.getElementById('editIsNoGoNo').checked  = (d.nogo !== 'true');
+
+        // Current image
+        var imgBox = document.getElementById('editCurrentImageBox');
+        var imgEl  = document.getElementById('editCurrentImg');
+        if (d.icon && d.icon.length > 0) {
+            imgEl.src = d.icon;
+            imgBox.style.display = 'block';
+        } else {
+            imgBox.style.display = 'none';
+            imgEl.src = '';
+        }
+
+        // Clear new-image preview and file input
+        var preview = document.getElementById('editImagePreview');
+        preview.style.display = 'none';
+        preview.src = '';
+        document.getElementById('editImageFile').value = '';
+
+        editModal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    });
+});
+
+function closeEditModal() {
+    editModal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+editModal.addEventListener('click', function(e) { if (e.target === editModal) closeEditModal(); });
+
+function removeCurrentImage() {
+    document.getElementById('editRemoveImage').value = 'true';
+    document.getElementById('editCurrentImageBox').style.display = 'none';
+}
+
+// When a new file is chosen, un-mark removal
+document.getElementById('editImageFile').addEventListener('change', function() {
+    if (this.files && this.files[0]) {
+        document.getElementById('editRemoveImage').value = 'false';
+    }
+});
+
+// ── Lightbox ──────────────────────────────────────────────────────────────────
+function previewImage(src, caption) {
+    document.getElementById('lightboxImg').src = src;
+    document.getElementById('lightboxCaption').textContent = caption || '';
+    document.getElementById('imgLightbox').style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+function closeLightbox() {
+    document.getElementById('imgLightbox').style.display = 'none';
+    document.body.style.overflow = '';
+}
+</script>
+}

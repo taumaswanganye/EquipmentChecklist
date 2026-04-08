@@ -1,0 +1,104 @@
+@model EquipmentChecklist.Controllers.WizardMachineData
+@{
+    ViewData["Title"] = "Create Vehicle/Machine";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<!-- Page header -->
+<div style="margin-bottom:6px">
+    <h2 style="font-size:22px;font-weight:700;color:var(--text-main);margin:0">CREATE VEHICLE/MACHINE</h2>
+    <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">Vehicle/Machine</p>
+</div>
+
+<!-- Wizard progress bar -->
+@await Html.PartialAsync("_WizardProgress", 1)
+
+<!-- Step 1 card -->
+<div style="display:flex;justify-content:center;padding-top:12px">
+    <div style="width:100%;max-width:680px;background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden">
+        <div style="padding:18px 24px;border-bottom:1px solid var(--steel-border)">
+            <h3 style="font-size:14px;font-weight:700;color:var(--accent);margin:0">Vehicle Details</h3>
+        </div>
+
+        <form method="post" action="/Admin/CreateMachineWizard/Step1">
+            @Html.AntiForgeryToken()
+
+            @if (TempData["Error"] != null)
+            {
+                <div style="margin:16px 24px 0;padding:10px 14px;background:#450a0a;border:1px solid #7f1d1d;border-radius:6px;color:#fca5a5;font-size:13px">
+                    @TempData["Error"]
+                </div>
+            }
+
+            @if (!ViewData.ModelState.IsValid)
+            {
+                <div style="margin:16px 24px 0;padding:10px 14px;background:#450a0a;border:1px solid #7f1d1d;border-radius:6px;color:#fca5a5;font-size:13px">
+                    @foreach (var error in ViewData.ModelState.Values.SelectMany(v => v.Errors))
+                    {
+                        <div>@error.ErrorMessage</div>
+                    }
+                </div>
+            }
+
+            <div style="padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+                <!-- Machine/Vehicle name -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Machine/Vehicle name <span style="color:var(--red-nogo)">*</span></label>
+                    <input type="text" name="MachineName" class="form-control"
+                           placeholder="e.g. Front End Loader Unit 3" required
+                           value="@Model?.MachineName" />
+                </div>
+
+                <!-- Machine FG/Nr -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Machine FG/Nr <span style="color:var(--red-nogo)">*</span></label>
+                    <input type="text" name="MachineNumber" class="form-control"
+                           placeholder="e.g. FEL-003" required
+                           value="@Model?.MachineNumber"
+                           style="@(ViewData.ModelState["MachineNumber"]?.Errors.Count > 0 ? "border-color:#ef4444;" : "")" />
+                    @if (ViewData.ModelState["MachineNumber"]?.Errors.Count > 0)
+                    {
+                        <small style="color:#fca5a5;font-size:11px">
+                            @ViewData.ModelState["MachineNumber"]!.Errors[0].ErrorMessage
+                        </small>
+                    }
+                </div>
+
+                <!-- Type -->
+                <div class="form-group" style="margin:0">
+                    <label class="form-label">Type <span style="color:var(--red-nogo)">*</span></label>
+                    <select name="MachineType" class="form-control" required>
+                        <option value="">-- Select Type --</option>
+                        <option value="1"  @(Model?.MachineType==1  ?"selected":"")>ADT – Articulated Dump Truck</option>
+                        <option value="2"  @(Model?.MachineType==2  ?"selected":"")>Articulated Water Truck</option>
+                        <option value="3"  @(Model?.MachineType==3  ?"selected":"")>Diesel Bowser</option>
+                        <option value="4"  @(Model?.MachineType==4  ?"selected":"")>Drills</option>
+                        <option value="5"  @(Model?.MachineType==5  ?"selected":"")>Excavator</option>
+                        <option value="6"  @(Model?.MachineType==6  ?"selected":"")>FEL – Front End Loader</option>
+                        <option value="7"  @(Model?.MachineType==7  ?"selected":"")>Forklift</option>
+                        <option value="8"  @(Model?.MachineType==8  ?"selected":"")>Grader</option>
+                        <option value="9"  @(Model?.MachineType==9  ?"selected":"")>LDV / Light Vehicle</option>
+                        <option value="10" @(Model?.MachineType==10 ?"selected":"")>SRV / Water Bowser</option>
+                        <option value="11" @(Model?.MachineType==11 ?"selected":"")>Track Dozer</option>
+                        <option value="12" @(Model?.MachineType==12 ?"selected":"")>RDT – 773 Haul Truck</option>
+                        <option value="13" @(Model?.MachineType==13 ?"selected":"")>Truck Mounted Crane</option>
+                        <option value="14" @(Model?.MachineType==14 ?"selected":"")>TLB</option>
+                    </select>
+                </div>
+
+                <!-- Description -->
+                <div class="form-group" style="margin:0;grid-column:1/-1">
+                    <label class="form-label">Description <span style="color:var(--red-nogo)">*</span></label>
+                    <textarea name="Description" class="form-control" rows="3"
+                              placeholder="Brief description of this vehicle/machine...">@Model?.Description</textarea>
+                </div>
+            </div>
+
+            <div style="padding:16px 24px;display:flex;justify-content:flex-end;border-top:1px solid var(--steel-border)">
+                <button type="submit" class="btn btn-primary" style="min-width:120px">
+                    Next ➜
+                </button>
+            </div>
+        </form>
+    </div>
+</div>

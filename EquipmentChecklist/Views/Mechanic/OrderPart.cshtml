@@ -1,0 +1,46 @@
+@model EquipmentChecklist.Models.DefectOrder
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Order Part";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="max-width:560px">
+    <a href="/Mechanic" class="btn btn-ghost" style="margin-bottom:16px">← Back to Defect Orders</a>
+
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:24px">
+        <h2 style="font-size:20px;margin-bottom:4px">Order Part</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px">
+            Machine: <strong>@Model.Submission.Machine.MachineNumber</strong> –
+            @Model.Submission.Machine.MachineName ·
+            Item: @Model.SubmissionItem.TemplateItem.ItemName
+        </p>
+
+        <div style="background:var(--steel-light);border-radius:6px;padding:12px;margin-bottom:20px">
+            <p style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:4px">Defect Description</p>
+            <p>@Model.DefectDescription</p>
+        </div>
+
+        <form method="post" action="/Mechanic/OrderPart/@Model.Id">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="defectOrderId" value="@Model.Id" />
+
+            <div class="form-group">
+                <label class="form-label">Part Required *</label>
+                <input type="text" name="partRequired" class="form-control"
+                       placeholder="e.g. Hydraulic Cylinder Seal Kit" required />
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Part Number (optional)</label>
+                <input type="text" name="partNumber" class="form-control"
+                       placeholder="e.g. JD-4552-HYD" />
+            </div>
+
+            <div style="display:flex;gap:12px;margin-top:8px">
+                <button type="submit" class="btn btn-primary">📦 Submit Order</button>
+                <a href="/Mechanic" class="btn btn-ghost">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>

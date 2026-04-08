@@ -1,0 +1,97 @@
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Models
+@model DashboardStatsDto
+@{
+    ViewData["Title"] = "Dashboard";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+    <div>
+        <h2 class="page-title">Dashboard</h2>
+        <p class="page-subtitle">Belfast Coal Mine – Equipment Checklist System</p>
+    </div>
+    @if (User.IsInRole("Admin") || User.IsInRole("Operator"))
+    {
+        <a href="/Checklist" class="btn btn-primary">▶ Start Checklist</a>
+    }
+</div>
+
+<div class="stat-grid">
+    <div class="stat-card info">
+        <div class="stat-label">Total Machines</div>
+        <div class="stat-value">@Model.TotalMachines</div>
+    </div>
+    <div class="stat-card go">
+        <div class="stat-label">Operational</div>
+        <div class="stat-value">@Model.GoMachines</div>
+    </div>
+    <div class="stat-card nogo">
+        <div class="stat-label">Immobilised</div>
+        <div class="stat-value">@Model.ImmobilisedMachines</div>
+    </div>
+    <div class="stat-card gobut">
+        <div class="stat-label">Open Defects</div>
+        <div class="stat-value">@Model.PendingDefects</div>
+    </div>
+    <div class="stat-card info">
+        <div class="stat-label">Today's Checks</div>
+        <div class="stat-value">@Model.TodaySubmissions</div>
+    </div>
+</div>
+
+<h3 style="font-size:18px;margin-bottom:12px">Recent Submissions</h3>
+
+@if (Model.RecentSubmissions?.Any() == true)
+{
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden">
+        <table class="data-table" data-paginate="5">
+            <thead>
+                <tr>
+                    <th>Machine</th>
+                    <th>Operator</th>
+                    <th>Status</th>
+                    <th>Time</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in Model.RecentSubmissions)
+                {
+                    var badgeClass = r.Status switch {
+                        ChecklistStatus.Go                => "badge-go",
+                        ChecklistStatus.GoButRepair24H    => "badge-gobut",
+                        ChecklistStatus.GoTillNextService => "badge-gobut",
+                        ChecklistStatus.NoGo              => "badge-nogo",
+                        _                                 => "badge-pending"
+                    };
+                    var badgeLabel = r.Status switch {
+                        ChecklistStatus.Go                => "GO",
+                        ChecklistStatus.GoButRepair24H    => "GO-BUT 24H",
+                        ChecklistStatus.GoTillNextService => "GO-BUT 30D",
+                        ChecklistStatus.NoGo              => "NO-GO",
+                        _                                 => "Pending"
+                    };
+                    <tr>
+                        <td>
+                            <strong>@r.MachineNumber</strong>
+                            <span style="color:var(--text-muted)"> @r.MachineName</span>
+                        </td>
+                        <td>@r.OperatorName</td>
+                        <td><span class="badge @badgeClass">@badgeLabel</span></td>
+                        <td style="color:var(--text-muted);font-size:13px;font-family:var(--font-mono)">
+                            @r.SubmittedAt.ToString("yyyy-MM-dd HH:mm")
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+else
+{
+    <div class="empty-state">
+        <div class="empty-icon">📋</div>
+        <h3>No submissions yet</h3>
+        <p>Checklists submitted by operators will appear here.</p>
+    </div>
+}

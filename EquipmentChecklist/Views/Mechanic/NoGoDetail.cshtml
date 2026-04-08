@@ -1,0 +1,111 @@
+@model EquipmentChecklist.Models.Machine
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = $"NO-GO Detail – {Model.MachineNumber}";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var lastSub  = Model.Submissions.OrderByDescending(s => s.SubmittedAt).FirstOrDefault();
+    var defItems = lastSub?.Items.Where(i => i.Status == ItemStatus.Defect)
+                         .OrderByDescending(i => i.TemplateItem.IsNoGoItem)
+                         .ToList() ?? new();
+}
+
+<a href="/Mechanic" class="btn btn-ghost" style="margin-bottom:16px">← Back to Defect Orders</a>
+
+<div class="immobilised-banner" style="margin-bottom:20px">
+    🚫 <strong>@Model.MachineNumber – @Model.MachineName</strong> is IMMOBILISED
+    @if (Model.ImmobilisedReason != null) { <span style="font-weight:400;margin-left:8px">– @Model.ImmobilisedReason</span> }
+</div>
+
+@if (lastSub != null)
+{
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:16px 20px;margin-bottom:20px;font-size:13px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px">
+            <div><span style="color:var(--text-muted)">Submitted:</span> @lastSub.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</div>
+            <div><span style="color:var(--text-muted)">Operator:</span> @lastSub.Operator.FullName</div>
+            <div><span style="color:var(--text-muted)">Shift:</span> @lastSub.Shift</div>
+            <div><span style="color:var(--text-muted)">KM/Hours:</span> @(lastSub.KmOrHourMeter?.ToString() ?? "–")</div>
+        </div>
+    </div>
+
+    <h3 style="font-size:16px;margin-bottom:12px">
+        Defects to Repair
+        <span style="font-size:13px;color:var(--red-nogo);font-family:var(--font-mono)">(@defItems.Count)</span>
+    </h3>
+
+    @if (!defItems.Any())
+    {
+        <div class="alert alert-warning">No defect items found on this submission.</div>
+    }
+    else
+    {
+        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:24px">
+            @foreach (var di in defItems)
+            {
+                var existingOrder = lastSub.DefectOrders.FirstOrDefault(d => d.SubmissionItemId == di.Id);
+                var orderStatus   = existingOrder?.RepairStatus ?? RepairStatus.Pending;
+                var (sc, sl) = orderStatus switch {
+                    RepairStatus.Pending       => ("badge-pending", "No Order Yet"),
+                    RepairStatus.InProgress    => ("badge-gobut",   "In Progress"),
+                    RepairStatus.AwaitingParts => ("badge-gobut",   "Awaiting Parts"),
+                    RepairStatus.Completed     => ("badge-go",      "Repaired"),
+                    _                          => ("badge-pending",  "Unknown")
+                };
+
+                <div style="background:var(--steel-mid);border:1px solid @(di.TemplateItem.IsNoGoItem ? "var(--red-nogo)" : "var(--steel-border)");border-radius:10px;padding:16px 20px">
+                    <div style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:10px">
+                        <div style="flex:1">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                                <strong style="font-size:14px">@di.TemplateItem.ItemName</strong>
+                                @if (di.TemplateItem.IsNoGoItem)
+                                {
+                                    <span class="badge badge-nogo" style="font-size:9px">⚠ CRITICAL</span>
+                                }
+                            </div>
+                            @if (di.Notes != null)
+                            {
+                                <p style="font-size:12px;color:var(--amber);font-style:italic;margin-bottom:6px">
+                                    Operator note: @di.Notes
+                                </p>
+                            }
+                            @if (existingOrder?.PartRequired != null)
+                            {
+                                <p style="font-size:12px;color:var(--text-muted)">
+                                    Part ordered: <strong>@existingOrder.PartRequired</strong>
+                                    @if (existingOrder.PartNumber != null) { <span style="color:var(--accent)"> #@existingOrder.PartNumber</span> }
+                                </p>
+                            }
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                            <span class="badge @sc">@sl</span>
+                            @if (existingOrder != null && orderStatus != RepairStatus.Completed)
+                            {
+                                <form method="post" action="/Mechanic/AddToCart" style="display:inline">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="defectOrderId" value="@existingOrder.Id" />
+                                    <input type="hidden" name="itemName"      value="@di.TemplateItem.ItemName" />
+                                    <button type="submit" class="btn btn-warning btn-sm">🛒 Add to Cart</button>
+                                </form>
+                                <a href="/Mechanic/OrderPart/@existingOrder.Id" class="btn btn-ghost btn-sm">📦 Order Part</a>
+                            }
+                            @if (orderStatus == RepairStatus.Completed)
+                            {
+                                <span style="font-size:12px;color:var(--green-go)">✓ Repair completed</span>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        <a href="/Mechanic/Cart" class="btn btn-primary">
+            🛒 Go to Parts Cart (@defItems.Count(di => {
+                var o = lastSub.DefectOrders.FirstOrDefault(d => d.SubmissionItemId == di.Id);
+                return o != null && o.RepairStatus == RepairStatus.Pending;
+            }) pending)
+        </a>
+    }
+}
+else
+{
+    <div class="alert alert-warning">No submissions found for this machine.</div>
+}

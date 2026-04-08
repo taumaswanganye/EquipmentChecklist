@@ -1,0 +1,85 @@
+@{
+    Layout = null;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign In – Belfast Equipment Checklist</title>
+    <link rel="stylesheet" href="~/css/site.css" />
+    <style>
+        body { display:flex; align-items:center; justify-content:center; min-height:100vh; }
+        .login-card {
+            width: 380px;
+            background: var(--steel-mid);
+            border: 1px solid var(--steel-border);
+            border-radius: 12px;
+            padding: 40px 36px;
+        }
+        .mine-logo { text-align:center; margin-bottom:28px; }
+        .mine-logo .logo-icon {
+            width:60px; height:60px;
+            background:var(--amber);
+            border-radius:12px;
+            display:inline-flex; align-items:center; justify-content:center;
+            font-size:30px; margin-bottom:12px;
+        }
+        .mine-logo h1 { font-size:22px; }
+        .mine-logo p { color:var(--text-muted); font-size:13px; margin-top:4px; }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="mine-logo">
+            <div class="logo-icon">⛏</div>
+            <h1>Belfast Coal Mine</h1>
+            <p>Digital Equipment Checklist System</p>
+        </div>
+
+        @if (!ViewData.ModelState.IsValid)
+        {
+            <div class="alert alert-danger" style="margin-bottom:16px">
+                Invalid email or password. Please try again.
+            </div>
+        }
+
+        @if (TempData["Error"] is string err)
+        {
+            <div class="alert alert-danger" style="margin-bottom:16px">@err</div>
+        }
+
+        <form method="post" action="/Account/Login">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="returnUrl" value="@ViewBag.ReturnUrl" />
+
+            <div class="form-group">
+                <label class="form-label">Employee Email</label>
+                <input type="email" name="email" class="form-control" required
+                       placeholder="employee@belfast.co.za" autofocus />
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Password</label>
+                <input type="password" name="password" class="form-control" required
+                       placeholder="••••••••" />
+            </div>
+
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+                <input type="checkbox" name="rememberMe" id="rememberMe"
+                       style="accent-color:var(--amber)" />
+                <label for="rememberMe" style="font-size:13px;cursor:pointer">Remember me</label>
+            </div>
+
+            <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:15px">
+                Sign In →
+            </button>
+        </form>
+
+        <p style="text-align:center;margin-top:24px;font-size:11px;color:var(--text-muted)">
+            MHSA · DMR · CPS Level 8/9 Compliant<br/>
+            Belfast Coal Mine Digital Checklist System
+        </p>
+    </div>
+</body>
+</html>

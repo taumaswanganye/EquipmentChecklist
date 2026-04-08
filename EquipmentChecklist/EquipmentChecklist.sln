@@ -1,0 +1,33 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.12.35527.113
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EquipmentChecklist", "EquipmentChecklist.csproj", "{0840588C-8CAC-4E21-8AD9-857A4A1A236D}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "OpenSource", "OpenSource", "{523E29AC-AFDE-40AB-A0C1-562AFFA876F6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EquipmentChecklist.Shared", "..\OpenSource\EquipmentChecklist.Shared\EquipmentChecklist.Shared.csproj", "{4A9D762A-3638-43AC-A638-3FB3CB2F6628}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0840588C-8CAC-4E21-8AD9-857A4A1A236D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0840588C-8CAC-4E21-8AD9-857A4A1A236D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0840588C-8CAC-4E21-8AD9-857A4A1A236D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0840588C-8CAC-4E21-8AD9-857A4A1A236D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4A9D762A-3638-43AC-A638-3FB3CB2F6628}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4A9D762A-3638-43AC-A638-3FB3CB2F6628}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4A9D762A-3638-43AC-A638-3FB3CB2F6628}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4A9D762A-3638-43AC-A638-3FB3CB2F6628}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{4A9D762A-3638-43AC-A638-3FB3CB2F6628} = {523E29AC-AFDE-40AB-A0C1-562AFFA876F6}
+	EndGlobalSection
+EndGlobal

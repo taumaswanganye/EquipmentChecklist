@@ -1,0 +1,98 @@
+@model List<EquipmentChecklist.Models.Machine>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Admin – Machines";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div class="stat-grid">
+    <div class="stat-card info">
+        <div class="stat-label">Total Machines</div>
+        <div class="stat-value">@ViewBag.MachineCount</div>
+    </div>
+    <div class="stat-card go">
+        <div class="stat-label">Employees</div>
+        <div class="stat-value">@ViewBag.EmployeeCount</div>
+    </div>
+    <div class="stat-card nogo">
+        <div class="stat-label">Pending Defects</div>
+        <div class="stat-value">@ViewBag.PendingDefects</div>
+    </div>
+</div>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <h2 style="font-size:20px">Machine Fleet</h2>
+    <a href="/Admin/CreateMachineWizard" class="btn btn-primary">+ Add Machine</a>
+</div>
+
+<table class="data-table" data-paginate="5">
+    <thead>
+        <tr>
+            <th>Machine #</th>
+            <th>Name / Type</th>
+            <th>Status</th>
+            <th>Template</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var m in Model)
+        {
+            <tr>
+                <td><strong>@m.MachineNumber</strong></td>
+                <td>
+                    @m.MachineName
+                    <div style="font-size:12px;color:var(--text-muted)">@m.Type</div>
+                </td>
+                <td>
+                    @if (m.IsImmobilised)
+                    {
+                        <span class="badge badge-nogo">🚫 Immobilised</span>
+                    }
+                    else
+                    {
+                        <span class="badge badge-go">✓ Active</span>
+                    }
+                </td>
+                <td style="color:var(--text-muted);font-size:13px">@(m.Template?.Name ?? "–")</td>
+                <td>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap">
+                        <a href="/Admin/EditMachine/@m.Id" class="btn btn-ghost" style="padding:5px 12px;font-size:12px">✏ Edit</a>
+                        <a href="/Admin/ManageItems/@m.Id" class="btn btn-ghost" style="padding:5px 12px;font-size:12px">📋 Items</a>
+                        @if (m.IsImmobilised)
+                        {
+                            <form method="post" action="/Admin/ClearImmobilisation/@m.Id" style="display:inline">
+                                @Html.AntiForgeryToken()
+                                <button type="submit" class="btn btn-success" style="padding:5px 12px;font-size:12px">✓ Clear</button>
+                            </form>
+                        }
+                        else
+                        {
+                            <button onclick="immobilise(@m.Id)" class="btn btn-danger" style="padding:5px 12px;font-size:12px">
+                                🚫 Immobilise
+                            </button>
+                        }
+                    </div>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+<form id="immobiliseForm" method="post" style="display:none">
+    @Html.AntiForgeryToken()
+    <input type="hidden" id="immobiliseReason" name="reason" />
+</form>
+
+@section Scripts {
+<script>
+function immobilise(machineId) {
+    const reason = prompt('Enter reason for immobilisation:');
+    if (!reason) return;
+    const form = document.getElementById('immobiliseForm');
+    form.action = '/Admin/ImmobiliseMachine/' + machineId;
+    document.getElementById('immobiliseReason').value = reason;
+    form.submit();
+}
+</script>
+}

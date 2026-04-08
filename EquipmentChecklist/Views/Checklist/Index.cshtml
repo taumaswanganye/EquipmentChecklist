@@ -1,0 +1,118 @@
+@model List<EquipmentChecklist.Models.MachineAssignment>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "My Machines";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var stats = ViewBag.Stats as EquipmentChecklist.DTOs.DashboardStatsDto;
+}
+
+@if (stats != null)
+{
+    <div class="stat-grid">
+        <div class="stat-card info">
+            <div class="stat-label">Fleet Machines</div>
+            <div class="stat-value" id="stat-total">@stats.TotalMachines</div>
+        </div>
+        <div class="stat-card go">
+            <div class="stat-label">Operational</div>
+            <div class="stat-value" id="stat-go">@stats.GoMachines</div>
+        </div>
+        <div class="stat-card nogo">
+            <div class="stat-label">Immobilised</div>
+            <div class="stat-value" id="stat-nogo">@stats.ImmobilisedMachines</div>
+        </div>
+        <div class="stat-card gobut">
+            <div class="stat-label">Pending Defects</div>
+            <div class="stat-value" id="stat-defects">@stats.PendingDefects</div>
+        </div>
+        <div class="stat-card info">
+            <div class="stat-label">Today's Submissions</div>
+            <div class="stat-value" id="stat-today">@stats.TodaySubmissions</div>
+        </div>
+    </div>
+}
+
+<h2 style="margin-bottom:16px;font-size:20px">My Assigned Machines</h2>
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:56px;margin-bottom:12px">🚜</div>
+        <p>No machines assigned to you yet.<br/>Contact your supervisor or admin.</p>
+    </div>
+}
+else
+{
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
+        @foreach (var a in Model)
+        {
+            <div style="background:var(--steel-mid);border:1px solid @(a.Machine.IsImmobilised ? "var(--red-nogo)" : "var(--steel-border)");border-radius:10px;padding:20px;position:relative;overflow:hidden">
+                @if (a.Machine.IsImmobilised)
+                {
+                    <div style="position:absolute;top:0;left:0;right:0;background:var(--red-dark);text-align:center;padding:4px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em">
+                        🚫 IMMOBILISED
+                    </div>
+                    <div style="margin-top:24px"></div>
+                }
+
+                <h3 style="font-size:20px;margin-bottom:4px">@a.Machine.MachineNumber</h3>
+                <p style="color:var(--text-muted);font-size:13px;margin-bottom:4px">@a.Machine.MachineName</p>
+                <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px">@a.Machine.Type</p>
+
+                @if (a.Machine.IsImmobilised)
+                {
+                    <p style="font-size:12px;color:var(--red-nogo);margin-bottom:14px">@a.Machine.ImmobilisedReason</p>
+                    <button disabled class="btn btn-danger" style="width:100%;opacity:.5;cursor:not-allowed">
+                        Machine Immobilised
+                    </button>
+                }
+                else
+                {
+                    <a href="/Checklist/Start/@a.MachineId" class="btn btn-success" style="width:100%;justify-content:center">
+                        ▶ Start Pre-Use Check
+                    </a>
+                }
+            </div>
+        }
+    </div>
+}
+
+@if (stats?.RecentSubmissions?.Any() == true)
+{
+    <h2 style="margin-top:32px;margin-bottom:16px;font-size:20px">Recent Submissions</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Machine</th>
+                <th>Operator</th>
+                <th>Status</th>
+                <th>Time</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in stats.RecentSubmissions)
+            {
+                var badgeClass = r.Status switch {
+                    ChecklistStatus.Go                => "badge-go",
+                    ChecklistStatus.GoButRepair24H    => "badge-gobut",
+                    ChecklistStatus.GoTillNextService => "badge-gobut",
+                    ChecklistStatus.NoGo              => "badge-nogo",
+                    _                                 => "badge-pending"
+                };
+                var badgeLabel = r.Status switch {
+                    ChecklistStatus.Go                => "GO",
+                    ChecklistStatus.GoButRepair24H    => "GO-BUT 24H",
+                    ChecklistStatus.GoTillNextService => "GO-BUT 30D",
+                    ChecklistStatus.NoGo              => "NO-GO",
+                    _                                 => "Pending"
+                };
+                <tr>
+                    <td><strong>@r.MachineNumber</strong> @r.MachineName</td>
+                    <td>@r.OperatorName</td>
+                    <td><span class="badge @badgeClass">@badgeLabel</span></td>
+                    <td style="color:var(--text-muted);font-size:13px">@r.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}

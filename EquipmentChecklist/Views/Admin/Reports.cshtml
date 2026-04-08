@@ -1,0 +1,102 @@
+@model List<EquipmentChecklist.Models.ChecklistSubmission>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Reports";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:16px 20px;margin-bottom:20px">
+    <form method="get" action="/Admin/Reports" style="display:flex;gap:12px;align-items:flex-end">
+        <div class="form-group" style="margin:0">
+            <label class="form-label">From</label>
+            <input type="date" name="from" class="form-control"
+                   value="@(((DateTime?)ViewBag.From)?.ToString("yyyy-MM-dd"))" />
+        </div>
+        <div class="form-group" style="margin:0">
+            <label class="form-label">To</label>
+            <input type="date" name="to" class="form-control"
+                   value="@(((DateTime?)ViewBag.To)?.ToString("yyyy-MM-dd"))" />
+        </div>
+        <button type="submit" class="btn btn-primary">Filter</button>
+    </form>
+</div>
+
+<!-- Summary -->
+<div class="stat-grid" style="margin-bottom:24px">
+    <div class="stat-card info">
+        <div class="stat-label">Total Submissions</div>
+        <div class="stat-value">@Model.Count</div>
+    </div>
+    <div class="stat-card go">
+        <div class="stat-label">GO</div>
+        <div class="stat-value">@Model.Count(s => s.Status == ChecklistStatus.Go)</div>
+    </div>
+    <div class="stat-card gobut">
+        <div class="stat-label">GO-BUT</div>
+        <div class="stat-value">@Model.Count(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService)</div>
+    </div>
+    <div class="stat-card nogo">
+        <div class="stat-label">NO-GO</div>
+        <div class="stat-value">@Model.Count(s => s.Status == ChecklistStatus.NoGo)</div>
+    </div>
+</div>
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">📋</div>
+        <p>No submissions found for this date range.</p>
+    </div>
+}
+else
+{
+    <table class="data-table" data-paginate="5">
+        <thead>
+            <tr>
+                <th>Date / Time</th>
+                <th>Machine</th>
+                <th>Operator</th>
+                <th>Shift</th>
+                <th>Status</th>
+                <th>Defects</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var s in Model)
+            {
+                var badgeClass = s.Status switch {
+                    ChecklistStatus.Go                => "badge-go",
+                    ChecklistStatus.GoButRepair24H    => "badge-gobut",
+                    ChecklistStatus.GoTillNextService => "badge-gobut",
+                    ChecklistStatus.NoGo              => "badge-nogo",
+                    _                                 => "badge-pending"
+                };
+                var badgeLabel = s.Status switch {
+                    ChecklistStatus.Go                => "GO",
+                    ChecklistStatus.GoButRepair24H    => "GO-BUT 24H",
+                    ChecklistStatus.GoTillNextService => "GO-BUT 30D",
+                    ChecklistStatus.NoGo              => "NO-GO",
+                    _                                 => "Pending"
+                };
+                <tr>
+                    <td style="font-size:13px;color:var(--text-muted)">
+                        @s.SubmittedAt.ToString("yyyy-MM-dd HH:mm")
+                    </td>
+                    <td>
+                        <strong>@s.Machine.MachineNumber</strong>
+                        <div style="font-size:12px;color:var(--text-muted)">@s.Machine.MachineName</div>
+                    </td>
+                    <td>@s.Operator.FullName</td>
+                    <td style="color:var(--text-muted);font-size:13px">@s.Shift</td>
+                    <td><span class="badge @badgeClass">@badgeLabel</span></td>
+                    <td style="color:var(--red-nogo);font-weight:600">
+                        @{
+                            var defects = s.Items.Count(i => i.Status == ItemStatus.Defect);
+                        }
+                        @(defects > 0 ? defects.ToString() : "–")
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}

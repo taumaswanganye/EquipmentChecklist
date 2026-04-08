@@ -1,0 +1,50 @@
+@model List<EquipmentChecklist.Models.Machine>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "NO-GO Machines";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<h2 style="margin-bottom:16px;font-size:20px">Immobilised Machines</h2>
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:56px;margin-bottom:12px">✅</div>
+        <h2 style="font-size:24px">All machines operational!</h2>
+        <p style="margin-top:8px">No machines are currently immobilised.</p>
+    </div>
+}
+else
+{
+    <div class="alert alert-danger" style="margin-bottom:20px">
+        🚫 <strong>@Model.Count machine(s) immobilised.</strong>
+        These machines must not be operated until repaired and cleared.
+    </div>
+
+    @foreach (var m in Model)
+    {
+        <div class="immobilised-banner" style="flex-direction:column;align-items:start;gap:8px;margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;width:100%">
+                <div>
+                    <strong style="font-size:16px">@m.MachineNumber – @m.MachineName</strong>
+                    <p style="font-size:13px;margin-top:4px;color:#fca5a5">@m.ImmobilisedReason</p>
+                </div>
+                <span class="badge badge-nogo">🚫 NO-GO</span>
+            </div>
+
+            @{
+                var defectOrders = m.Submissions
+                    .SelectMany(s => s.DefectOrders)
+                    .Where(d => d.RepairStatus != RepairStatus.Completed)
+                    .ToList();
+            }
+            @if (defectOrders.Any())
+            {
+                <div style="font-size:12px;color:#fca5a5">
+                    @defectOrders.Count open defect order(s) pending repair.
+                </div>
+            }
+        </div>
+    }
+}

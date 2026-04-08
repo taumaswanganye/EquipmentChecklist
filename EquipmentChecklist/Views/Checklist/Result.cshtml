@@ -1,0 +1,152 @@
+@model EquipmentChecklist.Models.ChecklistSubmission
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Checklist Result";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var css = Model.Status switch {
+        ChecklistStatus.Go                => "go",
+        ChecklistStatus.GoButRepair24H    => "gobut",
+        ChecklistStatus.GoTillNextService => "gobut",
+        ChecklistStatus.NoGo              => "nogo",
+        _                                 => "pending"
+    };
+    var icon = Model.Status switch {
+        ChecklistStatus.Go   => "✅",
+        ChecklistStatus.NoGo => "🚫",
+        _                    => "⚠️"
+    };
+    var label = Model.Status switch {
+        ChecklistStatus.Go                => "GO – Machine Cleared",
+        ChecklistStatus.GoButRepair24H    => "GO-BUT – Repair Within 24 Hours",
+        ChecklistStatus.GoTillNextService => "GO-BUT – Repair By Next Service",
+        ChecklistStatus.NoGo              => "NO-GO – Machine Immobilised",
+        _                                 => "Pending Review"
+    };
+    var defects = Model.Items.Where(i => i.Status == ItemStatus.Defect).ToList();
+}
+
+<!-- Result banner -->
+<div class="result-card @css">
+    <div class="result-icon">@icon</div>
+    <div class="result-text">@label</div>
+    <p style="margin-top:10px;color:var(--text-muted)">
+        @Model.Machine.MachineName (#@Model.Machine.MachineNumber) ·
+        @Model.SubmittedAt.ToString("yyyy-MM-dd HH:mm")
+    </p>
+</div>
+
+@if (Model.Status == ChecklistStatus.NoGo)
+{
+    <div class="immobilised-banner" style="margin-bottom:20px">
+        🚫 This machine has been <strong>IMMOBILISED</strong>.
+        Do NOT operate until repairs are completed and cleared by a mechanic and admin.
+    </div>
+}
+@if (Model.Status is ChecklistStatus.GoButRepair24H or ChecklistStatus.GoTillNextService)
+{
+    <div class="alert alert-warning" style="margin-bottom:20px">
+        ⚠ <strong>Supervisor sign-off required.</strong>
+        A supervisor must review and approve this status before work continues.
+    </div>
+}
+
+<!-- PDF Actions -->
+<div style="display:flex;gap:10px;margin-bottom:24px;flex-wrap:wrap">
+    <a href="/Checklist/ViewPdf/@Model.Id" target="_blank"
+       class="btn btn-primary">
+        📄 View PDF Report
+    </a>
+    <a href="/Checklist/Pdf/@Model.Id"
+       class="btn btn-ghost">
+        ⬇ Download PDF
+    </a>
+    <a href="/Checklist" class="btn btn-ghost">← Back to My Machines</a>
+    <a href="/Checklist/History" class="btn btn-ghost">View History</a>
+</div>
+
+<!-- Checklist summary -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:18px">
+        <p style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:12px">Submission Details</p>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px">
+            <span style="color:var(--text-muted)">Machine</span>
+            <span><strong>@Model.Machine.MachineNumber</strong> – @Model.Machine.MachineName</span>
+            <span style="color:var(--text-muted)">Operator</span>
+            <span>@Model.Operator.FullName</span>
+            <span style="color:var(--text-muted)">Date/Time</span>
+            <span style="font-family:var(--font-mono)">@Model.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</span>
+            <span style="color:var(--text-muted)">Shift</span>
+            <span>@Model.Shift</span>
+            <span style="color:var(--text-muted)">KM/Hours</span>
+            <span style="font-family:var(--font-mono)">@(Model.KmOrHourMeter?.ToString() ?? "–")</span>
+        </div>
+    </div>
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:18px">
+        <p style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:12px">Inspection Summary</p>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px">
+            <span style="color:var(--text-muted)">Total Items</span>
+            <span>@Model.Items.Count</span>
+            <span style="color:var(--text-muted)">In Order</span>
+            <span style="color:var(--green-go)">✓ @Model.Items.Count(i => i.Status == ItemStatus.InOrder)</span>
+            <span style="color:var(--text-muted)">Defects</span>
+            <span style="color:@(defects.Any() ? "var(--red-nogo)" : "var(--green-go)")">@(defects.Any() ? $"✕ {defects.Count}" : "✓ None")</span>
+            <span style="color:var(--text-muted)">Declaration</span>
+            <span style="color:var(--green-go)">✓ Signed</span>
+        </div>
+    </div>
+</div>
+
+<!-- Defects -->
+@if (defects.Any())
+{
+    <h3 style="font-size:18px;margin-bottom:12px">
+        Defects Found
+        <span style="font-size:14px;color:var(--red-nogo);font-family:var(--font-mono)">(@defects.Count)</span>
+    </h3>
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden;margin-bottom:24px">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Item</th>
+                    <th>Notes / Voice Transcription</th>
+                    <th>Severity</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in defects)
+                {
+                    <tr>
+                        <td>@item.TemplateItem.ItemName</td>
+                        <td style="color:var(--text-muted);font-style:@(item.Notes != null ? "normal" : "italic")">
+                            @(item.Notes ?? "No notes recorded")
+                        </td>
+                        <td>
+                            @if (item.TemplateItem.IsNoGoItem)
+                            {
+                                <span class="badge badge-nogo">⚠ Critical / NO-GO</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-gobut">⚠ Defect</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+else
+{
+    <div class="alert alert-success" style="margin-bottom:24px">
+        ✓ All @Model.Items.Count checklist items are in order. Machine cleared for operation.
+    </div>
+}
+
+@if (Model.OperatorRemarks != null)
+{
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:16px;margin-bottom:24px">
+        <p style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px">Operator Remarks</p>
+        <p style="font-size:14px">@Model.OperatorRemarks</p>
+    </div>
+}

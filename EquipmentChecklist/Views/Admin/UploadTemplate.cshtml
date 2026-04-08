@@ -1,0 +1,106 @@
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Upload Checklist Template";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var machines = ViewBag.Machines as List<Machine> ?? new();
+}
+
+<div style="max-width:640px">
+    <a href="/Admin" class="btn btn-ghost" style="margin-bottom:16px">← Back to Fleet</a>
+
+    <h2 class="page-title" style="margin-bottom:4px">Upload Checklist Template</h2>
+    <p class="page-subtitle" style="margin-bottom:24px">
+        Upload an Excel file (.xlsx) to create or replace a machine's checklist template.
+    </p>
+
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:28px;margin-bottom:20px">
+
+        <form method="post" action="/Admin/UploadTemplate"
+              enctype="multipart/form-data">
+            @Html.AntiForgeryToken()
+
+            <div class="form-group">
+                <label class="form-label">Select Machine</label>
+                <select name="machineId" class="form-control" required>
+                    <option value="">-- Choose Machine --</option>
+                    @foreach (var m in machines)
+                    {
+                        <option value="@m.Id">@m.MachineNumber – @m.MachineName</option>
+                    }
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Excel File (.xlsx)</label>
+                <input type="file" name="file" class="form-control"
+                       accept=".xlsx,.xls" required
+                       style="padding:7px 12px;cursor:pointer" />
+                <p style="font-size:12px;color:var(--text-muted);margin-top:6px">
+                    Checklist items should be in <strong>Column A</strong>, starting from <strong>Row 4</strong>
+                    (rows 1–3 are treated as headers and skipped).
+                </p>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--steel-light);border:1px solid var(--steel-border);border-radius:8px;margin-bottom:16px">
+                <input type="checkbox" name="replaceExisting" id="replaceExisting"
+                       value="true" style="width:16px;height:16px;accent-color:var(--amber)" />
+                <label for="replaceExisting" style="cursor:pointer;font-size:13px">
+                    <strong style="color:var(--amber)">⚠ Replace existing template</strong> —
+                    <span style="color:var(--text-muted)">
+                        ticking this will delete the current template and all its items for this machine
+                    </span>
+                </label>
+            </div>
+
+            <div style="display:flex;gap:12px">
+                <button type="submit" class="btn btn-primary">📤 Upload Template</button>
+                <a href="/Admin" class="btn btn-ghost">Cancel</a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Format Guide -->
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px">
+        <h3 style="font-size:15px;margin-bottom:14px">📋 Expected Excel Format</h3>
+
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Row</th>
+                    <th>Column A</th>
+                    <th>Purpose</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="font-family:var(--font-mono)">1</td>
+                    <td style="color:var(--text-muted)">Machine name / title</td>
+                    <td><span class="badge badge-pending">Skipped</span></td>
+                </tr>
+                <tr>
+                    <td style="font-family:var(--font-mono)">2</td>
+                    <td style="color:var(--text-muted)">Date / Operator field</td>
+                    <td><span class="badge badge-pending">Skipped</span></td>
+                </tr>
+                <tr>
+                    <td style="font-family:var(--font-mono)">3</td>
+                    <td style="color:var(--text-muted)">Column headers</td>
+                    <td><span class="badge badge-pending">Skipped</span></td>
+                </tr>
+                <tr>
+                    <td style="font-family:var(--font-mono)">4+</td>
+                    <td><strong>CHECKLIST ITEM NAME</strong></td>
+                    <td><span class="badge badge-go">Imported</span></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div style="margin-top:14px;font-size:12px;color:var(--text-muted);line-height:1.7">
+            <strong style="color:var(--text-primary)">Auto-detected NO-GO items</strong> — items containing these keywords are
+            automatically flagged as critical and will immobilise the machine if defective:<br/>
+            <span style="font-family:var(--font-mono);color:var(--red-nogo)">
+                OPERATOR LICENCE · SEAT BELT · BRAKES · BRAKE TEST · FIRE EXTINGUISHER · KEY CONTROL · EMERGENCY STOP
+            </span>
+        </div>
+    </div>
+</div>

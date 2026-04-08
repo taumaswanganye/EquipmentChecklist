@@ -1,0 +1,115 @@
+@model EquipmentChecklist.Controllers.WizardMachineData
+@{
+    ViewData["Title"] = "Create Vehicle/Machine – Save";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="margin-bottom:6px">
+    <h2 style="font-size:22px;font-weight:700;color:var(--text-main);margin:0">CREATE VEHICLE/MACHINE</h2>
+    <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">Vehicle/Machine</p>
+</div>
+
+@await Html.PartialAsync("_WizardProgress", 3)
+
+<div style="padding-top:16px;max-width:900px">
+
+    <!-- Machine summary card -->
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden;margin-bottom:16px">
+        <div style="padding:12px 20px;background:var(--steel-dark);border-bottom:1px solid var(--steel-border)">
+            <h3 style="margin:0;font-size:14px;font-weight:700;color:var(--accent)">Machine / Vehicle</h3>
+        </div>
+        <div style="padding:16px 20px;display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+            <div>
+                <div style="font-size:11px;color:var(--text-muted);font-weight:700;margin-bottom:3px">NAME</div>
+                <div style="font-size:14px;font-weight:700">@Model.MachineName</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:var(--text-muted);font-weight:700;margin-bottom:3px">FG/NR</div>
+                <div style="font-size:14px;font-weight:700">@Model.MachineNumber</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:var(--text-muted);font-weight:700;margin-bottom:3px">TYPE</div>
+                <div style="font-size:14px">@((EquipmentChecklist.Models.MachineType)Model.MachineType)</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:var(--text-muted);font-weight:700;margin-bottom:3px">DESCRIPTION</div>
+                <div style="font-size:13px;color:var(--text-muted)">@(string.IsNullOrEmpty(Model.Description) ? "–" : Model.Description)</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Items summary -->
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden;margin-bottom:20px">
+        <div style="padding:12px 20px;background:var(--steel-dark);border-bottom:1px solid var(--steel-border)">
+            <h3 style="margin:0;font-size:14px;font-weight:700">
+                Checklist Items
+                <span style="font-size:12px;font-weight:400;color:var(--text-muted);margin-left:6px">(@Model.Items.Count item(s))</span>
+            </h3>
+        </div>
+
+        @if (!Model.Items.Any())
+        {
+            <div style="padding:20px;text-align:center;color:var(--text-muted);font-style:italic">
+                No checklist items defined. Machine will use default template items.
+            </div>
+        }
+        else
+        {
+            <table class="data-table" style="font-size:12px">
+                <thead>
+                    <tr>
+                        <th style="width:40px">#</th>
+                        <th>Name</th>
+                        <th style="width:60px">Icon</th>
+                        <th style="width:70px">Critical</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (int i = 0; i < Model.Items.Count; i++)
+                    {
+                        var item = Model.Items[i];
+                        <tr>
+                            <td style="color:var(--text-muted)">@(i+1)</td>
+                            <td><strong>@item.ItemName</strong></td>
+                            <td>
+                                @if (!string.IsNullOrEmpty(item.IconPath))
+                                {
+                                    <img src="/@item.IconPath" alt=""
+                                         style="width:32px;height:32px;object-fit:contain;border:1px solid var(--steel-border);border-radius:4px;background:#fff;padding:2px" />
+                                }
+                                else
+                                {
+                                    <span style="color:var(--text-muted)">–</span>
+                                }
+                            </td>
+                            <td>
+                                <span class="badge @(item.IsNoGoItem ? "badge-nogo" : "badge-go")" style="font-size:10px">
+                                    @(item.IsNoGoItem ? "YES" : "NO")
+                                </span>
+                            </td>
+                            <td style="color:var(--text-muted)">@(item.StatusLabel is { Length:>0 } s ? s : "–")</td>
+                            <td style="color:var(--text-muted);font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                                title="@item.Action">
+                                @(item.Action is { Length:>0 } a ? a[..Math.Min(a.Length,60)] + (a.Length>60?"…":"") : "–")
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+
+    <!-- Back / Save -->
+    <div style="display:flex;justify-content:space-between;align-items:center">
+        <a href="/Admin/CreateMachineWizard/Step2" class="btn btn-ghost" style="min-width:100px">← Back</a>
+
+        <form method="post" action="/Admin/CreateMachineWizard/Save">
+            @Html.AntiForgeryToken()
+            <button type="submit" class="btn btn-primary" style="min-width:160px;padding:10px 24px;font-size:14px">
+                💾 Save the Vehicle
+            </button>
+        </form>
+    </div>
+</div>

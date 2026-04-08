@@ -1,0 +1,115 @@
+@model List<EquipmentChecklist.Models.DefectOrder>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Order Parts";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var cart    = ViewBag.Cart    as List<EquipmentChecklist.Controllers.CartItem>    ?? new();
+    var cartIds = ViewBag.CartIds as HashSet<int>      ?? new();
+}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h2 class="page-title">Order Parts</h2>
+        <p class="page-subtitle">Select defective items from the list and add them to your order.</p>
+    </div>
+    @if (cart.Any())
+    {
+        <a href="/Admin/Mechanic/Checkout" class="btn btn-primary" style="font-size:14px;padding:10px 22px">
+            🛒 Checkout (@cart.Count item@(cart.Count > 1 ? "s" : ""))
+        </a>
+    }
+</div>
+
+@if (!Model.Any())
+{
+    <div class="empty-state">
+        <div class="empty-icon">✅</div>
+        <h3>No open defects</h3>
+        <p>All repairs are up to date. No parts need ordering.</p>
+    </div>
+}
+else
+{
+    <!-- Group by machine -->
+    @foreach (var grp in Model.GroupBy(d => d.Submission.Machine.Id))
+    {
+        var machine  = grp.First().Submission.Machine;
+        var isNoGo   = machine.IsImmobilised;
+
+        <div style="background:var(--steel-mid);border:1px solid @(isNoGo ? "var(--red-nogo)" : "var(--steel-border)");border-radius:10px;overflow:hidden;margin-bottom:16px">
+            <!-- Machine header -->
+            <div style="padding:12px 20px;background:@(isNoGo ? "var(--red-dark)" : "var(--steel-dark)");display:flex;justify-content:space-between;align-items:center">
+                <div>
+                    <strong style="font-size:15px">@machine.MachineNumber</strong>
+                    <span style="color:var(--text-muted);margin-left:8px;font-size:13px">@machine.MachineName</span>
+                    @if (isNoGo)
+                    {
+                        <span class="badge badge-nogo" style="margin-left:8px;font-size:10px">🚫 NO-GO</span>
+                    }
+                </div>
+                <span style="font-size:12px;color:var(--text-muted)">@grp.Count() open defect(s)</span>
+            </div>
+
+            <!-- Defect rows -->
+            @foreach (var d in grp)
+            {
+                var inCart = cartIds.Contains(d.Id);
+                var (sc, sl) = d.RepairStatus switch {
+                    RepairStatus.Pending       => ("badge-pending", "Pending"),
+                    RepairStatus.AwaitingParts => ("badge-gobut",   "Awaiting Parts"),
+                    RepairStatus.InProgress    => ("badge-gobut",   "In Progress"),
+                    _                          => ("badge-pending",  "Unknown")
+                };
+                <div style="display:flex;align-items:center;gap:12px;padding:12px 20px;border-top:1px solid var(--steel-border);flex-wrap:wrap">
+                    <div style="flex:1;min-width:200px">
+                        <div style="font-size:13px;font-weight:600">
+                            @d.SubmissionItem.TemplateItem.ItemName
+                            @if (d.SubmissionItem.TemplateItem.IsNoGoItem)
+                            {
+                                <span style="font-size:9px;color:var(--red-nogo);margin-left:4px">⚠ CRITICAL</span>
+                            }
+                        </div>
+                        @if (d.SubmissionItem.Notes != null)
+                        {
+                            <div style="font-size:11px;color:var(--amber);font-style:italic;margin-top:2px">
+                                Defect note: @d.SubmissionItem.Notes
+                            </div>
+                        }
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+                            Reported: @d.CreatedAt.ToString("yyyy-MM-dd HH:mm") · Operator: @d.Submission.Operator.FullName
+                        </div>
+                    </div>
+                    <span class="badge @sc">@sl</span>
+                    @if (inCart)
+                    {
+                        <span style="font-size:12px;color:var(--green-go);font-weight:600">✓ In cart</span>
+                        <form method="post" action="/Admin/Mechanic/RemoveFromCart">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="defectOrderId" value="@d.Id" />
+                            <button type="submit" class="btn btn-ghost btn-sm" style="color:var(--red-nogo);border-color:var(--red-dark)">✕ Remove</button>
+                        </form>
+                    }
+                    else
+                    {
+                        <form method="post" action="/Admin/Mechanic/AddToCart">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="defectOrderId" value="@d.Id" />
+                            <input type="hidden" name="itemName"      value="@d.SubmissionItem.TemplateItem.ItemName" />
+                            <button type="submit" class="btn btn-ghost btn-sm">🛒 Add to Order</button>
+                        </form>
+                    }
+                </div>
+            }
+        </div>
+    }
+
+    @if (cart.Any())
+    {
+        <div style="position:sticky;bottom:20px;display:flex;justify-content:flex-end;padding-top:16px">
+            <a href="/Admin/Mechanic/Checkout"
+               class="btn btn-primary" style="font-size:14px;padding:12px 28px;box-shadow:0 4px 20px rgba(245,158,11,0.4)">
+                🛒 Proceed to Checkout (@cart.Count item@(cart.Count > 1 ? "s" : ""))
+            </a>
+        </div>
+    }
+}

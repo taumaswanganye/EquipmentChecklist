@@ -1,0 +1,313 @@
+@using Microsoft.AspNetCore.Identity
+@using EquipmentChecklist.Models
+@inject SignInManager<ApplicationUser> SignInManager
+@inject UserManager<ApplicationUser> UserMgr
+@{
+    ApplicationUser? currentUser = null;
+    if (SignInManager.IsSignedIn(User))
+        currentUser = await UserMgr.GetUserAsync(User);
+
+    var initials = currentUser?.FullName?.Split(' ')
+        .Where(w => w.Length > 0).Take(2)
+        .Select(w => w[0].ToString().ToUpper())
+        .Aggregate("", (a, b) => a + b) ?? "?";
+
+    var isAdmin      = User.IsInRole("Admin");
+    var isSupervisor = User.IsInRole("Supervisor") || isAdmin;
+    var isMechanic   = User.IsInRole("Mechanic")   || isAdmin;
+    var isOperator   = User.IsInRole("Operator");
+    var path         = Context.Request.Path.Value ?? "";
+}
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@(ViewData["Title"] != null ? $"{ViewData["Title"]} – Belfast" : "Belfast Equipment Checklist")</title>
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛏</text></svg>" />
+</head>
+<body>
+<div class="app-shell">
+
+    <!-- ── Top Bar ── -->
+    <header class="topbar">
+        <div class="topbar-brand">
+            <div class="brand-icon">⛏</div>
+            <div>
+                <div class="brand-name">Belfast</div>
+                <div class="brand-sub">Equipment Checklist</div>
+            </div>
+        </div>
+
+        <div class="topbar-center">
+            <span style="font-size:13px;color:var(--text-muted)">
+                @DateTime.Now.ToString("dddd, dd MMMM yyyy")
+            </span>
+        </div>
+
+        <div class="topbar-right">
+            <!-- Online/Offline pill -->
+            <div class="sync-pill" id="syncStatus">
+                <div class="sync-dot"></div>
+                Online
+            </div>
+
+            <!-- Theme toggle -->
+            <button class="theme-toggle" id="themeToggle" title="Toggle light/dark theme">
+                <span id="themeIcon">☀️</span>
+            </button>
+
+            @if (currentUser != null)
+            {
+                <!-- User dropdown -->
+                <div class="user-dropdown-wrap" id="userDropWrap">
+                    <button class="user-chip" id="userDropBtn" type="button">
+                        <div class="user-avatar">@initials</div>
+                        <div>
+                            <div class="user-name">@currentUser.FullName</div>
+                            <div class="user-role">@currentUser.Role</div>
+                        </div>
+                        <span style="margin-left:6px;font-size:11px;color:var(--text-muted)">▾</span>
+                    </button>
+                    <div class="user-dropdown" id="userDropMenu">
+                        <div class="user-drop-header">
+                            <div class="user-drop-name">@currentUser.FullName</div>
+                            <div class="user-drop-email">@currentUser.Email</div>
+                        </div>
+                        <a href="/Account/ChangePassword" class="user-drop-item">
+                            🔒 Change Password
+                        </a>
+                        <a href="/Checklist/History" class="user-drop-item">
+                            📋 My Submissions
+                        </a>
+                        <div class="user-drop-divider"></div>
+                        <form method="post" action="/Account/Logout">
+                            @Html.AntiForgeryToken()
+                            <button type="submit" class="user-drop-item user-drop-logout">
+                                ↩ Sign Out
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            }
+        </div>
+    </header>
+
+    <!-- ── Sidebar ── -->
+    <nav class="sidebar">
+        @if (SignInManager.IsSignedIn(User))
+        {
+            <div class="nav-section-label">Main</div>
+            <a href="/" class="nav-item @(path == "/" ? "active" : "")">
+                <span class="nav-icon">📊</span> Dashboard
+            </a>
+
+            @if (isOperator)
+            {
+                <a href="/Checklist" class="nav-item @(path=="/Checklist"||path.StartsWith("/Checklist/Start")||path.StartsWith("/Checklist/Result") ? "active" : "")">
+                    <span class="nav-icon">✅</span> My Machines
+                </a>
+            }
+
+            @if (isOperator || isSupervisor || isMechanic)
+            {
+                <a href="/Checklist/History" class="nav-item @(path.StartsWith("/Checklist/History") ? "active" : "")">
+                    <span class="nav-icon">📋</span> My Submissions
+                </a>
+            }
+
+            @if (isSupervisor)
+            {
+                <div class="nav-divider"></div>
+                <div class="nav-section-label">Supervisor</div>
+                <a href="/Supervisor" class="nav-item @(path=="/Supervisor"?"active":"")">
+                    <span class="nav-icon">✍</span> Sign-Off Queue
+                </a>
+                <a href="/Supervisor/NoGoMachines" class="nav-item @(path.StartsWith("/Supervisor/NoGo")?"active":"")">
+                    <span class="nav-icon">🚫</span> NO-GO Machines
+                </a>
+            }
+
+            @if (isMechanic)
+            {
+                <div class="nav-divider"></div>
+                <div class="nav-section-label">Mechanic</div>
+                <a href="/Mechanic" class="nav-item @(path=="/Mechanic"?"active":"")">
+                    <span class="nav-icon">🔧</span> Defect Orders
+                </a>
+                <a href="/Mechanic/Cart" class="nav-item @(path.StartsWith("/Mechanic/Cart")?"active":"")">
+                    <span class="nav-icon">🛒</span> Parts Cart
+                </a>
+            }
+
+            @if (isAdmin)
+            {
+                <div class="nav-divider"></div>
+                <div class="nav-section-label">Administration</div>
+                <a href="/Admin" class="nav-item @(path=="/Admin"?"active":"")">
+                    <span class="nav-icon">🚜</span> Fleet Machines
+                </a>
+                <a href="/Admin/Employees" class="nav-item @(path.StartsWith("/Admin/Employee")?"active":"")">
+                    <span class="nav-icon">👷</span> Employees
+                </a>
+                <a href="/Admin/Assignments" class="nav-item @(path.StartsWith("/Admin/Assignment")?"active":"")">
+                    <span class="nav-icon">🔗</span> Assignments
+                </a>
+                <a href="/Admin/Mechanic/Cart" class="nav-item @(path.StartsWith("/Admin/Mechanic/Cart")?"active":"")">
+                    <span class="nav-icon">📦</span> Order Parts
+                </a>
+                <a href="/Admin/UploadTemplate" class="nav-item @(path.StartsWith("/Admin/Upload")?"active":"")">
+                    <span class="nav-icon">📤</span> Upload Template
+                </a>
+                <a href="/Admin/Reports" class="nav-item @(path.StartsWith("/Admin/Report")?"active":"")">
+                    <span class="nav-icon">📈</span> Reports
+                </a>
+            }
+
+            <div class="nav-divider"></div>
+            <div style="padding:12px 20px">
+                <div style="font-size:10px;color:var(--text-faint);line-height:1.7;font-family:var(--font-mono)">
+                    MHSA · DMR · CPS L8/9<br/>
+                    Belfast Coal Mine<br/>
+                    Digital Checklist System
+                </div>
+            </div>
+        }
+    </nav>
+
+    <!-- ── Main Content ── -->
+    <main class="main-content">
+        @if (TempData["Success"] is string ok)  { <div class="alert alert-success" style="margin-bottom:20px">✓ @ok</div> }
+        @if (TempData["Error"]   is string err) { <div class="alert alert-danger"  style="margin-bottom:20px">✕ @err</div> }
+        @if (TempData["Warning"] is string w)   { <div class="alert alert-warning" style="margin-bottom:20px">⚠ @w</div> }
+        @RenderBody()
+    </main>
+</div>
+
+<script>
+// ── Theme toggle ──────────────────────────────────────────
+const html       = document.documentElement;
+const themeBtn   = document.getElementById('themeToggle');
+const themeIcon  = document.getElementById('themeIcon');
+const saved      = localStorage.getItem('belfastTheme') || 'dark';
+html.setAttribute('data-theme', saved);
+themeIcon.textContent = saved === 'dark' ? '☀️' : '🌙';
+
+themeBtn.addEventListener('click', () => {
+    const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    localStorage.setItem('belfastTheme', next);
+    themeIcon.textContent = next === 'dark' ? '☀️' : '🌙';
+});
+
+// ── User dropdown ─────────────────────────────────────────
+const dropWrap = document.getElementById('userDropWrap');
+const dropBtn  = document.getElementById('userDropBtn');
+const dropMenu = document.getElementById('userDropMenu');
+if (dropBtn) {
+    dropBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dropMenu.classList.toggle('open');
+    });
+    document.addEventListener('click', () => dropMenu?.classList.remove('open'));
+}
+
+// ── Online/offline ────────────────────────────────────────
+function updateSyncStatus() {
+    const pill = document.getElementById('syncStatus');
+    if (!pill) return;
+    if (navigator.onLine) {
+        pill.innerHTML = '<div class="sync-dot"></div> Online';
+        pill.style.cssText = '';
+    } else {
+        pill.innerHTML = '⚡ Offline';
+        pill.style.background = 'var(--amber-glow)';
+        pill.style.borderColor = 'var(--amber-dark)';
+        pill.style.color = 'var(--amber)';
+    }
+}
+window.addEventListener('online',  updateSyncStatus);
+window.addEventListener('offline', updateSyncStatus);
+updateSyncStatus();
+</script>
+@await RenderSectionAsync("Scripts", required: false)
+<script>
+/* ── Table pagination ─────────────────────────────────────────────────────
+   Any <table data-paginate="N"> gets automatic client-side paging.
+   The pager bar is injected directly after the table element.
+──────────────────────────────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('table[data-paginate]').forEach(function (table) {
+        var pageSize = parseInt(table.getAttribute('data-paginate')) || 5;
+        var tbody    = table.querySelector('tbody');
+        if (!tbody) return;
+
+        var allRows = Array.from(tbody.querySelectorAll('tr'));
+        // Don't paginate if there's only the "empty" placeholder row
+        if (allRows.length <= pageSize) return;
+
+        var currentPage = 1;
+        var totalPages  = Math.ceil(allRows.length / pageSize);
+
+        /* ── pager bar ── */
+        var pager = document.createElement('div');
+        pager.style.cssText =
+            'display:flex;align-items:center;justify-content:space-between;' +
+            'padding:9px 14px;background:var(--steel-dark);' +
+            'border-top:1px solid var(--steel-border);font-size:12px;color:var(--text-muted)';
+
+        var infoSpan = document.createElement('span');
+        var btnsDiv  = document.createElement('div');
+        btnsDiv.style.cssText = 'display:flex;gap:4px;align-items:center';
+
+        pager.appendChild(infoSpan);
+        pager.appendChild(btnsDiv);
+        table.insertAdjacentElement('afterend', pager);
+
+        function mkBtn(label, page, active, disabled) {
+            var b = document.createElement('button');
+            b.textContent = label;
+            b.disabled    = disabled;
+            b.className   = 'btn btn-sm ' + (active ? 'btn-primary' : 'btn-ghost');
+            b.style.cssText = 'font-size:11px;padding:3px 9px;min-width:28px';
+            b.onclick = function () { if (!disabled) { currentPage = page; render(); } };
+            return b;
+        }
+
+        function render() {
+            var start   = (currentPage - 1) * pageSize;
+            var end     = start + pageSize;
+            var showing = Math.min(end, allRows.length);
+
+            allRows.forEach(function (row, idx) {
+                row.style.display = (idx >= start && idx < end) ? '' : 'none';
+            });
+
+            infoSpan.textContent = 'Showing ' + (start + 1) + '–' + showing + ' of ' + allRows.length;
+
+            btnsDiv.innerHTML = '';
+            btnsDiv.appendChild(mkBtn('‹ Prev', currentPage - 1, false, currentPage === 1));
+
+            var delta = 1;
+            for (var p = 1; p <= totalPages; p++) {
+                if (p === 1 || p === totalPages ||
+                    (p >= currentPage - delta && p <= currentPage + delta)) {
+                    btnsDiv.appendChild(mkBtn(String(p), p, p === currentPage, false));
+                } else if (p === currentPage - delta - 1 || p === currentPage + delta + 1) {
+                    var dots = document.createElement('span');
+                    dots.textContent = '…';
+                    dots.style.cssText = 'padding:0 2px;color:var(--text-muted)';
+                    btnsDiv.appendChild(dots);
+                }
+            }
+
+            btnsDiv.appendChild(mkBtn('Next ›', currentPage + 1, false, currentPage === totalPages));
+        }
+
+        render();
+    });
+});
+</script>
+</body>
+</html>

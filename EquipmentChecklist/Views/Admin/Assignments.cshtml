@@ -1,0 +1,434 @@
+@model List<EquipmentChecklist.Models.MachineAssignment>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Assignments";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var machines              = ViewBag.Machines              as List<Machine>                      ?? new();
+    var operators             = ViewBag.Operators             as IList<ApplicationUser>             ?? new List<ApplicationUser>();
+    var mechanics             = ViewBag.Mechanics             as IList<ApplicationUser>             ?? new List<ApplicationUser>();
+    var supervisors           = ViewBag.Supervisors           as IList<ApplicationUser>             ?? new List<ApplicationUser>();
+    var supervisorAssignments = ViewBag.SupervisorAssignments as List<OperatorSupervisorAssignment> ?? new();
+    var machineMap            = ViewBag.MachineAssignmentMap  as Dictionary<int,string>             ?? new();
+    var operatorMap           = ViewBag.OperatorSupervisorMap as Dictionary<string,string>          ?? new();
+    var activeTab             = (ViewBag.ActiveTab as string) ?? "machine";
+}
+
+<!-- Page header -->
+<div style="margin-bottom:20px">
+    <h2 style="font-size:22px;font-weight:700;color:var(--text-main);margin:0">Assignments</h2>
+    <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">Manage machine and supervisor assignments</p>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div style="padding:10px 16px;background:rgba(34,197,94,0.12);border:1px solid #166534;border-radius:6px;color:#86efac;font-size:13px;margin-bottom:16px">
+        ✓ @TempData["Success"]
+    </div>
+}
+@if (TempData["Error"] != null)
+{
+    <div style="padding:10px 16px;background:#450a0a;border:1px solid #7f1d1d;border-radius:6px;color:#fca5a5;font-size:13px;margin-bottom:16px">
+        ✕ @TempData["Error"]
+    </div>
+}
+
+<!-- ── Tab Bar ─────────────────────────────────────────────────────────── -->
+<div style="display:flex;gap:0;border-bottom:2px solid var(--steel-border);margin-bottom:24px">
+    <button id="btn-machine" onclick="switchTab('machine')"
+            style="padding:10px 24px;font-size:13px;font-weight:600;border:none;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .15s;background:transparent">
+        🔗 Machine → Operator
+    </button>
+    <button id="btn-supervisor" onclick="switchTab('supervisor')"
+            style="padding:10px 24px;font-size:13px;font-weight:600;border:none;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .15s;background:transparent">
+        👷 Operator → Supervisor
+    </button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     TAB 1 – Machine → Operator
+══════════════════════════════════════════════════════════════════════ -->
+<div id="tab-machine">
+    <div style="display:grid;grid-template-columns:380px 1fr;gap:24px;align-items:start">
+
+        <!-- Assign / Reassign form -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:20px;position:sticky;top:16px">
+            <h3 id="machineFormTitle" style="margin-bottom:4px;font-size:16px;font-weight:700">Assign Machine to Operator</h3>
+            <p id="machineFormHint" style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
+                Select a machine and the person to assign it to.
+            </p>
+
+            <form method="post" action="/Admin/AssignMachine">
+                @Html.AntiForgeryToken()
+
+                <div class="form-group">
+                    <label class="form-label">Machine</label>
+                    <select name="machineId" id="machineSelect" class="form-control" required
+                            onchange="onMachineChange(this)">
+                        <option value="">-- Select Machine --</option>
+                        @foreach (var m in machines)
+                        {
+                            if (m.IsImmobilised)
+                            {
+                                <option value="@m.Id" disabled style="color:#6b7280">
+                                    🚫 @m.MachineNumber – @m.MachineName (Immobilised)
+                                </option>
+                            }
+                            else if (machineMap.ContainsKey(m.Id))
+                            {
+                                <option value="@m.Id" data-assigned="@machineMap[m.Id]">
+                                    @m.MachineNumber – @m.MachineName ↻ @machineMap[m.Id]
+                                </option>
+                            }
+                            else
+                            {
+                                <option value="@m.Id">@m.MachineNumber – @m.MachineName</option>
+                            }
+                        }
+                    </select>
+                    <small id="machineAssignedNote"
+                           style="display:none;color:var(--amber);font-size:11px;margin-top:4px;display:block">
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Operator <span style="color:var(--red-nogo)">*</span></label>
+                    <select name="operatorId" id="machinePersonSelect" class="form-control" required>
+                        <option value="">-- Select Operator --</option>
+                        @if (operators.Count > 0)
+                        {
+                            <optgroup label="── Operators ──">
+                                @foreach (var op in operators)
+                                {
+                                    <option value="@op.Id">@op.FullName (@op.EmployeeNumber)</option>
+                                }
+                            </optgroup>
+                        }                       
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">
+                        Responsible Mechanic <span style="color:var(--red-nogo)">*</span>
+                    </label>
+                    <small style="display:block;color:var(--text-muted);font-size:11px;margin-bottom:6px">
+                        Will handle repairs if this machine is immobilised.
+                    </small>
+                    <select name="mechanicId" id="machineMechanicSelect" class="form-control" required>
+                        <option value="">-- Select Mechanic --</option>
+                        @foreach (var mec in mechanics)
+                        {
+                            <option value="@mec.Id">@mec.FullName (@mec.EmployeeNumber)</option>
+                        }
+                    </select>
+                </div>
+
+                <button type="submit" id="machineSubmitBtn" class="btn btn-primary" style="width:100%">
+                    Assign →
+                </button>
+            </form>
+        </div>
+
+        <!-- Current machine assignments table -->
+        <div>
+            <h3 style="margin-bottom:14px;font-size:16px;font-weight:700">
+                Current Assignments
+                <span style="font-size:12px;font-weight:400;color:var(--text-muted);margin-left:6px">(@Model.Count active)</span>
+            </h3>
+
+            @if (!Model.Any())
+            {
+                <div style="text-align:center;padding:48px;color:var(--text-muted);background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px">
+                    <div style="font-size:40px;margin-bottom:10px">🔗</div>
+                    <p>No active machine assignments yet.</p>
+                </div>
+            }
+            else
+            {
+                <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;overflow:hidden">
+                    <table class="data-table" data-paginate="5">
+                        <thead>
+                            <tr>
+                                <th>Machine</th>
+                                <th>Operator</th>
+                                <th>Mechanic</th>
+                                <th>Since</th>
+                                <th style="text-align:right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var a in Model)
+                            {
+                                <tr>
+                                    <td>
+                                        <strong>@a.Machine.MachineNumber</strong>
+                                        <div style="font-size:11px;color:var(--text-muted)">@a.Machine.MachineName</div>
+                                        @if (a.Machine.IsImmobilised)
+                                        {
+                                            <span class="badge badge-nogo" style="font-size:9px">🚫 Immobilised</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @a.Operator.FullName
+                                        <div style="font-size:11px;color:var(--text-muted)">@a.Operator.EmployeeNumber</div>
+                                    </td>
+                                    <td>
+                                        @if (a.Mechanic != null)
+                                        {
+                                            <span>🔧 @a.Mechanic.FullName</span>
+                                            <div style="font-size:11px;color:var(--text-muted)">@a.Mechanic.EmployeeNumber</div>
+                                        }
+                                        else
+                                        {
+                                            <span style="color:var(--amber);font-size:12px">⚠ Not set</span>
+                                        }
+                                    </td>
+                                    <td style="font-size:12px;color:var(--text-muted);white-space:nowrap">
+                                        @a.AssignedFrom.ToString("yyyy-MM-dd")
+                                    </td>
+                                    <td style="text-align:right">
+                                        <div style="display:flex;gap:6px;justify-content:flex-end">
+                                            @if (!a.Machine.IsImmobilised)
+                                            {
+                                                <button type="button"
+                                                        onclick="prefillMachineReassign(@a.MachineId, '@a.MechanicId')"
+                                                        class="btn btn-ghost btn-sm"
+                                                        style="font-size:11px;padding:3px 10px">
+                                                    ↻ Reassign
+                                                </button>
+                                            }
+                                            <form method="post" action="/Admin/UnassignMachine" style="display:inline"
+                                                  onsubmit="return confirm('Remove assignment for @Html.Raw(a.Machine.MachineNumber)?')">
+                                                @Html.AntiForgeryToken()
+                                                <input type="hidden" name="assignmentId" value="@a.Id" />
+                                                <button type="submit" class="btn btn-ghost btn-sm"
+                                                        style="font-size:11px;padding:3px 10px;color:var(--red-nogo)">
+                                                    ✕ Unassign
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     TAB 2 – Operator → Supervisor
+══════════════════════════════════════════════════════════════════════ -->
+<div id="tab-supervisor" style="display:none">
+    <div style="display:grid;grid-template-columns:380px 1fr;gap:24px;align-items:start">
+
+        <!-- Assign / Reassign form -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:20px;position:sticky;top:16px">
+            <h3 id="supervisorFormTitle" style="margin-bottom:4px;font-size:16px;font-weight:700">Assign Operator to Supervisor</h3>
+            <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
+                Issues reported by the operator will be routed to their supervisor for approval.
+            </p>
+
+            <form method="post" action="/Admin/AssignOperatorToSupervisor">
+                @Html.AntiForgeryToken()
+
+                <div class="form-group">
+                    <label class="form-label">Operator</label>
+                    <select name="operatorId" id="operatorSelect" class="form-control" required
+                            onchange="onOperatorChange(this)">
+                        <option value="">-- Select Operator --</option>
+                        @foreach (var op in operators)
+                        {
+                            if (operatorMap.ContainsKey(op.Id))
+                            {
+                                <option value="@op.Id" data-assigned="@operatorMap[op.Id]">
+                                    @op.FullName (@op.EmployeeNumber) ↻ @operatorMap[op.Id]
+                                </option>
+                            }
+                            else
+                            {
+                                <option value="@op.Id">@op.FullName (@op.EmployeeNumber)</option>
+                            }
+                        }
+                    </select>
+                    <small id="operatorAssignedNote"
+                           style="display:none;color:var(--amber);font-size:11px;margin-top:4px;display:block">
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Supervisor</label>
+                    <select name="supervisorId" id="supervisorSelect" class="form-control" required>
+                        <option value="">-- Select Supervisor --</option>
+                        @foreach (var sv in supervisors)
+                        {
+                            <option value="@sv.Id">@sv.FullName (@sv.EmployeeNumber)</option>
+                        }
+                    </select>
+                </div>
+
+                <button type="submit" id="supervisorSubmitBtn" class="btn btn-primary" style="width:100%">
+                    Assign →
+                </button>
+            </form>
+        </div>
+
+        <!-- Current supervisor assignments table -->
+        <div>
+            <h3 style="margin-bottom:14px;font-size:16px;font-weight:700">
+                Current Assignments
+                <span style="font-size:12px;font-weight:400;color:var(--text-muted);margin-left:6px">(@supervisorAssignments.Count active)</span>
+            </h3>
+
+            @if (!supervisorAssignments.Any())
+            {
+                <div style="text-align:center;padding:48px;color:var(--text-muted);background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px">
+                    <div style="font-size:40px;margin-bottom:10px">👷</div>
+                    <p>No supervisor assignments yet.</p>
+                </div>
+            }
+            else
+            {
+                <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;overflow:hidden">
+                    <table class="data-table" data-paginate="5">
+                        <thead>
+                            <tr>
+                                <th>Operator</th>
+                                <th>Supervisor</th>
+                                <th>Since</th>
+                                <th style="text-align:right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var a in supervisorAssignments)
+                            {
+                                <tr>
+                                    <td>
+                                        @a.Operator.FullName
+                                        <div style="font-size:11px;color:var(--text-muted)">@a.Operator.EmployeeNumber</div>
+                                    </td>
+                                    <td>
+                                        <strong>@a.Supervisor.FullName</strong>
+                                        <div style="font-size:11px;color:var(--text-muted)">@a.Supervisor.EmployeeNumber</div>
+                                    </td>
+                                    <td style="font-size:12px;color:var(--text-muted);white-space:nowrap">
+                                        @a.AssignedAt.ToString("yyyy-MM-dd")
+                                    </td>
+                                    <td style="text-align:right">
+                                        <div style="display:flex;gap:6px;justify-content:flex-end">
+                                            <button type="button"
+                                                    onclick="prefillSupervisorReassign('@a.OperatorId')"
+                                                    class="btn btn-ghost btn-sm"
+                                                    style="font-size:11px;padding:3px 10px">
+                                                ↻ Reassign
+                                            </button>
+                                            <form method="post" action="/Admin/UnassignOperatorFromSupervisor"
+                                                  style="display:inline"
+                                                  onsubmit="return confirm('Remove supervisor assignment for @Html.Raw(a.Operator.FullName)?')">
+                                                @Html.AntiForgeryToken()
+                                                <input type="hidden" name="assignmentId" value="@a.Id" />
+                                                <button type="submit" class="btn btn-ghost btn-sm"
+                                                        style="font-size:11px;padding:3px 10px;color:var(--red-nogo)">
+                                                    ✕ Unassign
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+var ACTIVE_TAB = '@Html.Raw(activeTab)';
+
+/* ── Tab switching ──────────────────────────────────────────────────── */
+function switchTab(name) {
+    document.getElementById('tab-machine').style.display    = name === 'machine'    ? '' : 'none';
+    document.getElementById('tab-supervisor').style.display = name === 'supervisor' ? '' : 'none';
+
+    var btnM = document.getElementById('btn-machine');
+    var btnS = document.getElementById('btn-supervisor');
+    var accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#38bdf8';
+    var mutedColor  = getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim() || '#6b7280';
+
+    btnM.style.borderBottomColor = name === 'machine'    ? accentColor : 'transparent';
+    btnM.style.color             = name === 'machine'    ? accentColor : mutedColor;
+    btnS.style.borderBottomColor = name === 'supervisor' ? accentColor : 'transparent';
+    btnS.style.color             = name === 'supervisor' ? accentColor : mutedColor;
+}
+
+/* ── Machine dropdown change ────────────────────────────────────────── */
+function onMachineChange(sel) {
+    var opt  = sel.options[sel.selectedIndex];
+    var note = document.getElementById('machineAssignedNote');
+    var btn  = document.getElementById('machineSubmitBtn');
+    var ttl  = document.getElementById('machineFormTitle');
+    if (opt && opt.dataset.assigned) {
+        note.textContent   = '⚠ This machine is currently assigned to ' + opt.dataset.assigned + '. Submitting will reassign it.';
+        note.style.display = 'block';
+        btn.textContent    = '↻ Reassign →';
+        ttl.textContent    = 'Reassign Machine';
+    } else {
+        note.style.display = 'none';
+        btn.textContent    = 'Assign →';
+        ttl.textContent    = 'Assign Machine to Operator';
+    }
+}
+
+/* ── Operator dropdown change ───────────────────────────────────────── */
+function onOperatorChange(sel) {
+    var opt  = sel.options[sel.selectedIndex];
+    var note = document.getElementById('operatorAssignedNote');
+    var btn  = document.getElementById('supervisorSubmitBtn');
+    var ttl  = document.getElementById('supervisorFormTitle');
+    if (opt && opt.dataset.assigned) {
+        note.textContent   = '⚠ This operator is currently under ' + opt.dataset.assigned + '. Submitting will reassign them.';
+        note.style.display = 'block';
+        btn.textContent    = '↻ Reassign →';
+        ttl.textContent    = 'Reassign Operator Supervisor';
+    } else {
+        note.style.display = 'none';
+        btn.textContent    = 'Assign →';
+        ttl.textContent    = 'Assign Operator to Supervisor';
+    }
+}
+
+/* ── Prefill machine reassign ───────────────────────────────────────── */
+function prefillMachineReassign(machineId, currentMechanicId) {
+    switchTab('machine');
+    var sel = document.getElementById('machineSelect');
+    sel.value = machineId;
+    onMachineChange(sel);
+    document.getElementById('machinePersonSelect').value = '';
+    // Re-select same mechanic so admin just changes operator if needed
+    if (currentMechanicId) {
+        document.getElementById('machineMechanicSelect').value = currentMechanicId;
+    }
+    sel.closest('div').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+/* ── Prefill supervisor reassign ────────────────────────────────────── */
+function prefillSupervisorReassign(operatorId) {
+    switchTab('supervisor');
+    var sel = document.getElementById('operatorSelect');
+    sel.value = operatorId;
+    onOperatorChange(sel);
+    document.getElementById('supervisorSelect').value = '';
+    sel.closest('div').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+/* ── Init ───────────────────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', function () {
+    switchTab(ACTIVE_TAB);
+});
+</script>
+}

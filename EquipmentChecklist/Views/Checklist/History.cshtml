@@ -1,0 +1,138 @@
+@model List<EquipmentChecklist.Models.ChecklistSubmission>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "My Submissions";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h2 class="page-title">My Submissions</h2>
+        <p class="page-subtitle">All your recent pre-use inspection records</p>
+    </div>
+    @if (User.IsInRole("Operator"))
+    {
+        <a href="/Checklist" class="btn btn-primary">▶ New Checklist</a>
+    }
+</div>
+
+@if (!Model.Any())
+{
+    <div class="empty-state">
+        <div class="empty-icon">📋</div>
+        <h3>No submissions yet</h3>
+        <p>Once you complete a pre-use checklist it will appear here.</p>
+    </div>
+}
+else
+{
+    <!-- Summary strip -->
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+        @{
+            var go    = Model.Count(s => s.Status == ChecklistStatus.Go);
+            var gobut = Model.Count(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService);
+            var nogo  = Model.Count(s => s.Status == ChecklistStatus.NoGo);
+        }
+        <div style="background:var(--green-glow);border:1px solid var(--green-dark);border-radius:8px;padding:10px 18px;font-size:13px">
+            <span style="color:var(--green-go);font-weight:700;font-size:18px">@go</span>
+            <span style="color:var(--text-muted);margin-left:6px">GO</span>
+        </div>
+        <div style="background:var(--amber-glow);border:1px solid var(--amber-dark);border-radius:8px;padding:10px 18px;font-size:13px">
+            <span style="color:var(--amber);font-weight:700;font-size:18px">@gobut</span>
+            <span style="color:var(--text-muted);margin-left:6px">GO-BUT</span>
+        </div>
+        <div style="background:var(--red-glow);border:1px solid var(--red-dark);border-radius:8px;padding:10px 18px;font-size:13px">
+            <span style="color:var(--red-nogo);font-weight:700;font-size:18px">@nogo</span>
+            <span style="color:var(--text-muted);margin-left:6px">NO-GO</span>
+        </div>
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:10px 18px;font-size:13px">
+            <span style="color:var(--text-primary);font-weight:700;font-size:18px">@Model.Count</span>
+            <span style="color:var(--text-muted);margin-left:6px">Total</span>
+        </div>
+    </div>
+
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden">
+        <table class="data-table" data-paginate="5">
+            <thead>
+                <tr>
+                    <th>Machine</th>
+                    <th>Date &amp; Time</th>
+                    <th>Shift</th>
+                    <th>KM / Hours</th>
+                    <th>Items</th>
+                    <th>Result</th>
+                    <th style="text-align:right">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in Model)
+                {
+                    var (bc, bl) = s.Status switch {
+                        ChecklistStatus.Go                => ("badge-go",    "GO"),
+                        ChecklistStatus.GoButRepair24H    => ("badge-gobut", "GO-BUT 24H"),
+                        ChecklistStatus.GoTillNextService => ("badge-gobut", "GO-BUT 30D"),
+                        ChecklistStatus.NoGo              => ("badge-nogo",  "NO-GO"),
+                        _                                 => ("badge-pending","Pending")
+                    };
+                    var rowClass = s.Status switch {
+                        ChecklistStatus.Go   => "history-row-go",
+                        ChecklistStatus.NoGo => "history-row-nogo",
+                        _                    => "history-row-gobut"
+                    };
+                    var defects = s.Items.Count(i => i.Status == ItemStatus.Defect);
+                    <tr class="@rowClass">
+                        <td>
+                            <strong>@s.Machine.MachineNumber</strong>
+                            <div style="font-size:11px;color:var(--text-muted)">@s.Machine.MachineName</div>
+                        </td>
+                        <td style="font-family:var(--font-mono);font-size:12px">
+                            @s.SubmittedAt.ToString("yyyy-MM-dd")<br/>
+                            <span style="color:var(--text-muted)">@s.SubmittedAt.ToString("HH:mm")</span>
+                        </td>
+                        <td style="font-size:13px">
+                            @(s.Shift switch
+                            {
+                                EquipmentChecklist.Models.Shift.Day => "Day (A)",
+                                EquipmentChecklist.Models.Shift.Afternoon => "Afternoon (B)",
+                                EquipmentChecklist.Models.Shift.Night => "Night (C)",
+                                _ => s.Shift.ToString() ?? "–"
+                            })
+                        </td>
+                        <td style="font-family:var(--font-mono);font-size:13px">
+                            @(s.KmOrHourMeter?.ToString() ?? "–")
+                        </td>
+                        <td style="font-size:13px">
+                            @s.Items.Count total
+                            @if (defects > 0)
+                            {
+                                <span style="color:var(--red-nogo);margin-left:4px">(@defects defect@(defects > 1 ? "s" : ""))</span>
+                            }
+                        </td>
+                        <td><span class="badge @bc">@bl</span></td>
+                        <td style="text-align:right">
+                            <div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+                                <a href="/Checklist/Result/@s.Id"
+                                   class="btn btn-ghost btn-sm" title="View result detail">
+                                    🔍 View
+                                </a>
+                                <a href="/Checklist/ViewPdf/@s.Id"
+                                   target="_blank"
+                                   class="btn btn-ghost btn-sm" title="View PDF in browser">
+                                    📄 PDF
+                                </a>
+                                <a href="/Checklist/Pdf/@s.Id"
+                                   class="btn btn-ghost btn-sm" title="Download PDF">
+                                    ⬇
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <p style="font-size:12px;color:var(--text-muted);margin-top:12px">
+        Showing @Model.Count most recent submissions.
+    </p>
+}

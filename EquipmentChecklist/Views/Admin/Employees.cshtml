@@ -1,0 +1,64 @@
+@model List<EquipmentChecklist.Models.ApplicationUser>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Employees";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <h2 style="font-size:20px">All Employees</h2>
+    <a href="/Admin/CreateEmployee" class="btn btn-primary">+ Add Employee</a>
+</div>
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">👷</div>
+        <p>No employees yet. Add your first employee.</p>
+    </div>
+}
+else
+{
+    <table class="data-table" data-paginate="5">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Employee #</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var user in Model)
+            {
+                <tr>
+                    <td><strong>@user.FullName</strong></td>
+                    <td style="color:var(--text-muted)">@user.EmployeeNumber</td>
+                    <td style="color:var(--text-muted)">@user.Email</td>
+                    <td>
+                        @{
+                            var roleClass = user.Role switch {
+                                UserRole.Admin      => "badge-nogo",
+                                UserRole.Supervisor => "badge-gobut",
+                                UserRole.Mechanic   => "badge-pending",
+                                _                   => "badge-go"
+                            };
+                        }
+                        <span class="badge @roleClass">@user.Role</span>
+                    </td>
+                    <td>
+                        @if (user.IsActive)
+                        {
+                            <span class="badge badge-go">Active</span>
+                        }
+                        else
+                        {
+                            <span class="badge badge-pending">Inactive</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}

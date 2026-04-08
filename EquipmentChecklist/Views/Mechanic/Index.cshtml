@@ -1,0 +1,236 @@
+@model List<EquipmentChecklist.Models.DefectOrder>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Defect Orders";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var unassigned   = ViewBag.Unassigned   as List<DefectOrder> ?? new();
+    var noGoMachines = ViewBag.NoGoMachines as List<Machine>     ?? new();
+    var cartCount    = (int)(ViewBag.CartCount ?? 0);
+}
+
+<!-- Top bar -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h2 class="page-title">Defect Orders</h2>
+        <p class="page-subtitle">Manage repairs, order parts, and send machines back for admin clearance.</p>
+    </div>
+    <a href="/Mechanic/Cart" class="btn @(cartCount > 0 ? "btn-warning" : "btn-ghost")" style="font-size:13px">
+        🛒 Parts Cart
+        @if (cartCount > 0)
+        {
+            <span style="background:#fff;color:#000;border-radius:10px;padding:1px 7px;margin-left:4px;font-size:11px;font-weight:700">@cartCount</span>
+        }
+    </a>
+</div>
+
+<!-- ── UNASSIGNED DEFECTS ─────────────────────────────────── -->
+@if (unassigned.Any())
+{
+    <div style="margin-bottom:28px">
+        <h3 style="font-size:15px;margin-bottom:10px;color:var(--amber)">
+            ⚠ Unassigned Defects — Pick up a job (@unassigned.Count)
+        </h3>
+        <div style="background:var(--steel-mid);border:1px solid var(--amber-dark);border-radius:10px;overflow:hidden">
+            <table class="data-table" data-paginate="5">
+                <thead>
+                    <tr><th>Machine</th><th>Defect Item</th><th>Operator Note</th><th>Reported</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var d in unassigned)
+                    {
+                        <tr>
+                            <td>
+                                <strong>@d.Submission.Machine.MachineNumber</strong>
+                                @if (d.Submission.Machine.IsImmobilised)
+                                {
+                                    <span class="badge badge-nogo" style="font-size:9px;margin-left:4px">🚫 NO-GO</span>
+                                }
+                                <div style="font-size:11px;color:var(--text-muted)">@d.Submission.Machine.MachineName</div>
+                            </td>
+                            <td>
+                                <strong>@d.SubmissionItem.TemplateItem.ItemName</strong>
+                                @if (d.SubmissionItem.TemplateItem.IsNoGoItem)
+                                {
+                                    <span style="font-size:9px;color:var(--red-nogo);margin-left:4px">⚠ CRITICAL</span>
+                                }
+                            </td>
+                            <td style="font-size:12px;color:var(--amber);font-style:italic">
+                                @(d.SubmissionItem.Notes ?? "–")
+                            </td>
+                            <td style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono)">
+                                @d.CreatedAt.ToString("yyyy-MM-dd HH:mm")
+                            </td>
+                            <td>
+                                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                                    <form method="post" action="/Mechanic/AssignToSelf" style="display:inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="defectOrderId" value="@d.Id" />
+                                        <button type="submit" class="btn btn-primary btn-sm">Take Job</button>
+                                    </form>
+                                    <form method="post" action="/Mechanic/AssignAndAddToCart" style="display:inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="defectOrderId" value="@d.Id" />
+                                        <input type="hidden" name="itemName" value="@d.SubmissionItem.TemplateItem.ItemName" />
+                                        <button type="submit" class="btn btn-ghost btn-sm">🛒 Take &amp; Order Part</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+<!-- ── MY ACTIVE JOBS ─────────────────────────────────────── -->
+<h3 style="font-size:15px;margin-bottom:12px">My Active Jobs (@Model.Count)</h3>
+
+@if (!Model.Any())
+{
+    <div class="empty-state">
+        <div class="empty-icon">🔧</div>
+        <h3>No active jobs</h3>
+        <p>Take an unassigned defect above to get started.</p>
+    </div>
+}
+else
+{
+    <div style="display:flex;flex-direction:column;gap:12px">
+        @foreach (var d in Model)
+        {
+            var (sc, sl) = d.RepairStatus switch {
+                RepairStatus.Pending       => ("badge-pending", "Pending"),
+                RepairStatus.InProgress    => ("badge-gobut",   "In Progress"),
+                RepairStatus.AwaitingParts => ("badge-gobut",   "Awaiting Parts"),
+                RepairStatus.Completed     => ("badge-go",      "Completed"),
+                _                          => ("badge-pending",  "Unknown")
+            };
+            var borderColor = d.SubmissionItem.TemplateItem.IsNoGoItem
+                ? "var(--red-nogo)" : "var(--steel-border)";
+
+            <div style="background:var(--steel-mid);border:1px solid @borderColor;border-radius:10px;overflow:hidden">
+                <!-- Job header -->
+                <div style="padding:10px 16px;background:var(--steel-dark);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <strong>@d.Submission.Machine.MachineNumber</strong>
+                        <span style="color:var(--text-muted);font-size:12px">@d.Submission.Machine.MachineName</span>
+                        @if (d.Submission.Machine.IsImmobilised)
+                        {
+                            <span class="badge badge-nogo" style="font-size:9px">🚫 NO-GO</span>
+                        }
+                    </div>
+                    <span class="badge @sc">@sl</span>
+                </div>
+
+                <div style="padding:14px 16px">
+                    <!-- Defect info -->
+                    <div style="margin-bottom:12px">
+                        <div style="font-size:14px;font-weight:700">
+                            @d.SubmissionItem.TemplateItem.ItemName
+                            @if (d.SubmissionItem.TemplateItem.IsNoGoItem)
+                            {
+                                <span style="font-size:10px;color:var(--red-nogo);margin-left:6px">⚠ CRITICAL – NO-GO ITEM</span>
+                            }
+                        </div>
+                        @if (d.SubmissionItem.Notes != null)
+                        {
+                            <p style="font-size:12px;color:var(--amber);font-style:italic;margin-top:3px">
+                                Operator said: "@d.SubmissionItem.Notes"
+                            </p>
+                        }
+                        @if (d.PartRequired != null)
+                        {
+                            <p style="font-size:12px;margin-top:4px">
+                                <span style="color:var(--text-muted)">Part ordered:</span>
+                                <strong>@d.PartRequired</strong>
+                                @if (d.PartNumber != null)
+                                {
+                                    <span style="color:var(--accent);margin-left:4px">#@d.PartNumber</span>
+                                }
+                            </p>
+                        }
+                    </div>
+
+                    <!-- Action buttons -->
+                    <div style="display:flex;gap:8px;flex-wrap:wrap">
+                        <!-- Order Part (always available until completed) -->
+                        @if (d.RepairStatus != RepairStatus.Completed)
+                        {
+                            <form method="post" action="/Mechanic/AddToCart" style="display:inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="defectOrderId" value="@d.Id" />
+                                <input type="hidden" name="itemName" value="@d.SubmissionItem.TemplateItem.ItemName" />
+                                <button type="submit" class="btn btn-ghost btn-sm">🛒 Add to Parts Cart</button>
+                            </form>
+
+                            <a href="/Mechanic/OrderPart/@d.Id" class="btn btn-ghost btn-sm">📦 Order Part Directly</a>
+                        }
+
+                        <!-- Mark Fixed & Send to Admin -->
+                        @if (d.RepairStatus != RepairStatus.Completed)
+                        {
+                            <button onclick="markFixed(@d.Id)" class="btn btn-success btn-sm">
+                                ✓ Mark Fixed – Send to Admin
+                            </button>
+                        }
+                        else
+                        {
+                            <span style="font-size:12px;color:var(--green-go);padding:4px 8px">
+                                ✓ Completed @(d.ResolvedAt?.ToString("yyyy-MM-dd") ?? "")
+                            </span>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<!-- ── NO-GO MACHINES (compact) ─────────────────────────── -->
+@if (noGoMachines.Any())
+{
+    <div style="margin-top:28px">
+        <h3 style="font-size:15px;margin-bottom:10px;color:var(--red-nogo)">
+            🚫 Immobilised Machines (@noGoMachines.Count)
+        </h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">
+            @foreach (var m in noGoMachines)
+            {
+                var lastSub  = m.Submissions.OrderByDescending(s => s.SubmittedAt).FirstOrDefault();
+                var defItems = lastSub?.Items.Where(i => i.Status == ItemStatus.Defect).ToList() ?? new();
+                <div style="background:var(--steel-mid);border:2px solid var(--red-nogo);border-radius:10px;overflow:hidden">
+                    <div style="background:var(--red-dark);padding:8px 14px;display:flex;justify-content:space-between">
+                        <strong>@m.MachineNumber</strong>
+                        <span style="font-size:11px;color:#fca5a5">@defItems.Count defect(s)</span>
+                    </div>
+                    <div style="padding:10px 14px">
+                        <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">@m.MachineName</p>
+                        <a href="/Mechanic/NoGoDetail/@m.Id" class="btn btn-ghost btn-sm" style="width:100%;justify-content:center">
+                            🔍 View Defects &amp; Order Parts
+                        </a>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+<!-- Hidden form for Mark Fixed -->
+<form id="fixedForm" method="post" action="/Mechanic/CompleteRepair" style="display:none">
+    @Html.AntiForgeryToken()
+    <input type="hidden" id="fixedId"    name="defectOrderId" />
+    <input type="hidden" id="fixedNotes" name="notes" />
+</form>
+
+@section Scripts {
+<script>
+function markFixed(id) {
+    if (!confirm('Mark this repair as COMPLETE and notify admin for machine clearance?')) return;
+    const notes = prompt('Repair notes (what was done):') ?? 'Repair completed by mechanic.';
+    document.getElementById('fixedId').value    = id;
+    document.getElementById('fixedNotes').value = notes;
+    document.getElementById('fixedForm').submit();
+}
+</script>
+}

@@ -1,0 +1,71 @@
+@model EquipmentChecklist.Models.Machine
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Add New Machine";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="max-width:600px">
+    <a href="/Admin" class="btn btn-ghost" style="margin-bottom:16px">← Back to Machines</a>
+
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:28px">
+        <h2 style="font-size:22px;margin-bottom:20px">Add New Machine</h2>
+
+        <form method="post" action="/Admin/CreateMachine">
+            @Html.AntiForgeryToken()
+
+            <div class="form-group">
+                <label class="form-label">Machine Number</label>
+                <input type="text" name="MachineNumber" class="form-control"
+                       placeholder="e.g. TLB-002" required value="@Model?.MachineNumber" />
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Machine Name</label>
+                <input type="text" name="MachineName" class="form-control"
+                       placeholder="e.g. TLB Unit 2" required value="@Model?.MachineName" />
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Machine Type</label>
+                <select name="Type" class="form-control" required>
+                    <option value="">-- Select Type --</option>
+                    <option value="1">ADT – Articulated Dump Truck</option>
+                    <option value="2">Articulated Water Truck</option>
+                    <option value="3">Diesel Bowser</option>
+                    <option value="4">Drills</option>
+                    <option value="5">Excavator</option>
+                    <option value="6">FEL – Front End Loader</option>
+                    <option value="7">Forklift</option>
+                    <option value="8">Grader</option>
+                    <option value="9">LDV / Light Vehicle</option>
+                    <option value="10">SRV / Water Bowser</option>
+                    <option value="11">Track Dozer</option>
+                    <option value="12">RDT – 773 Haul Truck</option>
+                    <option value="13">Truck Mounted Crane</option>
+                    <option value="14">TLB</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Description (optional)</label>
+                <textarea name="Description" class="form-control" rows="3"
+                          placeholder="Any additional notes...">@Model?.Description</textarea>
+            </div>
+
+            <div style="display:flex;gap:12px;margin-top:8px">
+                <button type="submit" class="btn btn-primary">+ Add Machine</button>
+                <a href="/Admin" class="btn btn-ghost">Cancel</a>
+            </div>
+        </form>
+    </div>
+
+    <div style="margin-top:20px;padding:16px;background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px">
+        <p style="margin:0 0 10px;font-size:13px;color:var(--text-muted)">
+            Want to define custom checklist items for this machine?
+        </p>
+        <a href="/Admin/CreateMachineWizard" class="btn btn-ghost" style="font-size:13px">
+            Use the Step-by-Step Wizard ➜
+        </a>
+    </div>
+</div>
