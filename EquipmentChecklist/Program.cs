@@ -113,41 +113,64 @@ app.Run();
 // ─── Seeder ────────────────────────────────────────────────────────────────────
 static async Task SeedRolesAndAdminAsync(WebApplication app)
 {
-	using var scope = app.Services.CreateScope();
-	var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
-	var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-	var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    using var scope = app.Services.CreateScope();
+    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+    var cloudDb = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    var localDb = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
 
-	// 1. Run migrations
-	await db.Database.MigrateAsync();
+    // 1. Run migrations for Cloud DB
+    await cloudDb.Database.MigrateAsync();
 
-	// 2. Seed roles
-	foreach (var role in new[] { "Admin", "Operator", "Supervisor", "Mechanic" })
-		if (!await roleManager.RoleExistsAsync(role))
-			await roleManager.CreateAsync(new IdentityRole(role));
+    // 2. Ensure Local SQLite DB is created
+    await localDb.Database.EnsureCreatedAsync();
 
-	// 3. Seed default admin user
-	const string adminEmail = "admin@belfast.co.za";
-	if (await userManager.FindByEmailAsync(adminEmail) == null)
-	{
-		var admin = new ApplicationUser
-		{
-			UserName = adminEmail,
-			Email = adminEmail,
-			FullName = "System Administrator",
-			EmployeeNumber = "ADMIN001",
-			Role = UserRole.Admin,
-			EmailConfirmed = true
-		};
-		await userManager.CreateAsync(admin, "Admin@123");
-		await userManager.AddToRoleAsync(admin, "Admin");
-	}
+    // 3. Seed default admin user
+    const string adminEmail = "admin@belfast.co.za";
+    if (await userManager.FindByEmailAsync(adminEmail) == null)
+    {
+        var admin = new ApplicationUser
+        {
+            UserName = adminEmail,
+            Email = adminEmail,
+            FullName = "System Administrator",
+            EmployeeNumber = "ADMIN001",
+            Role = UserRole.Admin,
+            EmailConfirmed = true
+        };
+        await userManager.CreateAsync(admin, "Admin@123");
+        await userManager.AddToRoleAsync(admin, "Admin");
+    }
 
-	// 4. Seed checklist templates — only runs once when tables are empty
-	if (!await db.ChecklistTemplates.AnyAsync())
-	{
-		await SeedChecklistTemplatesAsync(db);
-	}
+    // 4. Seed checklist templates
+    if (!await cloudDb.ChecklistTemplates.AnyAsync())
+    {
+        await SeedChecklistTemplatesAsync(cloudDb);
+    }
+
+    // 5. Sync reference data to Local DB
+    await SyncMasterDataToLocalAsync(cloudDb, localDb);
+}
+
+static async Task SyncMasterDataToLocalAsync(ApplicationDbContext cloudDb, LocalDbContext localDb)
+{
+    // Clear local cache
+    if (!await localDb.Machines.AnyAsync())
+    {
+        // Copy Machines
+        var machines = await cloudDb.Machines.AsNoTracking().ToListAsync();
+        localDb.Machines.AddRange(machines);
+
+        // Copy Templates
+        var templates = await cloudDb.ChecklistTemplates.AsNoTracking().ToListAsync();
+        localDb.ChecklistTemplates.AddRange(templates);
+
+        // Copy Template Items
+        var templateItems = await cloudDb.ChecklistTemplateItems.AsNoTracking().ToListAsync();
+        localDb.ChecklistTemplateItems.AddRange(templateItems);
+
+        await localDb.SaveChangesAsync();
+    }
 }
 
 static async Task SeedChecklistTemplatesAsync(ApplicationDbContext db)

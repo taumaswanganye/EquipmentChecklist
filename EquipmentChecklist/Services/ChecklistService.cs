@@ -128,6 +128,28 @@ public class ChecklistService
         await _db.SaveChangesAsync();
     }
 
+    public async Task SaveSubmissionOfflineAsync(ChecklistSubmission submission, LocalDbContext localDb)
+    {
+        // 1. Generate a unique LocalId for idempotency
+        submission.LocalId = Guid.NewGuid();
+        submission.SubmittedAt = DateTime.UtcNow;
+        submission.IsSyncedToCloud = false;
+
+        // 2. Save the submission and its items to SQLite
+        localDb.ChecklistSubmissions.Add(submission);
+
+        // 3. Queue it for the Background SyncService
+        var syncRecord = new PendingSyncRecord
+        {
+            LocalSubmissionId = submission.LocalId,
+            QueuedAt = DateTime.UtcNow,
+            RetryCount = 0
+        };
+        localDb.PendingSyncRecords.Add(syncRecord);
+
+        await localDb.SaveChangesAsync();
+    }
+
     public async Task<DashboardStatsDto> GetDashboardStatsAsync()
     {
         var today = DateTime.UtcNow.Date;

@@ -1,5 +1,6 @@
-using Microsoft.AspNetCore.Identity;
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+using Microsoft.AspNetCore.Identity;
 
 namespace EquipmentChecklist.Models;
 
@@ -14,6 +15,8 @@ public class ApplicationUser : IdentityUser
 
     // Navigation
     public ICollection<ChecklistSubmission> Submissions { get; set; } = new List<ChecklistSubmission>();
+
+    [InverseProperty("Operator")]
     public ICollection<MachineAssignment> Assignments { get; set; } = new List<MachineAssignment>();
 }
 
@@ -159,4 +162,15 @@ public class DefectOrder
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? ResolvedAt { get; set; }
     [MaxLength(500)] public string? ResolutionNotes { get; set; }
+}
+
+// ─── Tracks offline submissions that need to be synced to the cloud. ─────────────────────────────────────────────────────
+
+public class PendingSyncRecord
+{
+    public int Id { get; set; }
+    public Guid LocalSubmissionId { get; set; }
+    public DateTime QueuedAt { get; set; } = DateTime.UtcNow;
+    public int RetryCount { get; set; } = 0;
+    public string? LastError { get; set; }
 }
