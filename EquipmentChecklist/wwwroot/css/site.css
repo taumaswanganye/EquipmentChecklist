@@ -7,47 +7,81 @@
 
 /* ── Variables ───────────────────────────────────────────── */
 :root {
-  --bg:            #0d0f12;
-  --steel-dark:    #111418;
-  --steel-mid:     #181c22;
-  --steel-light:   #1f242d;
-  --steel-border:  #2a3040;
-  --steel-hover:   #242a34;
-
-  --amber:         #f59e0b;
-  --amber-dark:    #b45309;
-  --amber-glow:    rgba(245,158,11,0.15);
-
-  --green-go:      #22c55e;
-  --green-dark:    #15803d;
-  --green-glow:    rgba(34,197,94,0.12);
-
-  --red-nogo:      #ef4444;
-  --red-dark:      #991b1b;
-  --red-glow:      rgba(239,68,68,0.12);
-
-  --blue-info:     #3b82f6;
-  --blue-dark:     #1d4ed8;
-
-  --text-primary:  #e8eaf0;
-  --text-muted:    #6b7585;
-  --text-faint:    #3d4555;
-
-  --accent:        #f59e0b;
-
-  --sidebar-w:     240px;
-  --topbar-h:      56px;
-  --radius:        6px;
-  --radius-lg:     10px;
-
-  --font-ui:       'Barlow', sans-serif;
-  --font-display:  'Barlow Condensed', sans-serif;
-  --font-mono:     'JetBrains Mono', monospace;
-
-  --shadow-sm:     0 1px 3px rgba(0,0,0,0.4);
-  --shadow-md:     0 4px 16px rgba(0,0,0,0.5);
-  --shadow-lg:     0 8px 32px rgba(0,0,0,0.6);
+    /* Base theme colors */
+    --primary-color: #197c7e;
+    --primary-color-hover: #135e60; /* Slightly darker for button hovers */
+    /* Bootstrap 5 variable overrides */
+    --bs-primary: #197c7e;
+    --bs-primary-rgb: 25, 124, 126;
+    /* App Theme Colors */
+    --bg: #0d0f12;
+    --steel-dark: #111418;
+    --steel-mid: #181c22;
+    --steel-light: #1f242d;
+    --steel-border: #2a3040;
+    --steel-hover: #242a34;
+    /* We are swapping the generic amber accent out for our primary color where appropriate */
+    --amber: var(--primary-color);
+    --amber-dark: var(--primary-color-hover);
+    --amber-glow: rgba(25, 124, 126, 0.15);
+    --green-go: #22c55e;
+    --green-dark: #15803d;
+    --green-glow: rgba(34,197,94,0.12);
+    --red-nogo: #ef4444;
+    --red-dark: #991b1b;
+    --red-glow: rgba(239,68,68,0.12);
+    --blue-info: #3b82f6;
+    --blue-dark: #1d4ed8;
+    --text-primary: #e8eaf0;
+    --text-muted: #6b7585;
+    --text-faint: #3d4555;
+    --accent: var(--primary-color);
+    --sidebar-w: 240px;
+    --topbar-h: 56px;
+    --radius: 6px;
+    --radius-lg: 10px;
+    --font-ui: 'Barlow', sans-serif;
+    --font-display: 'Barlow Condensed', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.5);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.6);
 }
+/* This single closing brace closes the entire :root block */
+
+/* Override background and text utilities */
+.bg-primary {
+    background-color: var(--primary-color) !important;
+}
+
+.text-primary {
+    color: var(--primary-color) !important;
+}
+
+/* Override standard primary buttons */
+.btn-primary {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+    color: #ffffff;
+}
+
+    .btn-primary:hover, .btn-primary:focus, .btn-primary:active {
+        background-color: var(--primary-color-hover);
+        border-color: var(--primary-color-hover);
+        color: #ffffff;
+    }
+
+/* Override outline primary buttons */
+.btn-outline-primary {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+    .btn-outline-primary:hover, .btn-outline-primary:focus, .btn-outline-primary:active {
+        background-color: var(--primary-color);
+        border-color: var(--primary-color);
+        color: #ffffff;
+    }
 
 /* ── Reset ───────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

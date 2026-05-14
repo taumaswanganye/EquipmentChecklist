@@ -23,7 +23,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>@(ViewData["Title"] != null ? $"{ViewData["Title"]} – Belfast" : "Belfast Equipment Checklist")</title>
+    <title>@(ViewData["Title"] != null ? $"{ViewData["Title"]} – Enaleni" : "Enaleni Equipment Checklist")</title>
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛏</text></svg>" />
 </head>
@@ -35,7 +35,7 @@
         <div class="topbar-brand">
             <div class="brand-icon">⛏</div>
             <div>
-                <div class="brand-name">Belfast</div>
+                <div class="brand-name">Enaleni</div>
                 <div class="brand-sub">Equipment Checklist</div>
             </div>
         </div>
@@ -169,7 +169,7 @@
             <div style="padding:12px 20px">
                 <div style="font-size:10px;color:var(--text-faint);line-height:1.7;font-family:var(--font-mono)">
                     MHSA · DMR · CPS L8/9<br/>
-                    Belfast Coal Mine<br/>
+                    Enaleni Engineering and Technology<br/>
                     Digital Checklist System
                 </div>
             </div>
@@ -190,14 +190,14 @@
 const html       = document.documentElement;
 const themeBtn   = document.getElementById('themeToggle');
 const themeIcon  = document.getElementById('themeIcon');
-const saved      = localStorage.getItem('belfastTheme') || 'dark';
+const saved      = localStorage.getItem('enaleniTheme') || 'dark';
 html.setAttribute('data-theme', saved);
 themeIcon.textContent = saved === 'dark' ? '☀️' : '🌙';
 
 themeBtn.addEventListener('click', () => {
     const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
     html.setAttribute('data-theme', next);
-    localStorage.setItem('belfastTheme', next);
+    localStorage.setItem('enaleniTheme', next);
     themeIcon.textContent = next === 'dark' ? '☀️' : '🌙';
 });
 
