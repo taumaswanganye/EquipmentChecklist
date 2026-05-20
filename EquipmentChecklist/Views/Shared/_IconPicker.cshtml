@@ -1,0 +1,199 @@
+@*
+    Reusable icon-picker.
+
+    Usage:
+        @await Html.PartialAsync("_IconPicker", new ViewDataDictionary(ViewData) {
+            { "FieldName", "iconLibraryPath" },   // hidden input name (required)
+            { "PickerId",  "addItemIcon" },       // unique id if multiple pickers on a page
+            { "Initial",   Model?.IconPath }      // optional starting value
+        });
+
+    The control posts the chosen icon's web path as a string in the hidden
+    field. Clicking 'Browse library' opens a modal grid of every icon in
+    /Admin/IconLibrary; clicking one sets the field. 'Upload new' lets the
+    user upload a fresh icon — it lands in the library AND gets selected
+    here in one shot.
+*@
+@{
+    var fieldName = (ViewData["FieldName"] as string) ?? "iconLibraryPath";
+    var pickerId  = (ViewData["PickerId"]  as string) ?? ("iconpick_" + Guid.NewGuid().ToString("N").Substring(0,8));
+    var initial   = ViewData["Initial"] as string;
+}
+
+<div class="iconpicker" id="@(pickerId)_root">
+    <input type="hidden" id="@(pickerId)_input" name="@fieldName" value="@initial" />
+
+    <div style="display:flex;gap:12px;align-items:center">
+        <div id="@(pickerId)_preview"
+             style="width:56px;height:56px;background:#fff;border:1px solid var(--steel-border);border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0">
+            @if (!string.IsNullOrEmpty(initial))
+            {
+                <img src="@initial" alt="" style="max-width:100%;max-height:100%;object-fit:contain" />
+            }
+            else
+            {
+                <span style="font-size:22px;color:#9ca3af">🖼</span>
+            }
+        </div>
+
+        <div style="flex:1;min-width:0">
+            <button type="button" class="btn btn-ghost"
+                    onclick="IconPicker.open('@pickerId')"
+                    style="width:100%">
+                📂 Choose from library…
+            </button>
+            <p id="@(pickerId)_name"
+               style="font-size:11px;color:var(--text-muted);margin:4px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                @(string.IsNullOrEmpty(initial) ? "No icon selected" : initial)
+            </p>
+        </div>
+
+        @if (!string.IsNullOrEmpty(initial))
+        {
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="IconPicker.clear('@pickerId')"
+                    title="Clear icon" style="flex-shrink:0">✕</button>
+        }
+        else
+        {
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="IconPicker.clear('@pickerId')"
+                    title="Clear icon" style="flex-shrink:0;display:none">✕</button>
+        }
+    </div>
+</div>
+
+@* Modal + JS — emit once per page even if the partial is rendered multiple times *@
+@if (ViewContext.HttpContext.Items["__iconPicker_emitted"] == null)
+{
+    ViewContext.HttpContext.Items["__iconPicker_emitted"] = true;
+
+    <div id="iconPickerModal"
+         style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;padding:20px">
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;max-width:720px;width:100%;max-height:85vh;display:flex;flex-direction:column">
+
+            <div style="padding:14px 18px;border-bottom:1px solid var(--steel-border);display:flex;justify-content:space-between;align-items:center">
+                <h3 style="margin:0;font-size:15px">Choose an icon</h3>
+                <button type="button" onclick="IconPicker.close()"
+                        style="background:transparent;border:none;color:var(--text-muted);font-size:18px;cursor:pointer">✕</button>
+            </div>
+
+            <div style="padding:10px 18px;border-bottom:1px solid var(--steel-border);display:flex;gap:8px;align-items:center">
+                <input type="text" id="iconPickerSearch" placeholder="Filter by name…"
+                       class="form-control" style="flex:1" />
+                <label class="btn btn-primary btn-sm" style="margin:0;cursor:pointer;flex-shrink:0">
+                    📤 Upload new
+                    <input type="file" id="iconPickerUpload"
+                           accept=".png,.jpg,.jpeg,.gif,.webp,.svg"
+                           style="display:none" onchange="IconPicker.upload(this)" />
+                </label>
+            </div>
+
+            <div id="iconPickerGrid"
+                 style="padding:14px 18px;overflow-y:auto;flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px">
+                <div id="iconPickerLoading" style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:40px">
+                    Loading…
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    window.IconPicker = (function () {
+        var modal       = document.getElementById('iconPickerModal');
+        var grid        = document.getElementById('iconPickerGrid');
+        var searchInput = document.getElementById('iconPickerSearch');
+        var uploadInput = document.getElementById('iconPickerUpload');
+        var currentPicker = null;
+        var icons = [];
+
+        function open(pickerId) {
+            currentPicker = pickerId;
+            modal.style.display = 'flex';
+            searchInput.value = '';
+            load();
+            setTimeout(function () { searchInput.focus(); }, 50);
+        }
+        function close() { modal.style.display = 'none'; currentPicker = null; }
+
+        function load() {
+            grid.innerHTML = '<div id="iconPickerLoading" style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:40px">Loading…</div>';
+            fetch('/Admin/IconLibraryJson', { credentials: 'same-origin' })
+                .then(function (r) { return r.json(); })
+                .then(function (data) { icons = data || []; render(''); })
+                .catch(function () { grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--red-nogo);padding:30px">Failed to load library.</div>'; });
+        }
+
+        function render(filter) {
+            var q = (filter || '').toLowerCase().trim();
+            var visible = q ? icons.filter(function (i) { return i.name.toLowerCase().indexOf(q) !== -1; }) : icons;
+
+            if (!visible.length) {
+                grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:40px">' +
+                                 (icons.length ? 'No matches.' : 'Library is empty. Click "Upload new".') + '</div>';
+                return;
+            }
+
+            grid.innerHTML = visible.map(function (i) {
+                var path = i.filePath.replace(/'/g, "\\'");
+                var name = (i.name || '').replace(/</g, '&lt;');
+                return '<div onclick="IconPicker.pick(\'' + path + '\', \'' + name + '\')" ' +
+                       'style="cursor:pointer;background:var(--steel-light);border:1px solid var(--steel-border);border-radius:8px;padding:8px;text-align:center;transition:transform .1s" ' +
+                       'onmouseover="this.style.borderColor=\'var(--accent, #38bdf8)\'" ' +
+                       'onmouseout="this.style.borderColor=\'var(--steel-border)\'">' +
+                           '<div style="width:100%;height:64px;background:#fff;border-radius:4px;display:flex;align-items:center;justify-content:center;padding:4px;margin-bottom:6px">' +
+                               '<img src="' + i.filePath + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain" />' +
+                           '</div>' +
+                           '<div style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + name + '">' + name + '</div>' +
+                       '</div>';
+            }).join('');
+        }
+
+        searchInput.addEventListener('input', function () { render(searchInput.value); });
+        modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
+
+        function pick(path, name) {
+            if (!currentPicker) return;
+            var input   = document.getElementById(currentPicker + '_input');
+            var preview = document.getElementById(currentPicker + '_preview');
+            var label   = document.getElementById(currentPicker + '_name');
+            var root    = document.getElementById(currentPicker + '_root');
+            input.value = path;
+            preview.innerHTML = '<img src="' + path + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain" />';
+            label.textContent = name;
+            var clearBtn = root.querySelector('button[title="Clear icon"]');
+            if (clearBtn) clearBtn.style.display = '';
+            close();
+        }
+
+        function clear(pickerId) {
+            var input   = document.getElementById(pickerId + '_input');
+            var preview = document.getElementById(pickerId + '_preview');
+            var label   = document.getElementById(pickerId + '_name');
+            var root    = document.getElementById(pickerId + '_root');
+            input.value = '';
+            preview.innerHTML = '<span style="font-size:22px;color:#9ca3af">🖼</span>';
+            label.textContent = 'No icon selected';
+            var clearBtn = root.querySelector('button[title="Clear icon"]');
+            if (clearBtn) clearBtn.style.display = 'none';
+        }
+
+        function upload(input) {
+            if (!input.files || !input.files[0]) return;
+            var file = input.files[0];
+            var fd = new FormData();
+            fd.append('file', file);
+            fd.append('displayName', file.name.replace(/\.[^/.]+$/, ''));
+            var token = document.querySelector('input[name="__RequestVerificationToken"]');
+            if (token) fd.append('__RequestVerificationToken', token.value);
+
+            grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:40px">Uploading…</div>';
+            fetch('/Admin/UploadIcon', { method: 'POST', body: fd, credentials: 'same-origin' })
+                .then(function () { input.value = ''; load(); })
+                .catch(function () { grid.innerHTML = '<div style="grid-column:1/-1;color:var(--red-nogo);padding:30px;text-align:center">Upload failed.</div>'; });
+        }
+
+        return { open: open, close: close, pick: pick, clear: clear, upload: upload };
+    })();
+    </script>
+}

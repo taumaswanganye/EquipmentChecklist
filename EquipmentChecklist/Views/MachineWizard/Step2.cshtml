@@ -132,16 +132,13 @@
                            placeholder="e.g. Go till next Service" />
                 </div>
 
-                <!-- Upload Icon -->
+                <!-- Icon (pick from library, or upload new from within the picker) -->
                 <div class="form-group" style="margin:0">
-                    <label class="form-label">Upload Icon</label>
-                    <input type="file" name="iconFile" accept="image/*" class="form-control"
-                           style="padding:4px 8px;font-size:12px"
-                           onchange="previewIcon(this)" />
-                    <div id="iconPreview" style="margin-top:6px;display:none">
-                        <img id="iconPreviewImg" style="width:40px;height:40px;object-fit:contain;border:1px solid var(--steel-border);border-radius:4px;background:#fff;padding:2px" />
-                        <span id="iconPreviewName" style="font-size:11px;color:var(--text-muted);margin-left:6px"></span>
-                    </div>
+                    <label class="form-label">Icon</label>
+                    @await Html.PartialAsync("_IconPicker", new ViewDataDictionary(ViewData) {
+                        { "FieldName", "iconLibraryPath" },
+                        { "PickerId",  "wizardItemIconPicker" }
+                    })
                 </div>
 
                 <!-- ACTION -->
@@ -213,24 +210,6 @@ modal.addEventListener('click', function(e) {
     if (e.target === modal) closeModal();
 });
 
-// Icon preview
-function previewIcon(input) {
-    const preview = document.getElementById('iconPreview');
-    const img     = document.getElementById('iconPreviewImg');
-    const name    = document.getElementById('iconPreviewName');
-    if (input.files && input.files[0]) {
-        const file = input.files[0];
-        const reader = new FileReader();
-        reader.onload = e => {
-            img.src = e.target.result;
-            name.textContent = file.name;
-            preview.style.display = 'flex';
-            preview.style.alignItems = 'center';
-        };
-        reader.readAsDataURL(file);
-    } else {
-        preview.style.display = 'none';
-    }
-}
+// Icon picker handles its own preview — no inline file-upload helper needed here.
 </script>
 }

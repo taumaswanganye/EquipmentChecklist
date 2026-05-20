@@ -19,6 +19,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<SubmissionItem> SubmissionItems => Set<SubmissionItem>();
     public DbSet<DefectOrder> DefectOrders => Set<DefectOrder>();
     public DbSet<OperatorSupervisorAssignment> OperatorSupervisorAssignments => Set<OperatorSupervisorAssignment>();
+    public DbSet<IconLibraryItem> IconLibraryItems => Set<IconLibraryItem>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

@@ -173,7 +173,8 @@ public class AdminController : Controller
         string? action,
         string? inOrderCondition,
         string? defectCondition,
-        IFormFile? imageFile)
+        IFormFile? imageFile,
+        string? iconLibraryPath)
     {
         if (string.IsNullOrWhiteSpace(itemName))
         {
@@ -221,12 +222,20 @@ public class AdminController : Controller
         _db.ChecklistTemplateItems.Add(newItem);
         await _db.SaveChangesAsync();
 
-        // Save image now that we have the item ID
-        var imagePath = await SaveItemImageAsync(imageFile, newItem.Id);
-        if (imagePath != null)
+        // Icon: prefer a library pick; fall back to an inline file upload.
+        if (!string.IsNullOrWhiteSpace(iconLibraryPath))
         {
-            newItem.IconPath = imagePath;
+            newItem.IconPath = iconLibraryPath.Trim();
             await _db.SaveChangesAsync();
+        }
+        else
+        {
+            var imagePath = await SaveItemImageAsync(imageFile, newItem.Id);
+            if (imagePath != null)
+            {
+                newItem.IconPath = imagePath;
+                await _db.SaveChangesAsync();
+            }
         }
 
         TempData["Success"] = $"Item '{itemName.Trim()}' added.";
@@ -244,6 +253,7 @@ public class AdminController : Controller
         string? inOrderCondition,
         string? defectCondition,
         IFormFile? imageFile,
+        string? iconLibraryPath,
         bool removeImage = false)
     {
         var item = await _db.ChecklistTemplateItems.FindAsync(itemId);
@@ -262,23 +272,38 @@ public class AdminController : Controller
         item.InOrderCondition = inOrderCondition?.Trim();
         item.DefectCondition  = defectCondition?.Trim();
 
+        // Icon resolution priority:
+        //   1. removeImage flag wins  →  null
+        //   2. iconLibraryPath set    →  use library reference (don't touch files)
+        //   3. imageFile uploaded     →  save inline, replace previous inline file
+        //   4. else                   →  leave whatever was there
         if (removeImage)
         {
-            // Delete old file if it exists on disk
-            if (!string.IsNullOrEmpty(item.IconPath))
+            if (!string.IsNullOrEmpty(item.IconPath) && item.IconPath.StartsWith("/item-images/"))
             {
                 var oldFile = Path.Combine(_env.WebRootPath, item.IconPath.TrimStart('/'));
                 if (System.IO.File.Exists(oldFile)) System.IO.File.Delete(oldFile);
             }
             item.IconPath = null;
         }
+        else if (!string.IsNullOrWhiteSpace(iconLibraryPath))
+        {
+            // If the previous icon was an inline upload, clean it off disk.
+            if (!string.IsNullOrEmpty(item.IconPath)
+                && item.IconPath.StartsWith("/item-images/")
+                && item.IconPath != iconLibraryPath)
+            {
+                var oldFile = Path.Combine(_env.WebRootPath, item.IconPath.TrimStart('/'));
+                if (System.IO.File.Exists(oldFile)) System.IO.File.Delete(oldFile);
+            }
+            item.IconPath = iconLibraryPath.Trim();
+        }
         else
         {
             var newPath = await SaveItemImageAsync(imageFile, itemId);
             if (newPath != null)
             {
-                // Delete old file before replacing
-                if (!string.IsNullOrEmpty(item.IconPath))
+                if (!string.IsNullOrEmpty(item.IconPath) && item.IconPath.StartsWith("/item-images/"))
                 {
                     var oldFile = Path.Combine(_env.WebRootPath, item.IconPath.TrimStart('/'));
                     if (System.IO.File.Exists(oldFile)) System.IO.File.Delete(oldFile);
@@ -1184,6 +1209,113 @@ public class AdminController : Controller
         TempData["Success"] =
             $"Template uploaded for {machine.MachineNumber} with {kept.Count} checklist items.";
         return RedirectToAction("Index");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //                              ICON LIBRARY
+    // ══════════════════════════════════════════════════════════════════════════
+    private static readonly string[] AllowedIconExtensions =
+        { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg" };
+
+    [HttpGet]
+    public async Task<IActionResult> IconLibrary()
+    {
+        var icons = await _db.IconLibraryItems
+            .OrderByDescending(i => i.UploadedAt)
+            .ToListAsync();
+        return View(icons);
+    }
+
+    /// <summary>JSON endpoint used by the icon-picker modal.</summary>
+    [HttpGet]
+    public async Task<IActionResult> IconLibraryJson()
+    {
+        var icons = await _db.IconLibraryItems
+            .OrderBy(i => i.Name)
+            .Select(i => new { i.Id, i.Name, i.FilePath, i.OriginalFileName, i.FileSize })
+            .ToListAsync();
+        return Json(icons);
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    [RequestSizeLimit(10_000_000)]
+    public async Task<IActionResult> UploadIcon(IFormFile file, string? displayName)
+    {
+        if (file == null || file.Length == 0)
+        {
+            TempData["Error"] = "Please choose a file to upload.";
+            return RedirectToAction(nameof(IconLibrary));
+        }
+
+        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (!AllowedIconExtensions.Contains(ext))
+        {
+            TempData["Error"] = $"Unsupported file type. Allowed: {string.Join(", ", AllowedIconExtensions)}.";
+            return RedirectToAction(nameof(IconLibrary));
+        }
+
+        var dir = Path.Combine(_env.WebRootPath, "icon-library");
+        Directory.CreateDirectory(dir);
+
+        var storedName = $"{Guid.NewGuid():N}{ext}";
+        var fullPath   = Path.Combine(dir, storedName);
+
+        await using (var stream = new FileStream(fullPath, FileMode.Create))
+            await file.CopyToAsync(stream);
+
+        var name = string.IsNullOrWhiteSpace(displayName)
+            ? Path.GetFileNameWithoutExtension(file.FileName)
+            : displayName.Trim();
+        if (name.Length > 120) name = name.Substring(0, 120);
+
+        _db.IconLibraryItems.Add(new IconLibraryItem
+        {
+            Name             = name,
+            OriginalFileName = file.FileName,
+            FilePath         = $"/icon-library/{storedName}",
+            ContentType      = file.ContentType,
+            FileSize         = file.Length,
+            UploadedAt       = DateTime.UtcNow,
+            UploadedById     = _users.GetUserId(User)
+        });
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = $"'{name}' added to the icon library.";
+        return RedirectToAction(nameof(IconLibrary));
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeleteIcon(int id)
+    {
+        var icon = await _db.IconLibraryItems.FindAsync(id);
+        if (icon == null)
+        {
+            TempData["Error"] = "Icon not found.";
+            return RedirectToAction(nameof(IconLibrary));
+        }
+
+        // Delete the file off disk (best-effort)
+        try
+        {
+            var full = Path.Combine(_env.WebRootPath, icon.FilePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            if (System.IO.File.Exists(full)) System.IO.File.Delete(full);
+        }
+        catch { /* leave dangling file rather than failing the request */ }
+
+        // Detach the icon from any template items that referenced it so the rows don't 404.
+        var refs = await _db.ChecklistTemplateItems
+            .Where(t => t.IconPath == icon.FilePath)
+            .ToListAsync();
+        foreach (var t in refs) t.IconPath = null;
+
+        _db.IconLibraryItems.Remove(icon);
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = $"'{icon.Name}' removed from the library.";
+        if (refs.Any())
+            TempData["Success"] += $" Cleared the icon from {refs.Count} checklist item(s).";
+
+        return RedirectToAction(nameof(IconLibrary));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

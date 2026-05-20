@@ -150,6 +150,7 @@ public class MachineWizardController : Controller
         string inOrderCondition,
         string defectCondition,
         bool   isNoGoItem,
+        string? iconLibraryPath,
         IFormFile? iconFile)
     {
         var w = GetWizard();
@@ -159,7 +160,13 @@ public class MachineWizardController : Controller
         string? iconPath     = null;
         string? iconFileName = null;
 
-        if (iconFile != null && iconFile.Length > 0)
+        // Icon resolution: library pick wins; fall back to an inline file upload.
+        if (!string.IsNullOrWhiteSpace(iconLibraryPath))
+        {
+            iconPath     = iconLibraryPath.Trim();
+            iconFileName = Path.GetFileName(iconPath);
+        }
+        else if (iconFile != null && iconFile.Length > 0)
         {
             var uploadDir = Path.Combine(_env.WebRootPath, "uploads", "icons");
             Directory.CreateDirectory(uploadDir);

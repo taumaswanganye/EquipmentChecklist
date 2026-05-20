@@ -190,17 +190,16 @@ else
                               placeholder="Describe what constitutes a defect..."></textarea>
                 </div>
 
-                <!-- Image Upload -->
+                <!-- Icon (pick from library or upload new in the picker) -->
                 <div class="form-group" style="margin:0;grid-column:1/-1">
                     <label class="form-label">
-                        Reference Image
-                        <span style="color:var(--text-muted);font-weight:400">(optional – jpg/png/gif/webp)</span>
+                        Reference Icon
+                        <span style="color:var(--text-muted);font-weight:400">(from the icon library)</span>
                     </label>
-                    <input type="file" name="imageFile" id="addImageFile" class="form-control"
-                           accept=".jpg,.jpeg,.png,.gif,.webp" style="padding:6px"
-                           onchange="previewFile(this, 'addImagePreview')" />
-                    <img id="addImagePreview" src="" alt=""
-                         style="display:none;margin-top:8px;max-height:120px;border-radius:6px;border:1px solid var(--steel-border)" />
+                    @await Html.PartialAsync("_IconPicker", new ViewDataDictionary(ViewData) {
+                        { "FieldName", "iconLibraryPath" },
+                        { "PickerId",  "addItemIconPicker" }
+                    })
                 </div>
 
                 <!-- Is Critical -->
@@ -276,31 +275,13 @@ else
                     <textarea id="editDefect" name="defectCondition" class="form-control" rows="3"></textarea>
                 </div>
 
-                <!-- Current Image + Replace -->
+                <!-- Reference Icon (library picker) -->
                 <div style="grid-column:1/-1">
-                    <label class="form-label">Reference Image</label>
-
-                    <div id="editCurrentImageBox" style="display:none;margin-bottom:10px;padding:10px;background:var(--steel-dark);border:1px solid var(--steel-border);border-radius:6px">
-                        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-                            <img id="editCurrentImg" src="" alt="Current image"
-                                 style="height:80px;border-radius:4px;border:1px solid var(--steel-border)" />
-                            <div>
-                                <p style="font-size:12px;color:var(--text-muted);margin:0 0 6px">Current image</p>
-                                <button type="button" class="btn btn-ghost btn-sm"
-                                        style="color:var(--red-nogo);font-size:12px"
-                                        onclick="removeCurrentImage()">🗑 Remove image</button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <label class="form-label" style="font-size:12px;font-weight:400;margin-top:4px">
-                        Upload new image (replaces existing) — jpg/png/gif/webp
-                    </label>
-                    <input type="file" id="editImageFile" name="imageFile" class="form-control"
-                           accept=".jpg,.jpeg,.png,.gif,.webp" style="padding:6px"
-                           onchange="previewFile(this, 'editImagePreview')" />
-                    <img id="editImagePreview" src="" alt=""
-                         style="display:none;margin-top:8px;max-height:120px;border-radius:6px;border:1px solid var(--steel-border)" />
+                    <label class="form-label">Reference Icon</label>
+                    @await Html.PartialAsync("_IconPicker", new ViewDataDictionary(ViewData) {
+                        { "FieldName", "iconLibraryPath" },
+                        { "PickerId",  "editItemIconPicker" }
+                    })
                 </div>
 
                 <!-- Is Critical -->
@@ -386,22 +367,16 @@ document.querySelectorAll('.edit-item-btn').forEach(function(btn) {
         document.getElementById('editIsNoGoYes').checked = (d.nogo === 'true');
         document.getElementById('editIsNoGoNo').checked  = (d.nogo !== 'true');
 
-        // Current image
-        var imgBox = document.getElementById('editCurrentImageBox');
-        var imgEl  = document.getElementById('editCurrentImg');
-        if (d.icon && d.icon.length > 0) {
-            imgEl.src = d.icon;
-            imgBox.style.display = 'block';
-        } else {
-            imgBox.style.display = 'none';
-            imgEl.src = '';
+        // Pre-fill the icon picker with the item's current icon (if any)
+        var picker = 'editItemIconPicker';
+        var input  = document.getElementById(picker + '_input');
+        if (input) {
+            if (d.icon && d.icon.length > 0) {
+                IconPicker.pick(d.icon, d.icon.split('/').pop());
+            } else {
+                IconPicker.clear(picker);
+            }
         }
-
-        // Clear new-image preview and file input
-        var preview = document.getElementById('editImagePreview');
-        preview.style.display = 'none';
-        preview.src = '';
-        document.getElementById('editImageFile').value = '';
 
         editModal.style.display = 'flex';
         document.body.style.overflow = 'hidden';
@@ -416,15 +391,8 @@ editModal.addEventListener('click', function(e) { if (e.target === editModal) cl
 
 function removeCurrentImage() {
     document.getElementById('editRemoveImage').value = 'true';
-    document.getElementById('editCurrentImageBox').style.display = 'none';
+    IconPicker.clear('editItemIconPicker');
 }
-
-// When a new file is chosen, un-mark removal
-document.getElementById('editImageFile').addEventListener('change', function() {
-    if (this.files && this.files[0]) {
-        document.getElementById('editRemoveImage').value = 'false';
-    }
-});
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
 function previewImage(src, caption) {

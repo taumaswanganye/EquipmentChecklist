@@ -247,3 +247,19 @@ public class PendingSyncRecord
     public int RetryCount { get; set; } = 0;
     public string? LastError { get; set; }
 }
+
+// ─── Reusable icon library (managed by Admin, used by checklist items) ────────
+public class IconLibraryItem
+{
+    public int Id { get; set; }
+    /// <summary>Human-readable display name (defaults to original file name without extension).</summary>
+    [Required, MaxLength(120)] public string Name { get; set; } = "";
+    /// <summary>Original filename at upload time.</summary>
+    [Required, MaxLength(255)] public string OriginalFileName { get; set; } = "";
+    /// <summary>Web-relative path under wwwroot, e.g. /icon-library/abc123.png.</summary>
+    [Required, MaxLength(255)] public string FilePath { get; set; } = "";
+    [MaxLength(80)]  public string? ContentType { get; set; }
+    public long FileSize { get; set; }
+    public DateTime UploadedAt { get; set; } = DateTime.UtcNow;
+    [MaxLength(450)] public string? UploadedById { get; set; }
+}
