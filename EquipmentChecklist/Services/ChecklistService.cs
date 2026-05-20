@@ -31,6 +31,7 @@ public class ChecklistService
             KmOrHourMeter = dto.KmOrHourMeter,
             OperatorRemarks = dto.OperatorRemarks,
             FitnessDeclarationSigned = dto.FitnessDeclarationSigned,
+            OperatorSignature = dto.OperatorSignature,
             SubmittedAt = DateTime.UtcNow
         };
 
@@ -54,6 +55,38 @@ public class ChecklistService
 
         _db.ChecklistSubmissions.Add(submission);
         await _db.SaveChangesAsync();
+
+        // On NO-GO, immediately create a DefectOrder per defective item and assign
+        // it to the machine's currently-responsible mechanic so they see the work
+        // (and the Order-Parts buttons) in their dashboard without waiting for a
+        // supervisor rejection step.
+        if (submission.Status == ChecklistStatus.NoGo)
+        {
+            var assignedMechanicId = await _db.MachineAssignments
+                .Where(a => a.MachineId == machine.Id && a.IsActive && a.MechanicId != null)
+                .OrderByDescending(a => a.AssignedFrom)
+                .Select(a => a.MechanicId)
+                .FirstOrDefaultAsync();
+
+            var defects = submissionItems.Where(i => i.Status == ItemStatus.Defect).ToList();
+            foreach (var d in defects)
+            {
+                _db.DefectOrders.Add(new DefectOrder
+                {
+                    SubmissionId       = submission.Id,
+                    SubmissionItemId   = d.Id,
+                    DefectDescription  = (d.Notes ?? d.TemplateItem.ItemName).Length > 200
+                                            ? (d.Notes ?? d.TemplateItem.ItemName).Substring(0, 200)
+                                            : (d.Notes ?? d.TemplateItem.ItemName),
+                    AssignedMechanicId = assignedMechanicId,
+                    RepairStatus       = assignedMechanicId == null
+                                            ? RepairStatus.Pending
+                                            : RepairStatus.InProgress,
+                    CreatedAt          = DateTime.UtcNow
+                });
+            }
+            if (defects.Any()) await _db.SaveChangesAsync();
+        }
 
         return submission;
     }
@@ -82,7 +115,7 @@ public class ChecklistService
     /// <summary>
     /// Supervisor approves a GO-BUT submission (status W).
     /// </summary>
-    public async Task SupervisorSignOffAsync(int submissionId, string supervisorId, ChecklistStatus resolvedStatus)
+    public async Task SupervisorSignOffAsync(int submissionId, string supervisorId, ChecklistStatus resolvedStatus, string? signaturePng = null)
     {
         var submission = await _db.ChecklistSubmissions.FindAsync(submissionId)
             ?? throw new Exception("Submission not found");
@@ -90,8 +123,12 @@ public class ChecklistService
         if (submission.Status is not (ChecklistStatus.GoButRepair24H or ChecklistStatus.GoTillNextService))
             throw new Exception("Only GO-BUT submissions require supervisor sign-off");
 
+        if (string.IsNullOrWhiteSpace(signaturePng))
+            throw new Exception("A digital signature is required to approve this submission.");
+
         submission.SupervisorId = supervisorId;
         submission.SupervisorSignedAt = DateTime.UtcNow;
+        submission.SupervisorSignature = signaturePng;
         submission.Status = resolvedStatus;
         await _db.SaveChangesAsync();
     }
@@ -99,7 +136,7 @@ public class ChecklistService
     /// <summary>
     /// Mechanic marks a defect order as resolved and clears machine immobilisation if all defects resolved.
     /// </summary>
-    public async Task ResolveDefectAsync(int defectOrderId, string mechanicId, string notes)
+    public async Task ResolveDefectAsync(int defectOrderId, string mechanicId, string notes, string? signaturePng = null)
     {
         var order = await _db.DefectOrders
             .Include(d => d.Submission)
@@ -107,10 +144,14 @@ public class ChecklistService
             .FirstOrDefaultAsync(d => d.Id == defectOrderId)
             ?? throw new Exception("Defect order not found");
 
+        if (string.IsNullOrWhiteSpace(signaturePng))
+            throw new Exception("A digital signature is required to close this defect.");
+
         order.RepairStatus = RepairStatus.Completed;
         order.AssignedMechanicId = mechanicId;
         order.ResolvedAt = DateTime.UtcNow;
         order.ResolutionNotes = notes;
+        order.MechanicSignature = signaturePng;
 
         // If all defect orders for this machine's latest NO-GO are resolved → clear immobilisation
         var machine = order.Submission.Machine;

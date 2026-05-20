@@ -36,6 +36,8 @@ public class SubmitChecklistDto
     public int? KmOrHourMeter { get; set; }
     public string? OperatorRemarks { get; set; }
     public bool FitnessDeclarationSigned { get; set; }
+    /// <summary>Operator's drawn signature (base64 PNG data URL).</summary>
+    public string? OperatorSignature { get; set; }
     public List<SubmissionItemDto> Items { get; set; } = new();
 }
 

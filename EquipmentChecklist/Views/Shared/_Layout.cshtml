@@ -2,6 +2,7 @@
 @using EquipmentChecklist.Models
 @inject SignInManager<ApplicationUser> SignInManager
 @inject UserManager<ApplicationUser> UserMgr
+@inject IWebHostEnvironment Env
 @{
     ApplicationUser? currentUser = null;
     if (SignInManager.IsSignedIn(User))
@@ -124,6 +125,9 @@
                 <a href="/Supervisor" class="nav-item @(path=="/Supervisor"?"active":"")">
                     <span class="nav-icon">✍</span> Sign-Off Queue
                 </a>
+                <a href="/Supervisor/MyOperators" class="nav-item @(path.StartsWith("/Supervisor/MyOperators")?"active":"")">
+                    <span class="nav-icon">👷</span> My Operators
+                </a>
                 <a href="/Supervisor/NoGoMachines" class="nav-item @(path.StartsWith("/Supervisor/NoGo")?"active":"")">
                     <span class="nav-icon">🚫</span> NO-GO Machines
                 </a>
@@ -135,6 +139,9 @@
                 <div class="nav-section-label">Mechanic</div>
                 <a href="/Mechanic" class="nav-item @(path=="/Mechanic"?"active":"")">
                     <span class="nav-icon">🔧</span> Defect Orders
+                </a>
+                <a href="/Mechanic/MyOperators" class="nav-item @(path.StartsWith("/Mechanic/MyOperators")?"active":"")">
+                    <span class="nav-icon">👷</span> My Operators
                 </a>
                 <a href="/Mechanic/Cart" class="nav-item @(path.StartsWith("/Mechanic/Cart")?"active":"")">
                     <span class="nav-icon">🛒</span> Parts Cart
@@ -163,6 +170,14 @@
                 <a href="/Admin/Reports" class="nav-item @(path.StartsWith("/Admin/Report")?"active":"")">
                     <span class="nav-icon">📈</span> Reports
                 </a>
+
+                @if (Env.IsDevelopment())
+                {
+                    <a href="/Admin/Debug" class="nav-item @(path.StartsWith("/Admin/Debug")?"active":"")"
+                       style="color:#fca5a5">
+                        <span class="nav-icon">⚠️</span> Debug · Truncate DB
+                    </a>
+                }
             }
 
             <div class="nav-divider"></div>

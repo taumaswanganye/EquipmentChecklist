@@ -120,7 +120,7 @@ static async Task SeedRolesAndAdminAsync(WebApplication app)
     var localDb = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
 
     // 1. Run migrations for Cloud DB
-    await cloudDb.Database.MigrateAsync();
+   // await cloudDb.Database.MigrateAsync();
 
     // 2. Ensure Local SQLite DB is created
     await localDb.Database.EnsureCreatedAsync();

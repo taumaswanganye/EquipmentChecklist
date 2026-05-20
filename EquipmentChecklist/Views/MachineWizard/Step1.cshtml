@@ -1,7 +1,11 @@
+@using EquipmentChecklist.Models
 @model EquipmentChecklist.Controllers.WizardMachineData
 @{
     ViewData["Title"] = "Create Vehicle/Machine";
     Layout = "~/Views/Shared/_Layout.cshtml";
+
+    // Built-in enum labels + any custom TypeNames already used in the DB
+    var typeSuggestions = ViewBag.TypeSuggestions as List<string> ?? new List<string>();
 }
 
 <!-- Page header -->
@@ -67,23 +71,24 @@
                 <!-- Type -->
                 <div class="form-group" style="margin:0">
                     <label class="form-label">Type <span style="color:var(--red-nogo)">*</span></label>
-                    <select name="MachineType" class="form-control" required>
-                        <option value="">-- Select Type --</option>
-                        <option value="1"  @(Model?.MachineType==1  ?"selected":"")>ADT – Articulated Dump Truck</option>
-                        <option value="2"  @(Model?.MachineType==2  ?"selected":"")>Articulated Water Truck</option>
-                        <option value="3"  @(Model?.MachineType==3  ?"selected":"")>Diesel Bowser</option>
-                        <option value="4"  @(Model?.MachineType==4  ?"selected":"")>Drills</option>
-                        <option value="5"  @(Model?.MachineType==5  ?"selected":"")>Excavator</option>
-                        <option value="6"  @(Model?.MachineType==6  ?"selected":"")>FEL – Front End Loader</option>
-                        <option value="7"  @(Model?.MachineType==7  ?"selected":"")>Forklift</option>
-                        <option value="8"  @(Model?.MachineType==8  ?"selected":"")>Grader</option>
-                        <option value="9"  @(Model?.MachineType==9  ?"selected":"")>LDV / Light Vehicle</option>
-                        <option value="10" @(Model?.MachineType==10 ?"selected":"")>SRV / Water Bowser</option>
-                        <option value="11" @(Model?.MachineType==11 ?"selected":"")>Track Dozer</option>
-                        <option value="12" @(Model?.MachineType==12 ?"selected":"")>RDT – 773 Haul Truck</option>
-                        <option value="13" @(Model?.MachineType==13 ?"selected":"")>Truck Mounted Crane</option>
-                        <option value="14" @(Model?.MachineType==14 ?"selected":"")>TLB</option>
-                    </select>
+                    <input type="text"
+                           name="TypeName"
+                           class="form-control"
+                           list="machine-types"
+                           placeholder="Pick from list or type a new type…"
+                           autocomplete="off"
+                           required
+                           maxlength="100"
+                           value="@Model?.TypeName" />
+                    <datalist id="machine-types">
+                        @foreach (var s in typeSuggestions)
+                        {
+                            <option value="@s"></option>
+                        }
+                    </datalist>
+                    <small style="display:block;margin-top:4px;font-size:11px;color:var(--text-muted)">
+                        Choose a suggestion or type a brand-new type — it'll be remembered for next time.
+                    </small>
                 </div>
 
                 <!-- Description -->

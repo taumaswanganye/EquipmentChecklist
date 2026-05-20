@@ -1,0 +1,109 @@
+@{
+    ViewData["Title"] = "Debug · Truncate Database";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var phrase = ViewBag.ConfirmPhrase as string ?? "TRUNCATE EVERYTHING";
+    var counts = ViewBag.Counts as Dictionary<string, int> ?? new();
+}
+
+<div style="max-width:720px">
+    <a href="/Admin" class="btn btn-ghost" style="margin-bottom:16px">← Back to Fleet</a>
+
+    <!-- Danger banner -->
+    <div style="background:#450a0a;border:2px solid #7f1d1d;border-radius:10px;padding:20px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+            <span style="font-size:28px">⚠️</span>
+            <h2 style="margin:0;font-size:20px;color:#fecaca">DEBUG ONLY · DESTRUCTIVE</h2>
+        </div>
+        <p style="color:#fecaca;font-size:13px;line-height:1.6;margin:0">
+            This page wipes <strong>every</strong> machine, template, submission, defect order
+            and assignment from the database. It also deletes <strong>every user except you</strong>.
+            Identity counters are reset to 1. <strong>There is no undo.</strong>
+            This page is only visible in the <code>Development</code> environment and returns
+            <code>404</code> in Staging / Production.
+        </p>
+    </div>
+
+    @if (TempData["Success"] != null)
+    {
+        <div style="padding:12px 16px;background:rgba(34,197,94,.12);border:1px solid #166534;border-radius:6px;color:#86efac;font-size:13px;margin-bottom:16px">
+            ✓ @TempData["Success"]
+        </div>
+    }
+    @if (TempData["Error"] != null)
+    {
+        <div style="padding:12px 16px;background:#450a0a;border:1px solid #7f1d1d;border-radius:6px;color:#fca5a5;font-size:13px;margin-bottom:16px">
+            ✕ @TempData["Error"]
+        </div>
+    }
+
+    <!-- Current row counts -->
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px;margin-bottom:20px">
+        <h3 style="margin:0 0 12px;font-size:15px">Current row counts</h3>
+        <table class="data-table" style="margin:0">
+            <thead>
+                <tr><th>Table</th><th style="text-align:right">Rows</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var (k, v) in counts)
+                {
+                    <tr>
+                        <td style="font-family:var(--font-mono);font-size:12px">@k</td>
+                        <td style="text-align:right;font-family:var(--font-mono);font-weight:700">@v</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Confirm + truncate form -->
+    <form method="post" action="/Admin/DebugTruncate" id="truncForm"
+          style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px">
+        @Html.AntiForgeryToken()
+
+        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">
+            To confirm, type the phrase below <strong>exactly</strong> (case-sensitive) and press
+            the red button. Your current admin login is preserved.
+        </p>
+
+        <p style="margin-bottom:10px">
+            <span style="font-family:var(--font-mono);background:var(--steel-light);padding:4px 10px;border-radius:4px;border:1px solid var(--steel-border);font-size:13px">
+                @phrase
+            </span>
+        </p>
+
+        <input type="text" name="confirm" id="confirmInput" class="form-control"
+               autocomplete="off" placeholder="Type the phrase here"
+               style="margin-bottom:16px" />
+
+        <button type="submit" id="truncBtn" class="btn"
+                disabled
+                style="background:#7f1d1d;border:1px solid #b91c1c;color:#fee2e2;
+                       font-weight:700;padding:10px 22px;cursor:not-allowed;opacity:.55">
+            🔥 Truncate Everything
+        </button>
+        <a href="/Admin" class="btn btn-ghost" style="margin-left:8px">Cancel</a>
+    </form>
+</div>
+
+<script>
+(function () {
+    var phrase = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(phrase));
+    var input  = document.getElementById('confirmInput');
+    var btn    = document.getElementById('truncBtn');
+    var form   = document.getElementById('truncForm');
+
+    function sync() {
+        var ok = input.value === phrase;
+        btn.disabled = !ok;
+        btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+        btn.style.opacity = ok ? '1' : '.55';
+    }
+    input.addEventListener('input', sync);
+
+    form.addEventListener('submit', function (e) {
+        if (input.value !== phrase) { e.preventDefault(); return; }
+        if (!confirm('Last chance. This wipes the database and cannot be undone. Continue?'))
+            e.preventDefault();
+    });
+})();
+</script>

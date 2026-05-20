@@ -3,6 +3,12 @@
 @{
     ViewData["Title"] = "Edit Machine";
     Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var typeSuggestions = ViewBag.TypeSuggestions as List<string> ?? new List<string>();
+    // Current type label to pre-fill the input: prefer custom TypeName, fall back to enum label
+    var currentTypeLabel = !string.IsNullOrWhiteSpace(Model.TypeName)
+        ? Model.TypeName
+        : (MachineDisplayExtensions.MachineTypeLabels.TryGetValue(Model.Type, out var l) ? l : Model.Type.ToString());
 }
 
 <div style="margin-bottom:16px">
@@ -62,22 +68,24 @@
                 <!-- Type -->
                 <div class="form-group" style="margin:0">
                     <label class="form-label">Type <span style="color:var(--red-nogo)">*</span></label>
-                    <select name="Type" class="form-control" required>
-                        <option value="1"  @(Model.Type==MachineType.ADT               ?"selected":"")>ADT – Articulated Dump Truck</option>
-                        <option value="2"  @(Model.Type==MachineType.ArticulatedWaterTruck?"selected":"")>Articulated Water Truck</option>
-                        <option value="3"  @(Model.Type==MachineType.DieselBowser      ?"selected":"")>Diesel Bowser</option>
-                        <option value="4"  @(Model.Type==MachineType.Drills            ?"selected":"")>Drills</option>
-                        <option value="5"  @(Model.Type==MachineType.Excavator         ?"selected":"")>Excavator</option>
-                        <option value="6"  @(Model.Type==MachineType.FEL               ?"selected":"")>FEL – Front End Loader</option>
-                        <option value="7"  @(Model.Type==MachineType.Forklift          ?"selected":"")>Forklift</option>
-                        <option value="8"  @(Model.Type==MachineType.Grader            ?"selected":"")>Grader</option>
-                        <option value="9"  @(Model.Type==MachineType.LDV               ?"selected":"")>LDV / Light Vehicle</option>
-                        <option value="10" @(Model.Type==MachineType.SRVWaterBowser    ?"selected":"")>SRV / Water Bowser</option>
-                        <option value="11" @(Model.Type==MachineType.TrackDozer        ?"selected":"")>Track Dozer</option>
-                        <option value="12" @(Model.Type==MachineType.RDT               ?"selected":"")>RDT – 773 Haul Truck</option>
-                        <option value="13" @(Model.Type==MachineType.TruckMountedCrane ?"selected":"")>Truck Mounted Crane</option>
-                        <option value="14" @(Model.Type==MachineType.TLB              ?"selected":"")>TLB</option>
-                    </select>
+                    <input type="text"
+                           name="TypeName"
+                           class="form-control"
+                           list="machine-types"
+                           placeholder="Pick from list or type a new type…"
+                           autocomplete="off"
+                           required
+                           maxlength="100"
+                           value="@currentTypeLabel" />
+                    <datalist id="machine-types">
+                        @foreach (var s in typeSuggestions)
+                        {
+                            <option value="@s"></option>
+                        }
+                    </datalist>
+                    <small style="display:block;margin-top:4px;font-size:11px;color:var(--text-muted)">
+                        Choose a suggestion or type a brand-new type.
+                    </small>
                 </div>
 
                 <!-- Active status -->

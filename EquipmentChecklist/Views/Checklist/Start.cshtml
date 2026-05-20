@@ -104,7 +104,7 @@
         <div>
             <a href="/Checklist" class="btn btn-ghost" style="margin-bottom:8px">← Back</a>
             <h2 class="page-title">@Model.MachineName</h2>
-            <p class="page-subtitle">Machine #@Model.MachineNumber · @Model.Type · Pre-Use Inspection</p>
+            <p class="page-subtitle">Machine #@Model.MachineNumber · @Model.TypeDisplay() · Pre-Use Inspection</p>
         </div>
         <span class="badge badge-pending" id="statusPreview" style="font-size:14px;padding:8px 16px">◉ Not started</span>
     </div>
@@ -340,6 +340,15 @@
                        style="width:18px;height:18px;accent-color:var(--green-go)" />
                 I confirm the above declaration
             </label>
+        </div>
+
+        <!-- Operator Digital Signature -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px;margin-bottom:24px">
+            @await Html.PartialAsync("_SignaturePad", new ViewDataDictionary(ViewData) {
+                { "FieldName", "OperatorSignature" },
+                { "Label",     "Operator Digital Signature" },
+                { "PadId",     "operatorSigPad" }
+            })
         </div>
 
         <div style="display:flex;gap:12px;align-items:center">

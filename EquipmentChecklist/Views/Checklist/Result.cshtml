@@ -150,3 +150,27 @@ else
         <p style="font-size:14px">@Model.OperatorRemarks</p>
     </div>
 }
+
+@if (!string.IsNullOrEmpty(Model.OperatorSignature) || !string.IsNullOrEmpty(Model.SupervisorSignature))
+{
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:24px">
+        @if (!string.IsNullOrEmpty(Model.OperatorSignature))
+        {
+            <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:16px">
+                <p style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:8px">
+                    Operator Signature · @Model.Operator?.FullName
+                </p>
+                <img src="@Model.OperatorSignature" alt="Operator signature" style="max-height:110px;background:#fff;padding:8px;border-radius:6px" />
+            </div>
+        }
+        @if (!string.IsNullOrEmpty(Model.SupervisorSignature))
+        {
+            <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:16px">
+                <p style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:8px">
+                    Supervisor Signature · @Model.SupervisorSignedAt?.ToString("yyyy-MM-dd HH:mm")
+                </p>
+                <img src="@Model.SupervisorSignature" alt="Supervisor signature" style="max-height:110px;background:#fff;padding:8px;border-radius:6px" />
+            </div>
+        }
+    </div>
+}

@@ -1,0 +1,122 @@
+@*
+    Reusable signature-pad partial.
+
+    Usage from any view (inside or outside a form):
+        @await Html.PartialAsync("_SignaturePad", new ViewDataDictionary(ViewData) {
+            { "FieldName",   "OperatorSignature" },   // hidden input name (required)
+            { "Label",       "Operator Signature" },  // optional heading
+            { "PadId",       "opsigpad" },            // unique id when multiple pads on one page (optional)
+            { "ExistingPng", Model.OperatorSignature } // optional pre-loaded signature (base64 data URL)
+        });
+
+    The hidden <input> is populated with the base64 PNG data URL on every stroke,
+    so it submits naturally with the surrounding <form>. If no signature has been
+    drawn, the hidden field stays empty.
+*@
+@{
+    var fieldName   = (ViewData["FieldName"] as string) ?? "Signature";
+    var label       = (ViewData["Label"]     as string) ?? "Signature";
+    var padId       = (ViewData["PadId"]     as string) ?? ("sigpad_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+    var existingPng = ViewData["ExistingPng"] as string;
+}
+
+<div class="sigpad-wrap" style="margin:14px 0">
+    <label style="display:block;font-size:12px;font-weight:700;color:var(--text-muted);margin-bottom:6px;letter-spacing:.4px;text-transform:uppercase">
+        @label <span style="color:var(--red-nogo)">*</span>
+    </label>
+
+    <div id="@(padId)_box"
+         style="position:relative;background:#fff;border:2px dashed var(--steel-border);border-radius:8px;height:160px;touch-action:none;overflow:hidden">
+        <canvas id="@padId"
+                style="position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;display:block"></canvas>
+        <div id="@(padId)_hint"
+             style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;color:#9ca3af;font-size:13px;font-style:italic">
+            ✍ Sign here
+        </div>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <button type="button" id="@(padId)_clear"
+                style="font-size:12px;padding:6px 14px;background:transparent;border:1px solid var(--steel-border);color:var(--text-muted);border-radius:6px;cursor:pointer">
+            ✕ Clear
+        </button>
+        <span id="@(padId)_status" style="font-size:11px;color:var(--text-muted)">Not signed</span>
+    </div>
+
+    <input type="hidden" id="@(padId)_input" name="@fieldName" value="@existingPng" />
+</div>
+
+@* Load signature_pad.js once per page even if the partial is rendered multiple times *@
+<script>
+(function() {
+    if (!window._sigpadLoaded) {
+        window._sigpadLoaded = true;
+        var s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js';
+        s.onload = function() { window._sigpadReady = true; document.dispatchEvent(new Event('sigpadready')); };
+        document.head.appendChild(s);
+    }
+
+    function initPad() {
+        var canvas  = document.getElementById('@padId');
+        var hint    = document.getElementById('@(padId)_hint');
+        var status  = document.getElementById('@(padId)_status');
+        var input   = document.getElementById('@(padId)_input');
+        var clearBt = document.getElementById('@(padId)_clear');
+        if (!canvas || canvas._inited) return;
+        canvas._inited = true;
+
+        // Make canvas pixel size match its CSS size, with DPR for crisp lines
+        function resize() {
+            var ratio = Math.max(window.devicePixelRatio || 1, 1);
+            canvas.width  = canvas.offsetWidth  * ratio;
+            canvas.height = canvas.offsetHeight * ratio;
+            var ctx = canvas.getContext('2d');
+            ctx.scale(ratio, ratio);
+            if (pad) {
+                var prev = input.value;
+                pad.clear();
+                if (prev) pad.fromDataURL(prev);
+            }
+        }
+
+        var pad = new window.SignaturePad(canvas, {
+            penColor: '#111827',
+            backgroundColor: 'rgba(255,255,255,0)'
+        });
+
+        // Pre-load existing signature if any
+        if (input.value) {
+            pad.fromDataURL(input.value);
+            hint.style.display = 'none';
+            status.textContent = '✓ Previously signed';
+            status.style.color = 'var(--green-go, #16a34a)';
+        }
+
+        pad.addEventListener('beginStroke', function() {
+            hint.style.display = 'none';
+        });
+        pad.addEventListener('endStroke', function() {
+            input.value = pad.isEmpty() ? '' : pad.toDataURL('image/png');
+            status.textContent = pad.isEmpty() ? 'Not signed' : '✓ Signed';
+            status.style.color = pad.isEmpty() ? 'var(--text-muted)' : 'var(--green-go, #16a34a)';
+        });
+        clearBt.addEventListener('click', function() {
+            pad.clear();
+            input.value = '';
+            hint.style.display = '';
+            status.textContent = 'Not signed';
+            status.style.color = 'var(--text-muted)';
+        });
+
+        window.addEventListener('resize', resize);
+        resize();
+    }
+
+    if (window._sigpadReady) {
+        initPad();
+    } else {
+        document.addEventListener('sigpadready', initPad);
+    }
+})();
+</script>

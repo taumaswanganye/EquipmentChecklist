@@ -63,6 +63,14 @@ public class MechanicController : Controller
             .Include(m => m.Submissions).ThenInclude(s => s.Operator)
             .FirstOrDefaultAsync(m => m.Id == machineId);
         if (machine == null) return RedirectToAction("Index");
+
+        // Is the signed-in user the responsible mechanic for this machine?
+        var userId            = _users.GetUserId(User)!;
+        var isAdmin           = User.IsInRole("Admin");
+        var isAssignedMech    = await _db.MachineAssignments
+            .AnyAsync(a => a.MachineId == machineId && a.IsActive && a.MechanicId == userId);
+        ViewBag.CanOrderParts = machine.IsImmobilised && (isAdmin || isAssignedMech);
+
         return View(machine);
     }
 
@@ -75,6 +83,90 @@ public class MechanicController : Controller
         SaveCart(cart);
         TempData["Success"] = $"Added to parts cart.";
         return RedirectToAction("Index");
+    }
+
+    /// <summary>
+    /// Used from the NoGoDetail screen: takes a SubmissionItem, finds-or-creates
+    /// its DefectOrder, assigns it to the current mechanic, and adds it to the
+    /// parts cart. Only succeeds when the machine is immobilised AND the current
+    /// user is its currently-assigned mechanic (or an Admin).
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> EnsureOrderAndAddToCart(int submissionItemId, int machineId)
+    {
+        var userId  = _users.GetUserId(User)!;
+        var isAdmin = User.IsInRole("Admin");
+
+        var machine = await _db.Machines.FindAsync(machineId);
+        if (machine == null)
+        {
+            TempData["Error"] = "Machine not found.";
+            return RedirectToAction("Index");
+        }
+        if (!machine.IsImmobilised)
+        {
+            TempData["Error"] = $"{machine.MachineNumber} is not immobilised — parts can only be ordered for immobilised machines from this screen.";
+            return RedirectToAction("NoGoDetail", new { machineId });
+        }
+
+        // Rule: only the responsible mechanic on this machine (or an admin) may order parts here.
+        if (!isAdmin)
+        {
+            var isResponsible = await _db.MachineAssignments
+                .AnyAsync(a => a.MachineId == machineId && a.IsActive && a.MechanicId == userId);
+            if (!isResponsible)
+            {
+                TempData["Error"] = $"You are not the assigned mechanic for {machine.MachineNumber}.";
+                return RedirectToAction("NoGoDetail", new { machineId });
+            }
+        }
+
+        var item = await _db.SubmissionItems
+            .Include(i => i.TemplateItem)
+            .Include(i => i.Submission)
+            .FirstOrDefaultAsync(i => i.Id == submissionItemId);
+        if (item == null || item.Status != ItemStatus.Defect)
+        {
+            TempData["Error"] = "Selected item is not a defect.";
+            return RedirectToAction("NoGoDetail", new { machineId });
+        }
+
+        // Find or create the open DefectOrder for this SubmissionItem
+        var order = await _db.DefectOrders
+            .FirstOrDefaultAsync(d => d.SubmissionItemId == submissionItemId
+                                   && d.RepairStatus != RepairStatus.Completed);
+        if (order == null)
+        {
+            var desc = item.Notes ?? item.TemplateItem.ItemName;
+            if (desc.Length > 200) desc = desc.Substring(0, 200);
+
+            order = new DefectOrder
+            {
+                SubmissionId       = item.SubmissionId,
+                SubmissionItemId   = item.Id,
+                DefectDescription  = desc,
+                AssignedMechanicId = userId,
+                RepairStatus       = RepairStatus.InProgress,
+                CreatedAt          = DateTime.UtcNow
+            };
+            _db.DefectOrders.Add(order);
+            await _db.SaveChangesAsync();
+        }
+        else if (order.AssignedMechanicId == null)
+        {
+            order.AssignedMechanicId = userId;
+            order.RepairStatus       = RepairStatus.InProgress;
+            await _db.SaveChangesAsync();
+        }
+
+        // Add to mechanic's cart
+        var cart = GetCart();
+        if (!cart.Any(c => c.DefectOrderId == order.Id))
+            cart.Add(new CartItem { DefectOrderId = order.Id, ItemName = item.TemplateItem.ItemName });
+        SaveCart(cart);
+
+        TempData["Success"] = $"'{item.TemplateItem.ItemName}' added to your parts cart.";
+        return RedirectToAction("NoGoDetail", new { machineId });
     }
 
     /// <summary>Assigns an unassigned defect to the current mechanic AND adds it to the cart in one step.</summary>
@@ -244,11 +336,73 @@ public class MechanicController : Controller
         return RedirectToAction("Index");
     }
 
+    // ── My Operators ──────────────────────────────────────────────────────────
+    [HttpGet]
+    public async Task<IActionResult> MyOperators()
+    {
+        var userId  = _users.GetUserId(User)!;
+        var isAdmin = User.IsInRole("Admin");
+
+        // Machines this mechanic is responsible for → operators who drive them
+        IQueryable<MachineAssignment> q = _db.MachineAssignments
+            .Include(a => a.Machine)
+            .Include(a => a.Operator)
+            .Where(a => a.IsActive);
+        if (!isAdmin)
+            q = q.Where(a => a.MechanicId == userId);
+
+        var assignments = await q.ToListAsync();
+
+        // Group by operator so the page lists each one once with all machines underneath
+        var byOperator = assignments
+            .GroupBy(a => a.Operator)
+            .OrderBy(g => g.Key.FullName)
+            .ToList();
+
+        var operatorIds = byOperator.Select(g => g.Key.Id).ToList();
+        var since       = DateTime.UtcNow.Date.AddDays(-30);
+
+        // Defects on my machines, grouped by operator
+        var defectsByOperator = await _db.DefectOrders
+            .Include(d => d.Submission)
+            .Where(d => operatorIds.Contains(d.Submission.OperatorId)
+                     && d.AssignedMechanicId == (isAdmin ? d.AssignedMechanicId : userId)
+                     && d.RepairStatus != RepairStatus.Completed)
+            .GroupBy(d => d.Submission.OperatorId)
+            .Select(g => new { OperatorId = g.Key, Open = g.Count() })
+            .ToListAsync();
+
+        // 30-day NO-GO counts per operator (on my machines)
+        var myMachineIds = assignments.Select(a => a.MachineId).Distinct().ToList();
+        var noGoByOperator = await _db.ChecklistSubmissions
+            .Where(s => operatorIds.Contains(s.OperatorId)
+                     && myMachineIds.Contains(s.MachineId)
+                     && s.SubmittedAt >= since
+                     && s.Status == ChecklistStatus.NoGo)
+            .GroupBy(s => s.OperatorId)
+            .Select(g => new { OperatorId = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        ViewBag.OpenDefectsByOperator = defectsByOperator.ToDictionary(x => x.OperatorId, x => x.Open);
+        ViewBag.NoGoByOperator        = noGoByOperator.ToDictionary(x => x.OperatorId, x => x.Count);
+
+        return View(byOperator);
+    }
+
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> CompleteRepair(int defectOrderId, string? notes)
+    public async Task<IActionResult> CompleteRepair(int defectOrderId, string? notes, string? mechanicSignature)
     {
         var userId = _users.GetUserId(User)!;
-        try { await _svc.ResolveDefectAsync(defectOrderId, userId, notes ?? "Repair completed."); TempData["Success"] = "Repair marked as complete."; }
+        if (string.IsNullOrWhiteSpace(mechanicSignature))
+        {
+            TempData["Error"] = "A digital signature is required to close this repair.";
+            return RedirectToAction("Index");
+        }
+        try
+        {
+            await _svc.ResolveDefectAsync(defectOrderId, userId, notes ?? "Repair completed.", mechanicSignature);
+            TempData["Success"] = "Repair marked as complete.";
+        }
         catch (Exception ex) { TempData["Error"] = ex.Message; }
         return RedirectToAction("Index");
     }

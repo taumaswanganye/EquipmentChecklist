@@ -57,7 +57,7 @@ else
 
                 <h3 style="font-size:20px;margin-bottom:4px">@a.Machine.MachineNumber</h3>
                 <p style="color:var(--text-muted);font-size:13px;margin-bottom:4px">@a.Machine.MachineName</p>
-                <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px">@a.Machine.Type</p>
+                <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px">@a.Machine.TypeDisplay()</p>
 
                 @if (a.Machine.IsImmobilised)
                 {

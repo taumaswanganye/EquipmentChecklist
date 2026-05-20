@@ -66,6 +66,14 @@
                 <p>@Model.OperatorRemarks</p>
             </div>
         }
+
+        @if (!string.IsNullOrEmpty(Model.OperatorSignature))
+        {
+            <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:14px;margin-top:16px">
+                <p style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px">Operator Signature</p>
+                <img src="@Model.OperatorSignature" alt="Operator signature" style="max-height:120px;background:#fff;padding:8px;border-radius:6px" />
+            </div>
+        }
     </div>
 
     <!-- Right: sign-off panel -->
@@ -73,21 +81,38 @@
         <h3 style="font-size:16px;margin-bottom:14px">⚠ Supervisor Sign-Off</h3>
         <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
             This submission has defects but no critical NO-GO items.
-            Select the appropriate resolution below.
+            Sign below and select the appropriate resolution.
         </p>
 
-        <form method="post" action="/Supervisor/SignOff">
+        <form method="post" action="/Supervisor/SignOff" id="supervisorSignOffForm">
             @Html.AntiForgeryToken()
             <input type="hidden" name="id" value="@Model.Id" />
 
+            @await Html.PartialAsync("_SignaturePad", new ViewDataDictionary(ViewData) {
+                { "FieldName", "supervisorSignature" },
+                { "Label",     "Supervisor Digital Signature" },
+                { "PadId",     "supervisorSigPad" }
+            })
+
             <button name="resolution" value="2" type="submit"
-                    class="btn btn-warning" style="width:100%;margin-bottom:8px">
+                    class="btn btn-warning sigsubmit" style="width:100%;margin-bottom:8px">
                 ✍ Approve – Repair Within 24H
             </button>
             <button name="resolution" value="3" type="submit"
-                    class="btn btn-ghost" style="width:100%">
+                    class="btn btn-ghost sigsubmit" style="width:100%">
                 ✍ Approve – Repair By Next Service (30 days)
             </button>
         </form>
+        <script>
+            document.querySelectorAll('#supervisorSignOffForm .sigsubmit').forEach(function(btn) {
+                btn.addEventListener('click', function(e) {
+                    var sig = document.getElementById('supervisorSigPad_input').value;
+                    if (!sig) {
+                        e.preventDefault();
+                        alert('Please draw your signature before approving.');
+                    }
+                });
+            });
+        </script>
     </div>
 </div>

@@ -1,0 +1,87 @@
+@model List<IGrouping<EquipmentChecklist.Models.ApplicationUser, EquipmentChecklist.Models.MachineAssignment>>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "My Operators";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var openDefects = ViewBag.OpenDefectsByOperator as Dictionary<string, int> ?? new();
+    var noGoCounts  = ViewBag.NoGoByOperator        as Dictionary<string, int> ?? new();
+}
+
+<div style="margin-bottom:20px">
+    <h2 style="font-size:22px;font-weight:700;color:var(--text-main);margin:0">My Operators</h2>
+    <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+        Operators driving machines that you're responsible for repairing.
+    </p>
+</div>
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">🔧</div>
+        <h3 style="margin:0 0 6px">No operators assigned</h3>
+        <p style="margin:0">Ask an admin to assign machines to you on the Assignments screen.</p>
+    </div>
+}
+else
+{
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px">
+        @foreach (var grp in Model)
+        {
+            var op       = grp.Key;
+            var machines = grp.Select(a => a.Machine).Distinct().ToList();
+            var open     = openDefects.TryGetValue(op.Id, out var o) ? o : 0;
+            var nogo     = noGoCounts.TryGetValue(op.Id, out var n)  ? n : 0;
+
+            <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:16px">
+                <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;margin-bottom:10px">
+                    <div>
+                        <div style="font-size:15px;font-weight:700">@op.FullName</div>
+                        <div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono)">
+                            #@op.EmployeeNumber
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+                        @if (open > 0)
+                        {
+                            <span class="badge badge-gobut" title="Open defects assigned to me">🔧 @open open</span>
+                        }
+                        @if (nogo > 0)
+                        {
+                            <span class="badge badge-nogo" title="NO-GO submissions in last 30 days">⛔ @nogo NO-GO</span>
+                        }
+                        @if (open == 0 && nogo == 0)
+                        {
+                            <span class="badge badge-go">✓ all clear</span>
+                        }
+                    </div>
+                </div>
+
+                <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:6px">
+                    Machines you maintain for them
+                </div>
+                @foreach (var m in machines)
+                {
+                    <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--steel-border)">
+                        <div>
+                            <div style="font-size:13px;font-weight:600">@m.MachineNumber</div>
+                            <div style="font-size:11px;color:var(--text-muted)">@m.MachineName · @m.TypeDisplay()</div>
+                        </div>
+                        @if (m.IsImmobilised)
+                        {
+                            <span class="badge badge-nogo">⛔ Immobilised</span>
+                        }
+                        else
+                        {
+                            <span class="badge badge-go">✓ Active</span>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <p style="font-size:11px;color:var(--text-muted);margin-top:14px">
+        @Model.Count operator(s) · NO-GO window: last 30 days
+    </p>
+}

@@ -42,7 +42,7 @@
                 <td><strong>@m.MachineNumber</strong></td>
                 <td>
                     @m.MachineName
-                    <div style="font-size:12px;color:var(--text-muted)">@m.Type</div>
+                    <div style="font-size:12px;color:var(--text-muted)">@m.TypeDisplay()</div>
                 </td>
                 <td>
                     @if (m.IsImmobilised)

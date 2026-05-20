@@ -1,0 +1,106 @@
+@model List<EquipmentChecklist.Models.OperatorSupervisorAssignment>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "My Operators";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var stats = ViewBag.Stats as Dictionary<string, (int Total, int Pending, int NoGo, DateTime? LastAt)>
+                ?? new Dictionary<string, (int, int, int, DateTime?)>();
+    var machinesByOperator = ViewBag.MachinesByOperator as Dictionary<string, List<Machine>>
+                ?? new Dictionary<string, List<Machine>>();
+}
+
+<div style="margin-bottom:20px">
+    <h2 style="font-size:22px;font-weight:700;color:var(--text-main);margin:0">My Operators</h2>
+    <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+        Operators currently assigned to you. 30-day activity shown.
+    </p>
+</div>
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">👷</div>
+        <h3 style="margin:0 0 6px">No operators assigned</h3>
+        <p style="margin:0">Ask an admin to assign operators to you on the Assignments screen.</p>
+    </div>
+}
+else
+{
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden">
+        <table class="data-table" style="margin:0">
+            <thead>
+                <tr>
+                    <th>Operator</th>
+                    <th>Employee #</th>
+                    <th>Current machine(s)</th>
+                    <th style="text-align:center">30-day submissions</th>
+                    <th style="text-align:center">Awaiting my sign-off</th>
+                    <th style="text-align:center">NO-GO (30d)</th>
+                    <th>Last submission</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var a in Model)
+                {
+                    var op = a.Operator;
+                    var s  = stats.TryGetValue(op.Id, out var st) ? st : (Total:0, Pending:0, NoGo:0, LastAt:(DateTime?)null);
+                    var machines = machinesByOperator.TryGetValue(op.Id, out var ms) ? ms : new List<Machine>();
+
+                    <tr>
+                        <td>
+                            <strong>@op.FullName</strong>
+                        </td>
+                        <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted)">
+                            @op.EmployeeNumber
+                        </td>
+                        <td>
+                            @if (machines.Any())
+                            {
+                                foreach (var m in machines)
+                                {
+                                    <div style="font-size:12px;line-height:1.5">
+                                        <strong>@m.MachineNumber</strong>
+                                        <span style="color:var(--text-muted)"> · @m.MachineName</span>
+                                    </div>
+                                }
+                            }
+                            else
+                            {
+                                <span style="color:var(--text-muted);font-size:12px">— none assigned —</span>
+                            }
+                        </td>
+                        <td style="text-align:center;font-weight:600">@s.Total</td>
+                        <td style="text-align:center">
+                            @if (s.Pending > 0)
+                            {
+                                <a href="/Supervisor" class="badge badge-gobut" style="text-decoration:none">@s.Pending pending</a>
+                            }
+                            else
+                            {
+                                <span style="color:var(--text-muted)">—</span>
+                            }
+                        </td>
+                        <td style="text-align:center">
+                            @if (s.NoGo > 0)
+                            {
+                                <span class="badge badge-nogo">@s.NoGo</span>
+                            }
+                            else
+                            {
+                                <span style="color:var(--text-muted)">—</span>
+                            }
+                        </td>
+                        <td style="font-size:12px;color:var(--text-muted)">
+                            @(s.LastAt?.ToString("yyyy-MM-dd HH:mm") ?? "— never —")
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <p style="font-size:11px;color:var(--text-muted);margin-top:10px">
+        @Model.Count operator(s) assigned · Activity window: last 30 days
+    </p>
+}

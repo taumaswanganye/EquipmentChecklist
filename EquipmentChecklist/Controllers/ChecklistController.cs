@@ -91,6 +91,11 @@ public class ChecklistController : Controller
             TempData["Error"] = "KM / Hour Meter reading is required.";
             return RedirectToAction("Start", new { machineId = dto.MachineId });
         }
+        if (string.IsNullOrWhiteSpace(dto.OperatorSignature))
+        {
+            TempData["Error"] = "Your digital signature is required.";
+            return RedirectToAction("Start", new { machineId = dto.MachineId });
+        }
 
         var userId = _users.GetUserId(User)!;
         try
@@ -127,6 +132,9 @@ public class ChecklistController : Controller
         var submission = await _db.ChecklistSubmissions
             .Include(s => s.Machine)
             .Include(s => s.Operator)
+            .Include(s => s.Supervisor)
+            .Include(s => s.Mechanic)
+            .Include(s => s.RejectedMechanic)
             .Include(s => s.Items).ThenInclude(i => i.TemplateItem)
             .FirstOrDefaultAsync(s => s.Id == id);
         if (submission == null) return NotFound();
@@ -141,6 +149,9 @@ public class ChecklistController : Controller
         var submission = await _db.ChecklistSubmissions
             .Include(s => s.Machine)
             .Include(s => s.Operator)
+            .Include(s => s.Supervisor)
+            .Include(s => s.Mechanic)
+            .Include(s => s.RejectedMechanic)
             .Include(s => s.Items).ThenInclude(i => i.TemplateItem)
             .FirstOrDefaultAsync(s => s.Id == id);
         if (submission == null) return NotFound();

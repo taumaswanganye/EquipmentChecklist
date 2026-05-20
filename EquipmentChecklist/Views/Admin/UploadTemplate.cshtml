@@ -2,105 +2,305 @@
 @{
     ViewData["Title"] = "Upload Checklist Template";
     Layout = "~/Views/Shared/_Layout.cshtml";
-    var machines = ViewBag.Machines as List<Machine> ?? new();
+    var machines  = ViewBag.Machines as List<Machine> ?? new();
+    var activeTab = (ViewBag.ActiveTab as string) ?? "excel";
 }
 
-<div style="max-width:640px">
+<div style="max-width:720px">
     <a href="/Admin" class="btn btn-ghost" style="margin-bottom:16px">← Back to Fleet</a>
 
     <h2 class="page-title" style="margin-bottom:4px">Upload Checklist Template</h2>
     <p class="page-subtitle" style="margin-bottom:24px">
-        Upload an Excel file (.xlsx) to create or replace a machine's checklist template.
+        Upload an Excel (.xlsx) or PDF (.pdf) file to create or replace a machine's checklist template.
     </p>
 
-    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:28px;margin-bottom:20px">
+    @if (TempData["Error"] != null)
+    {
+        <div style="padding:10px 16px;background:#450a0a;border:1px solid #7f1d1d;border-radius:6px;color:#fca5a5;font-size:13px;margin-bottom:16px">
+            ✕ @TempData["Error"]
+        </div>
+    }
 
-        <form method="post" action="/Admin/UploadTemplate"
-              enctype="multipart/form-data">
-            @Html.AntiForgeryToken()
-
-            <div class="form-group">
-                <label class="form-label">Select Machine</label>
-                <select name="machineId" class="form-control" required>
-                    <option value="">-- Choose Machine --</option>
-                    @foreach (var m in machines)
-                    {
-                        <option value="@m.Id">@m.MachineNumber – @m.MachineName</option>
-                    }
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Excel File (.xlsx)</label>
-                <input type="file" name="file" class="form-control"
-                       accept=".xlsx,.xls" required
-                       style="padding:7px 12px;cursor:pointer" />
-                <p style="font-size:12px;color:var(--text-muted);margin-top:6px">
-                    Checklist items should be in <strong>Column A</strong>, starting from <strong>Row 4</strong>
-                    (rows 1–3 are treated as headers and skipped).
-                </p>
-            </div>
-
-            <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--steel-light);border:1px solid var(--steel-border);border-radius:8px;margin-bottom:16px">
-                <input type="checkbox" name="replaceExisting" id="replaceExisting"
-                       value="true" style="width:16px;height:16px;accent-color:var(--amber)" />
-                <label for="replaceExisting" style="cursor:pointer;font-size:13px">
-                    <strong style="color:var(--amber)">⚠ Replace existing template</strong> —
-                    <span style="color:var(--text-muted)">
-                        ticking this will delete the current template and all its items for this machine
-                    </span>
-                </label>
-            </div>
-
-            <div style="display:flex;gap:12px">
-                <button type="submit" class="btn btn-primary">📤 Upload Template</button>
-                <a href="/Admin" class="btn btn-ghost">Cancel</a>
-            </div>
-        </form>
+    <!-- ── Tab Bar ────────────────────────────────────────────────────── -->
+    <div style="display:flex;gap:0;border-bottom:2px solid var(--steel-border);margin-bottom:24px">
+        <button id="btn-excel" type="button" onclick="switchUploadTab('excel')"
+                style="padding:10px 24px;font-size:13px;font-weight:600;border:none;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .15s;background:transparent">
+            📊 Excel (single)
+        </button>
+        <button id="btn-bulk" type="button" onclick="switchUploadTab('bulk')"
+                style="padding:10px 24px;font-size:13px;font-weight:600;border:none;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .15s;background:transparent">
+            📚 Bulk workbook
+        </button>
+        <button id="btn-pdf" type="button" onclick="switchUploadTab('pdf')"
+                style="padding:10px 24px;font-size:13px;font-weight:600;border:none;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;transition:all .15s;background:transparent">
+            📄 PDF (.pdf)
+        </button>
     </div>
 
-    <!-- Format Guide -->
-    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px">
-        <h3 style="font-size:15px;margin-bottom:14px">📋 Expected Excel Format</h3>
+    <!-- ══════════════════════════════════════════════════════════════════
+         TAB 1 – Excel Upload
+    ══════════════════════════════════════════════════════════════════ -->
+    <div id="tab-excel">
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:28px;margin-bottom:20px">
 
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Row</th>
-                    <th>Column A</th>
-                    <th>Purpose</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td style="font-family:var(--font-mono)">1</td>
-                    <td style="color:var(--text-muted)">Machine name / title</td>
-                    <td><span class="badge badge-pending">Skipped</span></td>
-                </tr>
-                <tr>
-                    <td style="font-family:var(--font-mono)">2</td>
-                    <td style="color:var(--text-muted)">Date / Operator field</td>
-                    <td><span class="badge badge-pending">Skipped</span></td>
-                </tr>
-                <tr>
-                    <td style="font-family:var(--font-mono)">3</td>
-                    <td style="color:var(--text-muted)">Column headers</td>
-                    <td><span class="badge badge-pending">Skipped</span></td>
-                </tr>
-                <tr>
-                    <td style="font-family:var(--font-mono)">4+</td>
-                    <td><strong>CHECKLIST ITEM NAME</strong></td>
-                    <td><span class="badge badge-go">Imported</span></td>
-                </tr>
-            </tbody>
-        </table>
+            <form method="post" action="/Admin/UploadTemplate" enctype="multipart/form-data">
+                @Html.AntiForgeryToken()
 
-        <div style="margin-top:14px;font-size:12px;color:var(--text-muted);line-height:1.7">
-            <strong style="color:var(--text-primary)">Auto-detected NO-GO items</strong> — items containing these keywords are
-            automatically flagged as critical and will immobilise the machine if defective:<br/>
-            <span style="font-family:var(--font-mono);color:var(--red-nogo)">
-                OPERATOR LICENCE · SEAT BELT · BRAKES · BRAKE TEST · FIRE EXTINGUISHER · KEY CONTROL · EMERGENCY STOP
-            </span>
+                <div class="form-group">
+                    <label class="form-label">Select Machine</label>
+                    <select name="machineId" class="form-control" required>
+                        <option value="">-- Choose Machine --</option>
+                        @foreach (var m in machines)
+                        {
+                            <option value="@m.Id">@m.MachineNumber – @m.MachineName</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Excel File (.xlsx)</label>
+                    <input type="file" name="file" class="form-control"
+                           accept=".xlsx,.xls" required
+                           style="padding:7px 12px;cursor:pointer" />
+                    <p style="font-size:12px;color:var(--text-muted);margin-top:6px">
+                        Checklist items should be in <strong>Column A</strong>, starting from <strong>Row 4</strong>
+                        (rows 1–3 are treated as headers and skipped).
+                    </p>
+                </div>
+
+                <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--steel-light);border:1px solid var(--steel-border);border-radius:8px;margin-bottom:16px">
+                    <input type="checkbox" name="replaceExisting" id="replaceExistingXlsx"
+                           value="true" style="width:16px;height:16px;accent-color:var(--amber)" />
+                    <label for="replaceExistingXlsx" style="cursor:pointer;font-size:13px">
+                        <strong style="color:var(--amber)">⚠ Replace existing template</strong> —
+                        <span style="color:var(--text-muted)">
+                            ticking this will delete the current template and all its items for this machine
+                        </span>
+                    </label>
+                </div>
+
+                <div style="display:flex;gap:12px">
+                    <button type="submit" class="btn btn-primary">📤 Upload Excel</button>
+                    <a href="/Admin" class="btn btn-ghost">Cancel</a>
+                </div>
+            </form>
+        </div>
+
+        <!-- Excel Format Guide -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px">
+            <h3 style="font-size:15px;margin-bottom:14px">📋 Expected Excel Format</h3>
+
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Row</th>
+                        <th>Column A</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="font-family:var(--font-mono)">1</td>
+                        <td style="color:var(--text-muted)">Machine name / title</td>
+                        <td><span class="badge badge-pending">Skipped</span></td>
+                    </tr>
+                    <tr>
+                        <td style="font-family:var(--font-mono)">2</td>
+                        <td style="color:var(--text-muted)">Date / Operator field</td>
+                        <td><span class="badge badge-pending">Skipped</span></td>
+                    </tr>
+                    <tr>
+                        <td style="font-family:var(--font-mono)">3</td>
+                        <td style="color:var(--text-muted)">Column headers</td>
+                        <td><span class="badge badge-pending">Skipped</span></td>
+                    </tr>
+                    <tr>
+                        <td style="font-family:var(--font-mono)">4+</td>
+                        <td><strong>CHECKLIST ITEM NAME</strong></td>
+                        <td><span class="badge badge-go">Imported</span></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div style="margin-top:14px;font-size:12px;color:var(--text-muted);line-height:1.7">
+                <strong style="color:var(--text-primary)">Auto-detected NO-GO items</strong> — items containing these keywords are
+                automatically flagged as critical and will immobilise the machine if defective:<br/>
+                <span style="font-family:var(--font-mono);color:var(--red-nogo)">
+                    OPERATOR LICENCE · SEAT BELT · BRAKES · BRAKE TEST · FIRE EXTINGUISHER · KEY CONTROL · EMERGENCY STOP
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         TAB 2 – Bulk Workbook Upload (one sheet = one machine)
+    ══════════════════════════════════════════════════════════════════ -->
+    <div id="tab-bulk" style="display:none">
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:28px;margin-bottom:20px">
+
+            <form method="post" action="/Admin/UploadTemplatesBulk" enctype="multipart/form-data">
+                @Html.AntiForgeryToken()
+
+                <div class="form-group">
+                    <label class="form-label">Workbook (.xlsx with one sheet per machine)</label>
+                    <input type="file" name="file" class="form-control"
+                           accept=".xlsx,.xls" required
+                           style="padding:7px 12px;cursor:pointer" />
+                    <p style="font-size:12px;color:var(--text-muted);margin-top:6px">
+                        Every sheet becomes its own machine. The sheet name is used as
+                        <strong>Machine Number</strong>, <strong>Machine Name</strong>, and
+                        <strong>Type</strong>. Items are read from <strong>Column A</strong>
+                        starting at <strong>Row 4</strong> (rows 1–3 are header).
+                    </p>
+                </div>
+
+                <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--steel-light);border:1px solid var(--steel-border);border-radius:8px;margin-bottom:16px">
+                    <input type="checkbox" name="replaceExisting" id="replaceExistingBulk"
+                           value="true" style="width:16px;height:16px;accent-color:var(--amber)" />
+                    <label for="replaceExistingBulk" style="cursor:pointer;font-size:13px">
+                        <strong style="color:var(--amber)">⚠ Replace existing templates</strong> —
+                        <span style="color:var(--text-muted)">
+                            if a machine with the same number already has a template, overwrite it.
+                            Without this, those sheets are skipped.
+                        </span>
+                    </label>
+                </div>
+
+                <div style="display:flex;gap:12px">
+                    <button type="submit" class="btn btn-primary">📚 Bulk Upload</button>
+                    <a href="/Admin" class="btn btn-ghost">Cancel</a>
+                </div>
+            </form>
+        </div>
+
+        <!-- Bulk format guide -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px">
+            <h3 style="font-size:15px;margin-bottom:14px">📋 Bulk Workbook Format</h3>
+
+            <ol style="margin:0 0 14px 18px;font-size:13px;color:var(--text-muted);line-height:1.8">
+                <li>Each <strong style="color:var(--text-primary)">sheet</strong> in the workbook = one machine.</li>
+                <li>Sheet name becomes the machine's number, name, and type (you can rename later).</li>
+                <li>Cells A1–A3 are treated as the form header and skipped.</li>
+                <li>Cells <strong style="color:var(--text-primary)">A4 onwards</strong> are imported as checklist items.</li>
+                <li>NO-GO keywords (Brakes, Fire Extinguisher, Emergency Stop, …) are auto-flagged.</li>
+                <li>Sheets with no items in column A are skipped.</li>
+            </ol>
+
+            <div style="padding:10px 14px;background:var(--steel-light);border:1px solid var(--steel-border);border-radius:6px;font-size:12px;color:var(--text-muted);line-height:1.7">
+                <strong style="color:var(--text-primary)">Behaviour with existing data:</strong>
+                If a machine with the same number already exists, the sheet is skipped unless
+                you tick <em>Replace existing templates</em>, in which case the old template + items
+                are deleted and replaced.
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         TAB 3 – PDF Upload
+    ══════════════════════════════════════════════════════════════════ -->
+    <div id="tab-pdf" style="display:none">
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:28px;margin-bottom:20px">
+
+            <form method="post" action="/Admin/UploadPdfTemplate" enctype="multipart/form-data">
+                @Html.AntiForgeryToken()
+
+                <div class="form-group">
+                    <label class="form-label">Select Machine</label>
+                    <select name="machineId" class="form-control" required>
+                        <option value="">-- Choose Machine --</option>
+                        @foreach (var m in machines)
+                        {
+                            <option value="@m.Id">@m.MachineNumber – @m.MachineName</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">PDF File (.pdf)</label>
+                    <input type="file" name="file" class="form-control"
+                           accept=".pdf" required
+                           style="padding:7px 12px;cursor:pointer" />
+                    <p style="font-size:12px;color:var(--text-muted);margin-top:6px">
+                        Every non-empty line of text will be extracted. On the next screen, you can
+                        <strong>tick which lines to keep</strong>, edit the text, and mark NO-GO items
+                        before saving the template.
+                    </p>
+                </div>
+
+                <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--steel-light);border:1px solid var(--steel-border);border-radius:8px;margin-bottom:16px">
+                    <input type="checkbox" name="replaceExisting" id="replaceExistingPdf"
+                           value="true" style="width:16px;height:16px;accent-color:var(--amber)" />
+                    <label for="replaceExistingPdf" style="cursor:pointer;font-size:13px">
+                        <strong style="color:var(--amber)">⚠ Replace existing template</strong> —
+                        <span style="color:var(--text-muted)">
+                            ticking this will delete the current template and all its items for this machine
+                        </span>
+                    </label>
+                </div>
+
+                <div style="display:flex;gap:12px">
+                    <button type="submit" class="btn btn-primary">📤 Extract & Review</button>
+                    <a href="/Admin" class="btn btn-ghost">Cancel</a>
+                </div>
+            </form>
+        </div>
+
+        <!-- PDF Format Guide -->
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;padding:20px">
+            <h3 style="font-size:15px;margin-bottom:14px">📋 How PDF Import Works</h3>
+
+            <ol style="margin:0 0 14px 18px;font-size:13px;color:var(--text-muted);line-height:1.8">
+                <li>Upload your PDF — every non-empty line of text is extracted.</li>
+                <li>You'll be taken to a <strong style="color:var(--text-primary)">review screen</strong>
+                    that lists every extracted line.</li>
+                <li>Tick which lines to keep as checklist items, edit text if needed, and toggle
+                    <strong style="color:var(--red-nogo)">NO-GO</strong> on critical items.</li>
+                <li>Click <strong style="color:var(--text-primary)">Save Template</strong> to create
+                    the checklist for the selected machine.</li>
+            </ol>
+
+            <div style="padding:10px 14px;background:var(--steel-light);border:1px solid var(--steel-border);border-radius:6px;font-size:12px;color:var(--text-muted);line-height:1.7">
+                <strong style="color:var(--text-primary)">Tip:</strong> Scanned/image-only PDFs won't contain extractable text.
+                Use a PDF that has selectable text (i.e. one you can copy text out of).
+            </div>
+
+            <div style="margin-top:14px;font-size:12px;color:var(--text-muted);line-height:1.7">
+                <strong style="color:var(--text-primary)">Auto-detected NO-GO items</strong> — lines containing these keywords are
+                pre-flagged as NO-GO on the review screen (you can change this):<br/>
+                <span style="font-family:var(--font-mono);color:var(--red-nogo)">
+                    OPERATOR LICENCE · SEAT BELT · BRAKES · BRAKE TEST · FIRE EXTINGUISHER · KEY CONTROL · EMERGENCY STOP
+                </span>
+            </div>
         </div>
     </div>
 </div>
+
+<script>
+var ACTIVE_UPLOAD_TAB = '@Html.Raw(activeTab)';
+
+function switchUploadTab(name) {
+    document.getElementById('tab-excel').style.display = name === 'excel' ? '' : 'none';
+    document.getElementById('tab-bulk').style.display  = name === 'bulk'  ? '' : 'none';
+    document.getElementById('tab-pdf').style.display   = name === 'pdf'   ? '' : 'none';
+
+    var btnE = document.getElementById('btn-excel');
+    var btnB = document.getElementById('btn-bulk');
+    var btnP = document.getElementById('btn-pdf');
+    var accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#38bdf8';
+    var mutedColor  = getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim() || '#6b7280';
+
+    [
+        [btnE, 'excel'],
+        [btnB, 'bulk'],
+        [btnP, 'pdf']
+    ].forEach(function (pair) {
+        var b = pair[0], k = pair[1];
+        b.style.borderBottomColor = name === k ? accentColor : 'transparent';
+        b.style.color             = name === k ? accentColor : mutedColor;
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    switchUploadTab(ACTIVE_UPLOAD_TAB);
+});
+</script>

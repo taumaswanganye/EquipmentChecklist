@@ -81,16 +81,22 @@ public class SupervisorController : Controller
 
     // ── Approve Sign Off ──────────────────────────────────────────────────────
     [HttpPost, ValidateAntiForgeryToken]
-    public async Task<IActionResult> SignOff(int id, int resolution)
+    public async Task<IActionResult> SignOff(int id, int resolution, string? supervisorSignature)
     {
         var supervisorId = _users.GetUserId(User)!;
         var status = resolution == 3
             ? ChecklistStatus.GoTillNextService
             : ChecklistStatus.GoButRepair24H;
 
+        if (string.IsNullOrWhiteSpace(supervisorSignature))
+        {
+            TempData["Error"] = "A digital signature is required to approve.";
+            return RedirectToAction("Review", new { id });
+        }
+
         try
         {
-            await _svc.SupervisorSignOffAsync(id, supervisorId, status);
+            await _svc.SupervisorSignOffAsync(id, supervisorId, status, supervisorSignature);
             TempData["Success"] = "Sign-off recorded.";
         }
         catch (Exception ex)
@@ -153,6 +159,56 @@ public class SupervisorController : Controller
         await _db.SaveChangesAsync();
         TempData["Success"] = "Submission rejected. Machine immobilised and defects sent to mechanic.";
         return RedirectToAction("Index");
+    }
+
+    // ── My Operators ──────────────────────────────────────────────────────────
+    [HttpGet]
+    public async Task<IActionResult> MyOperators()
+    {
+        var supervisorId = _users.GetUserId(User)!;
+        var isAdmin      = User.IsInRole("Admin");
+
+        // Admin sees everyone; supervisors only see their assigned operators
+        IQueryable<OperatorSupervisorAssignment> q = _db.OperatorSupervisorAssignments
+            .Include(a => a.Operator)
+            .Where(a => a.IsActive);
+        if (!isAdmin)
+            q = q.Where(a => a.SupervisorId == supervisorId);
+
+        var assignments = await q
+            .OrderBy(a => a.Operator.FullName)
+            .ToListAsync();
+
+        var operatorIds = assignments.Select(a => a.OperatorId).ToList();
+        var since       = DateTime.UtcNow.Date.AddDays(-30);
+
+        // Per-operator: last submission + counts in the trailing 30 days
+        var recentByOperator = await _db.ChecklistSubmissions
+            .Where(s => operatorIds.Contains(s.OperatorId) && s.SubmittedAt >= since)
+            .GroupBy(s => s.OperatorId)
+            .Select(g => new
+            {
+                OperatorId = g.Key,
+                Total      = g.Count(),
+                Pending    = g.Count(s => s.Status == ChecklistStatus.GoButRepair24H && s.SupervisorId == null),
+                NoGo       = g.Count(s => s.Status == ChecklistStatus.NoGo),
+                LastAt     = g.Max(s => s.SubmittedAt)
+            })
+            .ToListAsync();
+
+        ViewBag.Stats = recentByOperator.ToDictionary(x => x.OperatorId,
+            x => (Total: x.Total, Pending: x.Pending, NoGo: x.NoGo, LastAt: (DateTime?)x.LastAt));
+
+        // Machines each operator is currently driving
+        var machinesByOperator = await _db.MachineAssignments
+            .Include(a => a.Machine)
+            .Where(a => operatorIds.Contains(a.OperatorId) && a.IsActive)
+            .ToListAsync();
+        ViewBag.MachinesByOperator = machinesByOperator
+            .GroupBy(a => a.OperatorId)
+            .ToDictionary(g => g.Key, g => g.Select(a => a.Machine).ToList());
+
+        return View(assignments);
     }
 
     // ── NO-GO Machines ────────────────────────────────────────────────────────

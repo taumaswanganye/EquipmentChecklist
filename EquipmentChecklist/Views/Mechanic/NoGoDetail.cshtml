@@ -7,6 +7,16 @@
     var defItems = lastSub?.Items.Where(i => i.Status == ItemStatus.Defect)
                          .OrderByDescending(i => i.TemplateItem.IsNoGoItem)
                          .ToList() ?? new();
+    var canOrderParts = (bool)(ViewBag.CanOrderParts ?? false);
+}
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">✓ @TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-warning" style="margin-bottom:14px">⚠ @TempData["Error"]</div>
 }
 
 <a href="/Mechanic" class="btn btn-ghost" style="margin-bottom:16px">← Back to Defect Orders</a>
@@ -77,19 +87,38 @@
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                             <span class="badge @sc">@sl</span>
-                            @if (existingOrder != null && orderStatus != RepairStatus.Completed)
-                            {
-                                <form method="post" action="/Mechanic/AddToCart" style="display:inline">
-                                    @Html.AntiForgeryToken()
-                                    <input type="hidden" name="defectOrderId" value="@existingOrder.Id" />
-                                    <input type="hidden" name="itemName"      value="@di.TemplateItem.ItemName" />
-                                    <button type="submit" class="btn btn-warning btn-sm">🛒 Add to Cart</button>
-                                </form>
-                                <a href="/Mechanic/OrderPart/@existingOrder.Id" class="btn btn-ghost btn-sm">📦 Order Part</a>
-                            }
+
                             @if (orderStatus == RepairStatus.Completed)
                             {
                                 <span style="font-size:12px;color:var(--green-go)">✓ Repair completed</span>
+                            }
+                            else if (canOrderParts)
+                            {
+                                @if (existingOrder != null)
+                                {
+                                    <form method="post" action="/Mechanic/AddToCart" style="display:inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="defectOrderId" value="@existingOrder.Id" />
+                                        <input type="hidden" name="itemName"      value="@di.TemplateItem.ItemName" />
+                                        <button type="submit" class="btn btn-warning btn-sm">🛒 Add to Cart</button>
+                                    </form>
+                                    <a href="/Mechanic/OrderPart/@existingOrder.Id" class="btn btn-ghost btn-sm">📦 Order Part</a>
+                                }
+                                else
+                                {
+                                    <form method="post" action="/Mechanic/EnsureOrderAndAddToCart" style="display:inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="submissionItemId" value="@di.Id" />
+                                        <input type="hidden" name="machineId"        value="@Model.Id" />
+                                        <button type="submit" class="btn btn-warning btn-sm">🛒 Claim &amp; Add to Cart</button>
+                                    </form>
+                                }
+                            }
+                            else
+                            {
+                                <span style="font-size:11px;color:var(--text-muted);font-style:italic">
+                                    Only the assigned mechanic for this machine can order parts.
+                                </span>
                             }
                         </div>
                     </div>

@@ -4,6 +4,64 @@ using Microsoft.AspNetCore.Identity;
 
 namespace EquipmentChecklist.Models;
 
+// ─── Display helpers ─────────────────────────────────────────────────────────
+public static class MachineDisplayExtensions
+{
+    /// <summary>
+    /// Friendly display labels for the built-in MachineType enum values.
+    /// </summary>
+    private static readonly Dictionary<MachineType, string> EnumLabels = new()
+    {
+        { MachineType.ADT,                  "ADT – Articulated Dump Truck" },
+        { MachineType.ArticulatedWaterTruck,"Articulated Water Truck" },
+        { MachineType.DieselBowser,         "Diesel Bowser" },
+        { MachineType.Drills,               "Drills" },
+        { MachineType.Excavator,            "Excavator" },
+        { MachineType.FEL,                  "FEL – Front End Loader" },
+        { MachineType.Forklift,             "Forklift" },
+        { MachineType.Grader,               "Grader" },
+        { MachineType.LDV,                  "LDV / Light Vehicle" },
+        { MachineType.SRVWaterBowser,       "SRV / Water Bowser" },
+        { MachineType.TrackDozer,           "Track Dozer" },
+        { MachineType.RDT,                  "RDT – 773 Haul Truck" },
+        { MachineType.TruckMountedCrane,    "Truck Mounted Crane" },
+        { MachineType.TLB,                  "TLB" },
+    };
+
+    public static IReadOnlyDictionary<MachineType, string> MachineTypeLabels => EnumLabels;
+
+    /// <summary>
+    /// Returns the user-facing type label for a machine — prefers TypeName
+    /// (custom free-text) when set, otherwise the built-in enum label.
+    /// </summary>
+    public static string TypeDisplay(this Machine m)
+    {
+        if (!string.IsNullOrWhiteSpace(m.TypeName)) return m.TypeName!;
+        return EnumLabels.TryGetValue(m.Type, out var label) ? label : m.Type.ToString();
+    }
+
+    /// <summary>
+    /// Try to resolve a free-text type string to a known MachineType.
+    /// Matches case-insensitively against both enum names and display labels.
+    /// </summary>
+    public static MachineType? TryResolveMachineType(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return null;
+        var q = input.Trim();
+
+        // Match by display label first (so "FEL – Front End Loader" works)
+        foreach (var kv in EnumLabels)
+            if (string.Equals(kv.Value, q, StringComparison.OrdinalIgnoreCase))
+                return kv.Key;
+
+        // Then by enum name (e.g. "FEL", "Grader")
+        if (Enum.TryParse<MachineType>(q, ignoreCase: true, out var t) && Enum.IsDefined(typeof(MachineType), t))
+            return t;
+
+        return null;
+    }
+}
+
 // ─── Identity User ───────────────────────────────────────────────────────────
 public class ApplicationUser : IdentityUser
 {
@@ -27,6 +85,13 @@ public class Machine
     [Required, MaxLength(50)]  public string MachineNumber { get; set; } = "";
     [Required, MaxLength(100)] public string MachineName { get; set; } = "";
     public MachineType Type { get; set; }
+    /// <summary>
+    /// Free-text type label entered by the admin. Source of truth for display.
+    /// When this matches a known <see cref="MachineType"/> enum name we also set
+    /// <see cref="Type"/>; otherwise <see cref="Type"/> stays at the default and
+    /// this string is the only place the human-readable type lives.
+    /// </summary>
+    [MaxLength(100)] public string? TypeName { get; set; }
     [MaxLength(200)] public string? Description { get; set; }
     public bool IsActive { get; set; } = true;
     public bool IsImmobilised { get; set; } = false;
@@ -111,6 +176,12 @@ public class ChecklistSubmission
     public DateTime? MechanicSignedAt { get; set; }
     [MaxLength(500)] public string? MechanicNotes { get; set; }
 
+    // ── Digital signatures (base64 PNG data URLs) ────────────────────────────
+    /// <summary>Operator's drawn signature captured at submission.</summary>
+    public string? OperatorSignature   { get; set; }
+    /// <summary>Supervisor's drawn signature captured at sign-off / approval.</summary>
+    public string? SupervisorSignature { get; set; }
+
     [MaxLength(500)] public string? RejectionReason { get; set; }
     public string? RejectedMechanicId { get; set; }
     public ApplicationUser? RejectedMechanic { get; set; }
@@ -162,6 +233,8 @@ public class DefectOrder
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? ResolvedAt { get; set; }
     [MaxLength(500)] public string? ResolutionNotes { get; set; }
+    /// <summary>Mechanic's drawn signature captured when the defect is closed (base64 PNG data URL).</summary>
+    public string? MechanicSignature { get; set; }
 }
 
 // ─── Tracks offline submissions that need to be synced to the cloud. ─────────────────────────────────────────────────────

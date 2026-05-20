@@ -216,21 +216,58 @@ else
     </div>
 }
 
-<!-- Hidden form for Mark Fixed -->
-<form id="fixedForm" method="post" action="/Mechanic/CompleteRepair" style="display:none">
-    @Html.AntiForgeryToken()
-    <input type="hidden" id="fixedId"    name="defectOrderId" />
-    <input type="hidden" id="fixedNotes" name="notes" />
-</form>
+<!-- Complete-Repair Modal (with mechanic signature) -->
+<div id="repairModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;align-items:center;justify-content:center;padding:20px">
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;max-width:520px;width:100%;padding:24px;max-height:90vh;overflow-y:auto">
+        <h3 style="margin:0 0 14px;font-size:17px">🛠 Complete Repair</h3>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+            Confirm this repair is complete. Admin will be notified for machine clearance.
+        </p>
+
+        <form id="fixedForm" method="post" action="/Mechanic/CompleteRepair">
+            @Html.AntiForgeryToken()
+            <input type="hidden" id="fixedId" name="defectOrderId" />
+
+            <div style="margin-bottom:14px">
+                <label style="display:block;font-size:12px;font-weight:700;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">
+                    Repair Notes <span style="color:var(--red-nogo)">*</span>
+                </label>
+                <textarea name="notes" id="fixedNotes" class="form-control" rows="3"
+                          required placeholder="Describe what was done…"></textarea>
+            </div>
+
+            @await Html.PartialAsync("_SignaturePad", new ViewDataDictionary(ViewData) {
+                { "FieldName", "mechanicSignature" },
+                { "Label",     "Mechanic Digital Signature" },
+                { "PadId",     "mechanicSigPad" }
+            })
+
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+                <button type="button" class="btn btn-ghost" onclick="closeRepairModal()">Cancel</button>
+                <button type="submit" class="btn btn-success">✓ Confirm Complete</button>
+            </div>
+        </form>
+    </div>
+</div>
 
 @section Scripts {
 <script>
 function markFixed(id) {
-    if (!confirm('Mark this repair as COMPLETE and notify admin for machine clearance?')) return;
-    const notes = prompt('Repair notes (what was done):') ?? 'Repair completed by mechanic.';
     document.getElementById('fixedId').value    = id;
-    document.getElementById('fixedNotes').value = notes;
-    document.getElementById('fixedForm').submit();
+    document.getElementById('fixedNotes').value = '';
+    var sigInput = document.getElementById('mechanicSigPad_input');
+    if (sigInput) sigInput.value = '';
+    document.getElementById('repairModal').style.display = 'flex';
 }
+function closeRepairModal() {
+    document.getElementById('repairModal').style.display = 'none';
+}
+document.getElementById('fixedForm').addEventListener('submit', function(e) {
+    var sig = document.getElementById('mechanicSigPad_input').value;
+    if (!sig) {
+        e.preventDefault();
+        alert('Please draw your signature before confirming.');
+    }
+});
 </script>
 }

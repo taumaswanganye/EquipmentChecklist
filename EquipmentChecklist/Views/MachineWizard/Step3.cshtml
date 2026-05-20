@@ -29,7 +29,7 @@
             </div>
             <div>
                 <div style="font-size:11px;color:var(--text-muted);font-weight:700;margin-bottom:3px">TYPE</div>
-                <div style="font-size:14px">@((EquipmentChecklist.Models.MachineType)Model.MachineType)</div>
+                <div style="font-size:14px">@(string.IsNullOrWhiteSpace(Model.TypeName) ? ((EquipmentChecklist.Models.MachineType)Model.MachineType).ToString() : Model.TypeName)</div>
             </div>
             <div>
                 <div style="font-size:11px;color:var(--text-muted);font-weight:700;margin-bottom:3px">DESCRIPTION</div>

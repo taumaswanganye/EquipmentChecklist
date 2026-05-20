@@ -23,6 +23,8 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
     <!-- PDF Generation -->
     <PackageReference Include="QuestPDF" Version="2024.3.4" />
+    <!-- PDF Reading (template upload) -->
+    <PackageReference Include="PdfPig" Version="0.1.9" />
     <!-- Tools -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.0" />
   </ItemGroup>

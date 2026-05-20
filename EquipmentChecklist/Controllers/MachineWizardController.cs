@@ -13,6 +13,9 @@ public class WizardMachineData
 {
     public string MachineName   { get; set; } = "";
     public string MachineNumber { get; set; } = "";
+    /// <summary>Free-text type label entered by the admin (source of truth).</summary>
+    public string TypeName      { get; set; } = "";
+    /// <summary>Resolved enum value (0 when the typed value isn't a known type).</summary>
     public int    MachineType   { get; set; }
     public string Description   { get; set; } = "";
     public List<WizardItemData> Items { get; set; } = new();
@@ -54,10 +57,32 @@ public class MachineWizardController : Controller
 
     // ── STEP 1 – Machine Details ──────────────────────────────────────────────
 
+    private async Task<List<string>> GetTypeSuggestionsAsync()
+    {
+        // Built-in enum labels (in their display form) + any custom TypeNames
+        // already in the DB. De-duplicated, alpha-sorted.
+        var builtIn = MachineDisplayExtensions.MachineTypeLabels.Values;
+
+        var custom = await _db.Machines
+            .Where(m => m.TypeName != null && m.TypeName != "")
+            .Select(m => m.TypeName!)
+            .Distinct()
+            .ToListAsync();
+
+        return builtIn
+            .Concat(custom)
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     [HttpGet("/Admin/CreateMachineWizard")]
-    public IActionResult Step1()
+    public async Task<IActionResult> Step1()
     {
         HttpContext.Session.Remove(SessionKey);   // fresh start
+        ViewBag.TypeSuggestions = await GetTypeSuggestionsAsync();
         return View(new WizardMachineData());
     }
 
@@ -65,9 +90,11 @@ public class MachineWizardController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Step1Post(WizardMachineData vm)
     {
+        ViewBag.TypeSuggestions = await GetTypeSuggestionsAsync();
+
         if (string.IsNullOrWhiteSpace(vm.MachineName) ||
             string.IsNullOrWhiteSpace(vm.MachineNumber) ||
-            vm.MachineType == 0)
+            string.IsNullOrWhiteSpace(vm.TypeName))
         {
             ModelState.AddModelError("", "Please fill in all required fields.");
             return View("Step1", vm);
@@ -85,11 +112,17 @@ public class MachineWizardController : Controller
             return View("Step1", vm);
         }
 
+        // Resolve free-text type to a known enum value if possible.
+        var typeName    = vm.TypeName.Trim();
+        var resolved    = MachineDisplayExtensions.TryResolveMachineType(typeName);
+        var machineType = (int)(resolved ?? 0);
+
         var wizard = new WizardMachineData
         {
             MachineName   = vm.MachineName.Trim(),
             MachineNumber = machineNumber,
-            MachineType   = vm.MachineType,
+            TypeName      = typeName,
+            MachineType   = machineType,
             Description   = vm.Description?.Trim() ?? "",
             Items         = new()
         };
@@ -216,6 +249,7 @@ public class MachineWizardController : Controller
             MachineName   = w.MachineName,
             MachineNumber = w.MachineNumber,
             Type          = (MachineType)w.MachineType,
+            TypeName      = string.IsNullOrWhiteSpace(w.TypeName) ? null : w.TypeName.Trim(),
             Description   = w.Description,
             IsActive      = true
         };
