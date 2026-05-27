@@ -248,6 +248,34 @@ public class PendingSyncRecord
     public string? LastError { get; set; }
 }
 
+// ─── Per-device WebAuthn credential (biometric / passwordless login) ─────────
+public class UserCredential
+{
+    public int Id { get; set; }
+    /// <summary>FK to AspNetUsers.Id (the operator this credential belongs to).</summary>
+    [Required, MaxLength(450)] public string UserId { get; set; } = "";
+    public ApplicationUser User { get; set; } = null!;
+
+    /// <summary>FIDO2 CredentialId returned by the authenticator at registration time.</summary>
+    [Required] public byte[] CredentialId { get; set; } = Array.Empty<byte>();
+    /// <summary>COSE-encoded public key for verifying assertions.</summary>
+    [Required] public byte[] PublicKey { get; set; } = Array.Empty<byte>();
+    /// <summary>Sign-counter to detect cloned authenticators (per spec).</summary>
+    public uint SignCount { get; set; }
+
+    /// <summary>Friendly label set at enrollment ("John's iPhone").</summary>
+    [MaxLength(80)] public string? DeviceLabel { get; set; }
+    /// <summary>AAGUID of the authenticator (helps identify model).</summary>
+    public Guid AaGuid { get; set; }
+
+    /// <summary>PBKDF2 hash of the user's offline-fallback PIN (4–6 digits).</summary>
+    public string? PinHash { get; set; }
+
+    public DateTime CreatedAt  { get; set; } = DateTime.UtcNow;
+    public DateTime? LastUsedAt { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
 // ─── Reusable icon library (managed by Admin, used by checklist items) ────────
 public class IconLibraryItem
 {

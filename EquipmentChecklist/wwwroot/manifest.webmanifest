@@ -1,0 +1,20 @@
+{
+    "name": "Equipment Pre-Use Checklist",
+    "short_name": "Checklist",
+    "description": "Pre-use inspection checklist for operators. Works offline.",
+    "start_url": "/Checklist",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "portrait",
+    "background_color": "#0b1726",
+    "theme_color": "#1f3a93",
+    "lang": "en",
+    "categories": ["productivity", "utilities"],
+    "icons": [
+        {
+            "src": "/favicon.ico",
+            "sizes": "any",
+            "type": "image/x-icon"
+        }
+    ]
+}

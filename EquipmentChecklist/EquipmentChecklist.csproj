@@ -25,6 +25,9 @@
     <PackageReference Include="QuestPDF" Version="2024.3.4" />
     <!-- PDF Reading (template upload) -->
     <PackageReference Include="PdfPig" Version="0.1.9" />
+    <!-- Biometric / passwordless (WebAuthn / FIDO2) -->
+    <PackageReference Include="Fido2.AspNet" Version="3.0.1" />
+    <PackageReference Include="Fido2"        Version="3.0.1" />
     <!-- Tools -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.0" />
   </ItemGroup>

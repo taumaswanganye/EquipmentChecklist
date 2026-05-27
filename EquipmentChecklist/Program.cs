@@ -1,6 +1,7 @@
 using EquipmentChecklist.Data;
 using EquipmentChecklist.Models;
 using EquipmentChecklist.Services;
+using Fido2NetLib;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -29,6 +30,20 @@ builder.Services.AddSession(options =>
 builder.Services.AddScoped<ChecklistService>();
 builder.Services.AddScoped<PdfService>();
 builder.Services.AddScoped<EmailService>();
+
+// ── Biometric / passwordless (WebAuthn + offline voucher) ───────────────────
+// OfflineVoucherService holds the long-lived RSA signing key and must be
+// singleton so we don't regenerate the key on every request.
+builder.Services.AddSingleton<EquipmentChecklist.Services.OfflineVoucherService>();
+
+builder.Services.AddFido2(options =>
+{
+    options.ServerDomain      = builder.Configuration["Fido2:ServerDomain"]      ?? "localhost";
+    options.ServerName        = builder.Configuration["Fido2:ServerName"]        ?? "Equipment Checklist";
+    options.Origins           = new HashSet<string>(
+        (builder.Configuration.GetSection("Fido2:Origins").Get<string[]>() ?? new[] { "https://localhost:5001" }));
+    options.TimestampDriftTolerance = 300_000;
+});
 // ── Identity ─────────────────────────────────────────────────────────────────
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(opt =>
 {

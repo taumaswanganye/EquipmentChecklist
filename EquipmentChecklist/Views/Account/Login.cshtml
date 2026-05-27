@@ -76,10 +76,198 @@
             </button>
         </form>
 
+        <!-- Biometric divider + button -->
+        <div id="bioBlock" style="display:none;margin-top:18px">
+            <div style="display:flex;align-items:center;gap:10px;color:var(--text-muted);font-size:11px;margin:14px 0">
+                <span style="flex:1;height:1px;background:var(--steel-border)"></span>
+                <span id="bioOrLabel">OR</span>
+                <span style="flex:1;height:1px;background:var(--steel-border)"></span>
+            </div>
+            <button type="button" id="btnBiometric" class="btn btn-ghost"
+                    style="width:100%;padding:12px;font-size:14px">
+                🔐 Sign in with biometrics
+            </button>
+            <button type="button" id="btnPin" class="btn btn-ghost"
+                    style="display:none;width:100%;padding:12px;font-size:14px;margin-top:8px">
+                🔢 Sign in with offline PIN
+            </button>
+            <p id="bioStatus" style="font-size:11px;color:var(--text-muted);margin:8px 0 0;min-height:16px;text-align:center"></p>
+            <p id="offlineNote"
+               style="display:none;margin:8px 0 0;font-size:11px;color:var(--amber);text-align:center">
+                ⚠ Offline — using your last cached session.
+            </p>
+        </div>
+
+        <!-- Offline PIN entry modal -->
+        <div id="pinModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;align-items:center;justify-content:center;padding:20px">
+            <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;max-width:340px;width:100%;padding:24px">
+                <h3 style="margin:0 0 8px;font-size:16px">Enter offline PIN</h3>
+                <p style="font-size:12px;color:var(--text-muted);margin:0 0 14px">
+                    Enter the 4–6 digit PIN you set on this device.
+                </p>
+                <input id="pinInput" type="password" inputmode="numeric" pattern="\d{4,6}"
+                       maxlength="6" autocomplete="off"
+                       class="form-control" style="font-size:18px;text-align:center;letter-spacing:6px" />
+                <p id="pinStatus" style="font-size:11px;color:var(--text-muted);margin:8px 0 12px;min-height:14px;text-align:center"></p>
+                <div style="display:flex;gap:8px">
+                    <button type="button" class="btn btn-ghost" style="flex:1" onclick="closePinModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" style="flex:1" onclick="submitPin()">Unlock</button>
+                </div>
+            </div>
+        </div>
+
         <p style="text-align:center;margin-top:24px;font-size:11px;color:var(--text-muted)">
             MHSA · DMR · CPS Level 8/9 Compliant<br/>
             Enaleni Engineering and Technology Digital Checklist System
         </p>
     </div>
+
+    <script src="~/js/offline-voucher.js"></script>
+    <script src="~/js/webauthn.js"></script>
+    <script>
+    (function () {
+        // Hide biometric/PIN entirely if the browser can't do WebAuthn AND has
+        // no cached voucher to fall back to.
+        var bioSupported = !!(window.WebAuthnClient && window.WebAuthnClient.isSupported);
+        var bioBlock     = document.getElementById('bioBlock');
+        var btnBio       = document.getElementById('btnBiometric');
+        var btnPin       = document.getElementById('btnPin');
+        var statusEl     = document.getElementById('bioStatus');
+        var offlineNote  = document.getElementById('offlineNote');
+        var orLabel      = document.getElementById('bioOrLabel');
+        var emailEl      = document.querySelector('input[name="email"]');
+        var rUrl         = '@Html.Raw(ViewBag.ReturnUrl ?? "")';
+
+        if (bioSupported) bioBlock.style.display = 'block';
+        if (!window.OfflineVoucher) return;
+
+        OfflineVoucher.init().then(syncOfflineUi);
+        window.addEventListener('online',  syncOfflineUi);
+        window.addEventListener('offline', syncOfflineUi);
+
+        async function syncOfflineUi() {
+            var stored  = await OfflineVoucher.getStored().catch(function () { return null; });
+            var hasVoucher = !!stored;
+            var online  = navigator.onLine;
+
+            // Show PIN option only when offline AND we have a voucher with a PIN.
+            if (!online && hasVoucher && stored.payload && stored.payload.pin_hash) {
+                btnPin.style.display = '';
+                bioBlock.style.display = 'block';
+            } else {
+                btnPin.style.display = 'none';
+            }
+            offlineNote.style.display = (!online && hasVoucher) ? 'block' : 'none';
+            orLabel.textContent = !online ? 'OFFLINE' : 'OR';
+
+            // If offline with no cached voucher, biometric won't work either.
+            if (!online && !hasVoucher) {
+                btnBio.disabled = true;
+                btnBio.style.opacity = '.55';
+                statusEl.textContent = 'You\'re offline and there\'s no cached session on this device. Connect to sign in.';
+                statusEl.style.color = 'var(--amber)';
+            } else {
+                btnBio.disabled = false;
+                btnBio.style.opacity = '';
+                if (!statusEl.textContent.startsWith('✓')) statusEl.textContent = '';
+            }
+        }
+
+        // ── Biometric click ────────────────────────────────────────────
+        btnBio.addEventListener('click', async function () {
+            btnBio.disabled = true;
+            try {
+                if (navigator.onLine) {
+                    // Online happy path — full WebAuthn round-trip.
+                    var reply = await WebAuthnClient.signIn({ email: emailEl.value || '', statusEl: statusEl });
+                    var dest  = (rUrl && rUrl.startsWith('/')) ? rUrl : (reply.redirect || '/');
+                    setTimeout(function () { location.href = dest; }, 400);
+                    return;
+                }
+
+                // Offline — verify the cached voucher locally.
+                var stored = await OfflineVoucher.getStored();
+                if (!stored) throw new Error('No cached offline session.');
+
+                statusEl.textContent = 'Confirm with your fingerprint / Face ID…';
+                statusEl.style.color = 'var(--text-muted)';
+
+                // Do a local WebAuthn assertion to prove the device's user is
+                // present. We don't send it anywhere — Phase 4's Service Worker
+                // will see a fresh "offline auth" flag in IndexedDB and route
+                // the operator straight into the cached checklist UI.
+                var pubKey = {
+                    challenge: crypto.getRandomValues(new Uint8Array(32)),
+                    timeout:   60000,
+                    userVerification: 'required'
+                };
+                try {
+                    var got = await navigator.credentials.get({ publicKey: pubKey });
+                    if (!got) throw new Error('No credential.');
+                } catch (e) {
+                    throw new Error('Biometric prompt cancelled or unavailable. Try the PIN option.');
+                }
+
+                await markUnlockedOffline(stored);
+                statusEl.textContent = '✓ Unlocked offline.';
+                statusEl.style.color = 'var(--green-go)';
+                setTimeout(function () { location.href = '/Checklist'; }, 500);
+
+            } catch (err) {
+                statusEl.textContent = '✕ ' + (err.message || err);
+                statusEl.style.color = 'var(--red-nogo)';
+                btnBio.disabled = false;
+            }
+        });
+
+        // ── PIN click ──────────────────────────────────────────────────
+        btnPin.addEventListener('click', function () {
+            document.getElementById('pinInput').value = '';
+            document.getElementById('pinStatus').textContent = '';
+            document.getElementById('pinModal').style.display = 'flex';
+            setTimeout(function () { document.getElementById('pinInput').focus(); }, 60);
+        });
+
+        window.closePinModal = function () { document.getElementById('pinModal').style.display = 'none'; };
+        window.submitPin = async function () {
+            var pin = document.getElementById('pinInput').value;
+            var st  = document.getElementById('pinStatus');
+            if (!/^\d{4,6}$/.test(pin)) {
+                st.textContent = '✕ PIN must be 4–6 digits.';
+                st.style.color = 'var(--red-nogo)';
+                return;
+            }
+            st.textContent = 'Checking…';
+            st.style.color = 'var(--text-muted)';
+            try {
+                var stored = await OfflineVoucher.getStored();
+                if (!stored || !stored.payload || !stored.payload.pin_hash)
+                    throw new Error('No PIN set on this device.');
+                var ok = await OfflineVoucher.verifyPin(pin, stored.payload.pin_hash);
+                if (!ok) throw new Error('PIN is incorrect.');
+
+                await markUnlockedOffline(stored);
+                st.textContent = '✓ Unlocked.';
+                st.style.color = 'var(--green-go)';
+                setTimeout(function () { location.href = '/Checklist'; }, 400);
+            } catch (e) {
+                st.textContent = '✕ ' + (e.message || e);
+                st.style.color = 'var(--red-nogo)';
+            }
+        };
+
+        // Phase 4's Service Worker will read this flag and authorise the user.
+        // For now (no SW yet), we still write it so the wiring is in place.
+        async function markUnlockedOffline(stored) {
+            try {
+                if (window.OfflineVoucher && stored && stored.voucher) {
+                    // Bump the voucher record so the SW sees a fresh unlock timestamp.
+                    await OfflineVoucher.setStored(stored.voucher, stored.expires_at);
+                }
+                sessionStorage.setItem('eq_offline_unlock', String(Date.now()));
+            } catch (_) {}
+        }
+    })();
+    </script>
 </body>
 </html>

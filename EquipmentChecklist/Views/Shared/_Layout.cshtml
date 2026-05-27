@@ -27,6 +27,9 @@
     <title>@(ViewData["Title"] != null ? $"{ViewData["Title"]} – Enaleni" : "Enaleni Equipment Checklist")</title>
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛏</text></svg>" />
+    @* Phase 4 · PWA: manifest enables 'Add to home screen' so operators can install the checklist app. *@
+    <link rel="manifest" href="~/manifest.webmanifest" />
+    <meta name="theme-color" content="#1f3a93" />
 </head>
 <body>
 <div class="app-shell">
@@ -61,6 +64,25 @@
 
             @if (currentUser != null)
             {
+                @if (isOperator)
+                {
+                    <!-- Queued submissions badge (operators only) -->
+                    <button type="button" id="queuedBadge"
+                            onclick="if (window.OfflineQueue) OfflineQueue.replayNow();"
+                            title="Submissions waiting to sync"
+                            style="display:none;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:#451a03;border:1px solid #92400e;color:#fbbf24;font-size:11px;margin-right:8px;cursor:pointer">
+                        ☁ <span id="queuedCount">0</span> queued
+                    </button>
+
+                    <!-- Offline / voucher status badge (operators only) -->
+                    <div id="voucherBadge"
+                         title="Offline session status"
+                         style="display:none;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--steel-mid);border:1px solid var(--steel-border);font-size:11px;color:var(--text-muted);margin-right:10px;cursor:default">
+                        <span id="voucherDot" style="width:8px;height:8px;border-radius:50%;background:#6b7280"></span>
+                        <span id="voucherText">…</span>
+                    </div>
+                }
+
                 <!-- User dropdown -->
                 <div class="user-dropdown-wrap" id="userDropWrap">
                     <button class="user-chip" id="userDropBtn" type="button">
@@ -115,6 +137,13 @@
             {
                 <a href="/Checklist/History" class="nav-item @(path.StartsWith("/Checklist/History") ? "active" : "")">
                     <span class="nav-icon">📋</span> My Submissions
+                </a>
+            }
+
+            @if (isOperator)
+            {
+                <a href="/Security" class="nav-item @(path.StartsWith("/Security")?"active":"")">
+                    <span class="nav-icon">🔐</span> Biometric Login
                 </a>
             }
 
@@ -327,5 +356,56 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+
+@if (isOperator)
+{
+    <!-- Phase 3 · offline voucher status badge + Phase 4 · Service Worker -->
+    <script src="~/js/offline-voucher.js"></script>
+    <script src="~/js/sw-register.js"></script>
+    <script>
+    (function () {
+        if (!window.OfflineVoucher) return;
+
+        var badge = document.getElementById('voucherBadge');
+        var dot   = document.getElementById('voucherDot');
+        var text  = document.getElementById('voucherText');
+        if (!badge) return;
+        badge.style.display = 'inline-flex';
+
+        function paint(rec) {
+            var online = navigator.onLine;
+            if (!rec) {
+                dot.style.background  = '#6b7280';
+                text.textContent      = online ? 'No offline session' : 'OFFLINE · no session';
+                badge.title           = 'You have no cached session. Sign in online to enable offline use.';
+                return;
+            }
+            var s = OfflineVoucher.secondsLeft(rec.expires_at);
+            if (s <= 0) {
+                dot.style.background = '#b91c1c';
+                text.textContent     = 'Voucher expired';
+                badge.title          = 'Connect to refresh your offline session.';
+            } else if (online) {
+                dot.style.background = '#16a34a';
+                text.textContent     = 'Online · ' + OfflineVoucher.formatLeft(rec.expires_at) + ' cached';
+                badge.title          = 'You\'re online. ' + OfflineVoucher.formatLeft(rec.expires_at) + ' of offline access cached.';
+            } else {
+                dot.style.background = s < 60 * 60 ? '#d97706' : '#2563eb';
+                text.textContent     = 'OFFLINE · ' + OfflineVoucher.formatLeft(rec.expires_at) + ' left';
+                badge.title          = 'You\'re offline. Session expires in ' + OfflineVoucher.formatLeft(rec.expires_at) + '.';
+            }
+        }
+
+        OfflineVoucher.onChange(paint);
+        OfflineVoucher.init().then(function () {
+            OfflineVoucher.getStored().then(paint);
+        });
+
+        window.addEventListener('online',  function () { OfflineVoucher.getStored().then(paint); });
+        window.addEventListener('offline', function () { OfflineVoucher.getStored().then(paint); });
+        setInterval(function () { OfflineVoucher.getStored().then(paint); }, 60_000);
+    })();
+    </script>
+}
 </body>
 </html>
