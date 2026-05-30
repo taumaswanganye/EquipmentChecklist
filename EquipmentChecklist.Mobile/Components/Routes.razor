@@ -1,0 +1,15 @@
+@* Router for the MAUI Blazor Hybrid app. All routable pages live under
+   Components/Pages/*.razor. The default layout is MainLayout — pages can
+   opt out with @layout if they want a fullscreen view (e.g. login). *@
+
+<Router AppAssembly="@typeof(MauiProgram).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(Layout.MainLayout)" />
+        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="@typeof(Layout.MainLayout)">
+            <p role="alert">Sorry, there's nothing at this address.</p>
+        </LayoutView>
+    </NotFound>
+</Router>

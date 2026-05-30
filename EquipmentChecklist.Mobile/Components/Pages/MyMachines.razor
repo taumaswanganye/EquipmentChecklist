@@ -1,0 +1,386 @@
+@page "/machines"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Models
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject LocalCache       Cache
+@inject NavigationManager Nav
+
+@* ───────────── STAT CARDS ───────────── *@
+<div class="stat-grid">
+    <div class="stat info">
+        <div class="stat-label">FLEET MACHINES</div>
+        <div class="stat-value">@(stats?.TotalMachines ?? 0)</div>
+    </div>
+    <div class="stat go">
+        <div class="stat-label">OPERATIONAL</div>
+        <div class="stat-value">@(stats?.Operational ?? 0)</div>
+    </div>
+    <div class="stat nogo">
+        <div class="stat-label">IMMOBILISED</div>
+        <div class="stat-value">@(stats?.Immobilised ?? 0)</div>
+    </div>
+    <div class="stat teal">
+        <div class="stat-label">PENDING DEFECTS</div>
+        <div class="stat-value">@(stats?.OpenDefects ?? 0)</div>
+    </div>
+    <div class="stat info">
+        <div class="stat-label">TODAY'S SUBMISSIONS</div>
+        <div class="stat-value">@(stats?.TodaysChecks ?? 0)</div>
+    </div>
+</div>
+
+@if (offline)
+{
+    <div class="banner">⚠ Offline — showing cached data.</div>
+}
+
+@* ───────────── MY ASSIGNED MACHINES ───────────── *@
+<h2 class="section-title">My Assigned Machines</h2>
+
+@if (busy && machines is null)
+{
+    <div class="state"><div class="spinner"></div><p>Loading your machines…</p></div>
+}
+else if (!string.IsNullOrEmpty(error))
+{
+    <div class="state err">
+        <div class="big">⚠</div>
+        <p>@error</p>
+        <button class="primary" @onclick="LoadAsync">Try again</button>
+    </div>
+}
+else if (machines is null || machines.Count == 0)
+{
+    <div class="state">
+        <div class="big">🚜</div>
+        <p>No machines assigned. Speak to your supervisor.</p>
+    </div>
+}
+else
+{
+    <div class="m-grid">
+        @foreach (var m in machines)
+        {
+            var disabled = m.IsImmobilised || !m.HasTemplate;
+            <div class="m-card @(m.IsImmobilised ? "nogo" : "")">
+                @if (m.IsImmobilised)
+                {
+                    <div class="m-strip">⛔ IMMOBILISED</div>
+                }
+
+                <div class="m-body">
+                    <div class="m-num">@m.MachineNumber</div>
+                    <div class="m-name">@(string.IsNullOrEmpty(m.TypeDisplay) ? "NoType" : m.TypeDisplay)</div>
+                    <div class="m-type">@m.MachineName</div>
+
+                    @if (m.IsImmobilised && !string.IsNullOrEmpty(m.ImmobilisedReason))
+                    {
+                        <p class="m-reason">@m.ImmobilisedReason</p>
+                    }
+                    else if (!m.HasTemplate)
+                    {
+                        <p class="m-reason warn">⚠ No checklist template — ask admin to upload one.</p>
+                    }
+                </div>
+
+                @if (m.IsImmobilised)
+                {
+                    <button class="m-btn nogo" disabled>Machine Immobilised</button>
+                }
+                else if (!m.HasTemplate)
+                {
+                    <button class="m-btn warn" disabled>No Template</button>
+                }
+                else
+                {
+                    <button class="m-btn go" @onclick="() => Open(m)">▶ Start Pre-Use Check</button>
+                }
+            </div>
+        }
+    </div>
+}
+
+@* ───────────── RECENT SUBMISSIONS ───────────── *@
+<h2 class="section-title">Recent Submissions</h2>
+
+@if (recent is null || recent.Count == 0)
+{
+    <div class="state">
+        <div class="big">📋</div>
+        <p>You haven't submitted any checklists yet.</p>
+    </div>
+}
+else
+{
+    <div class="table-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>MACHINE</th>
+                    <th>OPERATOR</th>
+                    <th>STATUS</th>
+                    <th>TIME</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in PagedRows)
+                {
+                    var (cls, label) = StatusBadge(s.Status);
+                    <tr>
+                        <td>
+                            <strong>@s.MachineNumber</strong>
+                            <span class="muted"> @s.MachineName</span>
+                        </td>
+                        <td>@s.OperatorName</td>
+                        <td><span class="badge @cls">@label</span></td>
+                        <td class="muted mono">@s.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        @if (TotalPages > 1)
+        {
+            <div class="pager">
+                <span class="pager-info">
+                    Showing @FirstRowIndex–@LastRowIndex of @recent.Count
+                </span>
+                <div class="pager-btns">
+                    <button class="pg" disabled="@(currentPage == 1)"
+                            @onclick="@(() => Goto(currentPage - 1))">‹ Prev</button>
+
+                    @foreach (var p in VisiblePages)
+                    {
+                        if (p == -1)
+                        {
+                            <span class="pg dots">…</span>
+                        }
+                        else
+                        {
+                            <button class="pg @(p == currentPage ? "on" : "")"
+                                    @onclick="@(() => Goto(p))">@p</button>
+                        }
+                    }
+
+                    <button class="pg" disabled="@(currentPage == TotalPages)"
+                            @onclick="@(() => Goto(currentPage + 1))">Next ›</button>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<style>
+    /* Stat cards */
+    .stat-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:20px; }
+    @@media (max-width:1100px) { .stat-grid { grid-template-columns:repeat(3,1fr); } }
+    @@media (max-width:680px)  { .stat-grid { grid-template-columns:repeat(2,1fr); } }
+    .stat { background:#111c2e; border:1px solid #1f2a3a; border-top:3px solid #6b7280; border-radius:10px; padding:14px 18px; }
+    .stat.go   { border-top-color:#22c55e; }
+    .stat.nogo { border-top-color:#ef4444; }
+    .stat.teal { border-top-color:#06b6d4; }
+    .stat.info { border-top-color:#3b82f6; }
+    .stat-label { font-size:10px; color:#94a3b8; letter-spacing:.8px; font-weight:600; line-height:1.4; }
+    .stat-value { font-size:32px; font-weight:800; margin-top:6px; }
+    .stat.go   .stat-value { color:#22c55e; }
+    .stat.nogo .stat-value { color:#ef4444; }
+    .stat.teal .stat-value { color:#06b6d4; }
+
+    /* Offline banner */
+    .banner { background:#451a03; border:1px solid #92400e; color:#fbbf24; padding:9px 14px; border-radius:8px; margin-bottom:14px; font-size:12px; }
+
+    /* Section titles */
+    .section-title { font-size:18px; font-weight:700; margin:24px 0 12px; }
+
+    /* State placeholders */
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:50px 20px; text-align:center; color:#94a3b8; }
+    .state.err { color:#fca5a5; }
+    .big { font-size:36px; margin-bottom:10px; }
+    .spinner { width:28px; height:28px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:9px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; margin-top:10px; }
+
+    /* Machine grid */
+    .m-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; margin-bottom:8px; }
+
+    .m-card { background:#111c2e; border:1px solid #1f2a3a; border-radius:12px; display:flex; flex-direction:column; overflow:hidden; }
+    .m-card.nogo { border-color:#b91c1c; box-shadow:inset 0 0 0 1px #b91c1c40; }
+
+    .m-strip { background:#7f1d1d; color:#fee2e2; padding:7px 14px; font-size:11px; font-weight:700; letter-spacing:.6px; text-align:center; }
+
+    .m-body { padding:18px 18px 14px; flex:1; }
+    .m-num  { font-size:22px; font-weight:800; font-family:ui-monospace,monospace; margin-bottom:4px; }
+    .m-name { font-size:13px; color:#cbd5e1; margin-bottom:2px; }
+    .m-type { font-size:12px; color:#94a3b8; margin-bottom:10px; }
+    .m-reason { font-size:11px; color:#fca5a5; line-height:1.5; margin:8px 0 0; word-break:break-word; }
+    .m-reason.warn { color:#fbbf24; }
+
+    .m-btn { display:block; margin:0 14px 14px; padding:11px; border:none; border-radius:8px; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit; text-align:center; }
+    .m-btn.go  { background:#16a34a; color:#fff; }
+    .m-btn.go:hover { background:#15803d; }
+    .m-btn.nogo { background:rgba(127,29,29,.6); color:#fca5a5; cursor:not-allowed; border:1px solid #7f1d1d; }
+    .m-btn.warn { background:rgba(146,64,14,.4); color:#fbbf24; cursor:not-allowed; border:1px solid #92400e; }
+
+    /* Recent submissions table */
+    .table-card { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; overflow:hidden; }
+    .data-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .data-table thead { background:#0d1729; }
+    .data-table th { text-align:left; padding:12px 16px; color:#94a3b8; font-size:11px; letter-spacing:.6px; font-weight:600; border-bottom:1px solid #1f2a3a; }
+    .data-table td { padding:14px 16px; border-bottom:1px solid #1a2638; }
+    .data-table tr:last-child td { border-bottom:none; }
+    .muted { color:#94a3b8; }
+    .mono  { font-family:ui-monospace,monospace; font-size:12px; }
+
+    .badge { display:inline-block; padding:3px 10px; border-radius:5px; font-size:11px; font-weight:700; letter-spacing:.4px; border:1px solid; }
+    .badge.go      { color:#22c55e; border-color:#22c55e; background:rgba(34,197,94,.08); }
+    .badge.nogo    { color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,.08); }
+    .badge.gobut   { color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,.08); }
+    .badge.rejected{ color:#f97316; border-color:#f97316; background:rgba(249,115,22,.08); }
+
+    /* Pager */
+    .pager { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; background:#0d1729; border-top:1px solid #1f2a3a; flex-wrap:wrap; }
+    .pager-info { font-size:11px; color:#94a3b8; }
+    .pager-btns { display:flex; align-items:center; gap:4px; }
+    .pg { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:5px 10px; border-radius:6px; font-size:12px; cursor:pointer; min-width:32px; font-family:inherit; }
+    .pg:hover:not(:disabled):not(.dots) { background:#1a2638; border-color:#0e9488; }
+    .pg.on { background:#0e9488; color:#0a1726; border-color:#0e9488; font-weight:700; }
+    .pg:disabled { opacity:.35; cursor:not-allowed; }
+    .pg.dots { border:none; cursor:default; color:#64748b; }
+</style>
+
+@code {
+    private const int PAGE_SIZE = 5;
+
+    private SyncOperatorStatsDto?      stats;
+    private List<SyncMachineSummaryDto>? machines;
+    private List<RecentSubmissionDto>? recent;
+    private bool   busy        = true;
+    private bool   offline     = false;
+    private string error       = "";
+    private int    currentPage = 1;
+
+    private int TotalPages =>
+        recent is null || recent.Count == 0 ? 1 : (int)Math.Ceiling(recent.Count / (double)PAGE_SIZE);
+
+    private IEnumerable<RecentSubmissionDto> PagedRows =>
+        recent?.Skip((currentPage - 1) * PAGE_SIZE).Take(PAGE_SIZE) ?? Enumerable.Empty<RecentSubmissionDto>();
+
+    private int FirstRowIndex => recent is null || recent.Count == 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+    private int LastRowIndex  => Math.Min(currentPage * PAGE_SIZE, recent?.Count ?? 0);
+
+    private IEnumerable<int> VisiblePages
+    {
+        get
+        {
+            if (recent is null) yield break;
+            var total = TotalPages;
+            const int window = 1;
+            for (int p = 1; p <= total; p++)
+            {
+                if (p == 1 || p == total ||
+                    (p >= currentPage - window && p <= currentPage + window))
+                    yield return p;
+                else if (p == currentPage - window - 1 || p == currentPage + window + 1)
+                    yield return -1; // ellipsis
+            }
+        }
+    }
+
+    private void Goto(int page) =>
+        currentPage = Math.Clamp(page, 1, TotalPages);
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+
+        // 1. Show cached data IMMEDIATELY — works offline.
+        try
+        {
+            var cachedMachines = await Cache.GetMachinesAsync();
+            if (cachedMachines.Count > 0) { machines = cachedMachines; busy = false; StateHasChanged(); }
+        } catch { }
+
+        try
+        {
+            var email = Auth.CurrentUser?.Email;
+            if (!string.IsNullOrEmpty(email))
+            {
+                var cached = await Cache.GetRecentSubmissionsAsync(email);
+                if (cached.Count > 0) { recent = cached; StateHasChanged(); }
+            }
+        } catch { }
+
+        // Stats fallback from cached machine list so the cards aren't all zeros offline.
+        if (machines is not null)
+        {
+            stats = new SyncOperatorStatsDto
+            {
+                TotalMachines = machines.Count,
+                Operational   = machines.Count(m => !m.IsImmobilised),
+                Immobilised   = machines.Count(m =>  m.IsImmobilised),
+                OpenDefects   = 0,
+                TodaysChecks  = 0
+            };
+            StateHasChanged();
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        busy = true; error = ""; offline = false; StateHasChanged();
+
+        try
+        {
+            var machinesTask = Api.MyMachinesAsync();
+            var statsTask    = Api.StatsAsync();
+            var recentTask   = Api.RecentSubmissionsAsync(50);
+            await Task.WhenAll(machinesTask, statsTask, recentTask);
+
+            if (machinesTask.Result is not null)
+            {
+                machines = machinesTask.Result;
+                await Cache.SaveMachinesAsync(machinesTask.Result);
+            }
+            if (statsTask.Result is not null)
+                stats = statsTask.Result;
+            if (recentTask.Result is not null)
+            {
+                recent      = recentTask.Result;
+                currentPage = 1;
+                var email = Auth.CurrentUser?.Email;
+                if (!string.IsNullOrEmpty(email))
+                {
+                    try { await Cache.SaveRecentSubmissionsAsync(email, recentTask.Result); } catch { }
+                }
+            }
+        }
+        catch (HttpRequestException)
+        {
+            offline = true;
+            if (machines == null || machines.Count == 0)
+                error = "You're offline and nothing is cached yet. Connect to load your machines.";
+        }
+        catch (Exception ex) { if (machines == null) error = ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+
+    private void Open(SyncMachineSummaryDto m)
+    {
+        if (m.IsImmobilised || !m.HasTemplate) return;
+        Nav.NavigateTo($"/checklist/{m.Id}");
+    }
+
+    private static (string Cls, string Label) StatusBadge(ChecklistStatus s) => s switch
+    {
+        ChecklistStatus.Go                => ("go",       "GO"),
+        ChecklistStatus.GoButRepair24H    => ("gobut",    "GO-BUT 24H"),
+        ChecklistStatus.GoTillNextService => ("gobut",    "GO-BUT 30D"),
+        ChecklistStatus.NoGo              => ("nogo",     "NO-GO"),
+        ChecklistStatus.Rejected          => ("rejected", "REJECTED"),
+        _                                 => ("gobut",    "PENDING")
+    };
+}

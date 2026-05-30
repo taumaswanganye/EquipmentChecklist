@@ -1,0 +1,197 @@
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient   Api
+@inject IJSRuntime  JS
+@implements IAsyncDisposable
+
+@if (visible)
+{
+    <div class="pdfv-backdrop" @onclick="CloseAsync"></div>
+    <div class="pdfv-card" @onclick:stopPropagation="true">
+        <div class="pdfv-head">
+            <div class="pdfv-title">
+                <span class="pdfv-icon">📄</span>
+                <div>
+                    <div class="pdfv-name">@(string.IsNullOrEmpty(Title) ? "Checklist PDF" : Title)</div>
+                    @if (currentSubmissionId.HasValue)
+                    {
+                        <div class="pdfv-sub">Submission #@currentSubmissionId</div>
+                    }
+                </div>
+            </div>
+            <div class="pdfv-actions">
+                @if (blobUrl != null)
+                {
+                    <a class="pdfv-btn" href="@blobUrl" target="_blank"
+                       download="@DownloadFileName">⬇ Save</a>
+                }
+                <button class="pdfv-x" @onclick="CloseAsync" title="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="pdfv-body">
+            @if (busy)
+            {
+                <div class="pdfv-state">
+                    <div class="pdfv-spinner"></div>
+                    <p>Rendering PDF…</p>
+                </div>
+            }
+            else if (!string.IsNullOrEmpty(error))
+            {
+                <div class="pdfv-state err">
+                    <div class="pdfv-big">⚠</div>
+                    <p>@error</p>
+                    <button class="pdfv-retry" @onclick="ReloadAsync">Try again</button>
+                </div>
+            }
+            else if (blobUrl != null)
+            {
+                @* iframe with WebView2's built-in PDF reader — no PDF.js needed. *@
+                <iframe class="pdfv-frame" src="@blobUrl" title="PDF preview"></iframe>
+            }
+        </div>
+    </div>
+}
+
+<style>
+    .pdfv-backdrop { position:fixed; inset:0; background:rgba(2,6,23,.78); z-index:80; }
+
+    .pdfv-card { position:fixed; top:3vh; left:3vw; right:3vw; bottom:3vh;
+                 background:#0d1729; border:1px solid #243246; border-radius:12px;
+                 box-shadow:0 24px 70px rgba(0,0,0,.55); z-index:90;
+                 display:flex; flex-direction:column; overflow:hidden; }
+
+    .pdfv-head { display:flex; align-items:center; justify-content:space-between;
+                 padding:12px 18px; background:#111c2e; border-bottom:1px solid #1f2a3a; }
+    .pdfv-title  { display:flex; align-items:center; gap:12px; min-width:0; }
+    .pdfv-icon   { font-size:22px; }
+    .pdfv-name   { font-size:14px; font-weight:700; color:#e5e7eb;
+                   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60vw; }
+    .pdfv-sub    { font-size:11px; color:#94a3b8; margin-top:2px; }
+
+    .pdfv-actions { display:flex; align-items:center; gap:8px; }
+    .pdfv-btn   { background:#0e9488; color:#0a1726; border:none; padding:6px 12px;
+                  border-radius:6px; font-size:12px; font-weight:700; text-decoration:none;
+                  font-family:inherit; cursor:pointer; }
+    .pdfv-btn:hover { background:#14b8a6; }
+    .pdfv-x     { background:transparent; border:1px solid #243246; color:#cbd5e1;
+                  width:30px; height:30px; border-radius:6px; cursor:pointer; font-size:14px;
+                  font-family:inherit; }
+    .pdfv-x:hover { background:#1a2638; border-color:#0e9488; }
+
+    .pdfv-body  { flex:1; min-height:0; background:#fff; position:relative; }
+    .pdfv-frame { width:100%; height:100%; border:0; display:block; }
+
+    .pdfv-state { display:flex; flex-direction:column; align-items:center; justify-content:center;
+                  height:100%; gap:10px; color:#475569; padding:24px; text-align:center; }
+    .pdfv-state.err { color:#b91c1c; }
+    .pdfv-big   { font-size:42px; }
+    .pdfv-spinner { width:34px; height:34px; border:3px solid #e2e8f0; border-top-color:#0e9488;
+                    border-radius:50%; animation:pdfv-spin .8s linear infinite; }
+    @@keyframes pdfv-spin { to { transform:rotate(360deg); } }
+    .pdfv-retry { background:#0e9488; color:#0a1726; border:none; padding:8px 16px; border-radius:6px;
+                  font-size:12px; font-weight:700; cursor:pointer; font-family:inherit; }
+
+    @@media (max-width:760px) {
+        .pdfv-card { top:1vh; left:1vw; right:1vw; bottom:1vh; border-radius:8px; }
+        .pdfv-name { max-width:50vw; }
+    }
+</style>
+
+@code {
+    /// <summary>Optional title shown above the file. Defaults to "Checklist PDF".</summary>
+    [Parameter] public string? Title { get; set; }
+
+    /// <summary>Filename used for the Save button's download attribute.</summary>
+    [Parameter] public string DownloadFileName { get; set; } = "checklist.pdf";
+
+    private bool   visible;
+    private bool   busy;
+    private string error  = "";
+    private string? blobUrl;
+    private int?    currentSubmissionId;
+
+    /// <summary>
+    /// Open the viewer and fetch + render the given submission's PDF.
+    /// Idempotent: closes any previous content first so back-to-back opens
+    /// don't leak blob URLs.
+    /// </summary>
+    public async Task ShowAsync(int submissionId, string? title = null, string? downloadFileName = null)
+    {
+        // Close anything we were showing (revokes the previous blob).
+        await ReleaseBlobAsync();
+
+        currentSubmissionId = submissionId;
+        if (!string.IsNullOrEmpty(title))            Title             = title;
+        if (!string.IsNullOrEmpty(downloadFileName)) DownloadFileName  = downloadFileName!;
+
+        visible = true;
+        busy    = true;
+        error   = "";
+        StateHasChanged();
+
+        await LoadAsync();
+    }
+
+    /// <summary>Public so the parent page can re-trigger after a network blip.</summary>
+    public Task ReloadAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        if (currentSubmissionId is null) return;
+
+        busy  = true;
+        error = "";
+        StateHasChanged();
+
+        try
+        {
+            var bytes = await Api.GetSubmissionPdfAsync(currentSubmissionId.Value);
+            if (bytes == null || bytes.Length == 0)
+            {
+                error = "Couldn't load the PDF. The server returned no content.";
+                return;
+            }
+
+            // Hand the bytes to JS as base64 — the JS helper builds a blob URL
+            // and returns it. The iframe consumes the blob URL natively via
+            // WebView2's built-in PDF viewer.
+            var b64 = Convert.ToBase64String(bytes);
+            blobUrl = await JS.InvokeAsync<string>("PdfViewer.fromBase64", b64);
+        }
+        catch (HttpRequestException)
+        {
+            error = "Can't reach the server right now. PDFs require a live connection.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+            StateHasChanged();
+        }
+    }
+
+    public async Task CloseAsync()
+    {
+        await ReleaseBlobAsync();
+        visible              = false;
+        currentSubmissionId  = null;
+        error                = "";
+        StateHasChanged();
+    }
+
+    private async Task ReleaseBlobAsync()
+    {
+        if (!string.IsNullOrEmpty(blobUrl))
+        {
+            try { await JS.InvokeVoidAsync("PdfViewer.revoke", blobUrl); }
+            catch { /* page may already be navigating away */ }
+            blobUrl = null;
+        }
+    }
+
+    public async ValueTask DisposeAsync() => await ReleaseBlobAsync();
+}

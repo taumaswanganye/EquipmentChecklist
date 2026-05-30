@@ -1,0 +1,329 @@
+@page "/sign-off"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Models
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject ActionQueue      Actions
+@inject NavigationManager Nav
+@inject IJSRuntime       JS
+
+<div class="page-head">
+    <div>
+        <h1>SIGN-OFF QUEUE</h1>
+        <p>GO-BUT submissions from your operators awaiting your approval</p>
+    </div>
+    <button class="ghost" @onclick="LoadAsync" disabled="@busy">↻ Refresh</button>
+</div>
+
+@if (busy && queue is null)
+{
+    <div class="state"><div class="spinner"></div><p>Loading the queue…</p></div>
+}
+else if (!string.IsNullOrEmpty(error))
+{
+    <div class="state err">
+        <div class="big">⚠</div>
+        <p>@error</p>
+        <button class="primary" @onclick="LoadAsync">Try again</button>
+    </div>
+}
+else if (queue is null || queue.Count == 0)
+{
+    <div class="state">
+        <div class="big">✅</div>
+        <h2>All clear</h2>
+        <p>No submissions are waiting for your sign-off right now.</p>
+    </div>
+}
+else
+{
+    <p class="count-line">@queue.Count submission(s) waiting</p>
+
+    <div class="queue-list">
+        @foreach (var q in queue)
+        {
+            <div class="q-card">
+                <div class="q-head">
+                    <div>
+                        <div class="machine">
+                            <strong>@q.MachineNumber</strong>
+                            <span class="muted"> @q.MachineName</span>
+                        </div>
+                        <div class="op-info">
+                            👤 @q.OperatorName
+                            <span class="muted">#@q.OperatorEmployeeNumber</span>
+                            <span class="dot-sep">·</span>
+                            <span class="muted mono">@q.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                        </div>
+                    </div>
+                    <span class="badge gobut">GO-BUT 24H</span>
+                </div>
+
+                <div class="q-grid">
+                    <div class="q-meta">
+                        <div class="meta-label">SHIFT</div>
+                        <div class="meta-value">@ShiftLabel(q.Shift)</div>
+                    </div>
+                    <div class="q-meta">
+                        <div class="meta-label">KM / HOURS</div>
+                        <div class="meta-value mono">@(q.KmOrHourMeter?.ToString() ?? "—")</div>
+                    </div>
+                    <div class="q-meta">
+                        <div class="meta-label">DEFECTS</div>
+                        <div class="meta-value defect">@q.DefectCount</div>
+                    </div>
+                </div>
+
+                <div class="q-actions">
+                    <button class="primary" @onclick="() => OpenReview(q)">
+                        ✍ Review &amp; sign off
+                    </button>
+                    <button class="primary success" @onclick="() => OpenQuickApprove(q)">
+                        ✓ Quick approve
+                    </button>
+                    <button class="ghost" @onclick="() => OpenPdf(q)">📄 PDF</button>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@* ────────────── QUICK APPROVE MODAL ────────────── *@
+@if (qa is not null)
+{
+    <div class="modal-backdrop" @onclick="CloseQuickApprove">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-head">
+                <div>
+                    <div class="modal-num">@qa.MachineNumber</div>
+                    <div class="modal-sub">@qa.MachineName · @qa.DefectCount defect(s)</div>
+                </div>
+                <button class="modal-x" @onclick="CloseQuickApprove">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="qa-hint">
+                    Quickly approve this GO-BUT submission. Sign below — your signature is
+                    posted to the server and the submission moves out of the queue.
+                </p>
+                <div class="sig-wrap">
+                    <canvas id="@QA_SIG_ID"></canvas>
+                </div>
+                <button type="button" class="ghost sig-clear" @onclick="ClearQaSig">✕ Clear signature</button>
+
+                @if (!string.IsNullOrEmpty(qaError))
+                {
+                    <div class="alert">@qaError</div>
+                }
+            </div>
+            <div class="modal-foot">
+                <button class="ghost" @onclick="CloseQuickApprove" disabled="@qaBusy">Cancel</button>
+                <button class="primary warn" disabled="@qaBusy"
+                        @onclick="() => QuickApprove(2)">
+                    @(qaBusy ? "…" : "Approve · 24H")
+                </button>
+                <button class="primary success" disabled="@qaBusy"
+                        @onclick="() => QuickApprove(3)">
+                    @(qaBusy ? "…" : "Approve · 30D")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@* Inline PDF viewer — opens via @ref so OpenPdf can call ShowAsync(...) *@
+<PdfViewer @ref="pdfView" />
+
+<style>
+    .page-head { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; gap:14px; flex-wrap:wrap; }
+    .page-head h1 { font-size:24px; font-weight:800; margin:0; letter-spacing:.5px; }
+    .page-head p  { font-size:12px; color:#94a3b8; margin:2px 0 0; }
+    .ghost { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:9px 14px; border-radius:8px; cursor:pointer; font-family:inherit; font-size:13px; }
+    .ghost:disabled { opacity:.5; cursor:not-allowed; }
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:9px 16px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit; }
+
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:60px 20px; text-align:center; color:#94a3b8; }
+    .state.err { color:#fca5a5; }
+    .state h2 { color:#e5e7eb; font-size:18px; margin:0 0 6px; }
+    .state p  { font-size:13px; max-width:380px; margin:0 0 14px; line-height:1.6; }
+    .big { font-size:48px; margin-bottom:12px; }
+    .spinner { width:30px; height:30px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+
+    .count-line { font-size:12px; color:#94a3b8; margin:0 0 12px; }
+
+    .queue-list { display:flex; flex-direction:column; gap:12px; }
+    .q-card { background:#111c2e; border:1px solid #1f2a3a; border-left:4px solid #06b6d4; border-radius:10px; padding:16px 18px; }
+    .q-head { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap; margin-bottom:14px; }
+    .machine { font-size:15px; }
+    .machine strong { font-family:ui-monospace,monospace; font-weight:800; }
+    .op-info { font-size:12px; color:#cbd5e1; margin-top:4px; }
+    .muted   { color:#94a3b8; }
+    .mono    { font-family:ui-monospace,monospace; }
+    .dot-sep { margin:0 5px; color:#475569; }
+
+    .q-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; padding:12px 14px; background:#0d1729; border:1px solid #1f2a3a; border-radius:8px; margin-bottom:14px; }
+    @@media (max-width:540px) { .q-grid { grid-template-columns:1fr 1fr; } }
+    .meta-label { font-size:10px; color:#94a3b8; letter-spacing:.5px; font-weight:600; }
+    .meta-value { font-size:14px; font-weight:700; margin-top:4px; }
+    .meta-value.defect { color:#fca5a5; }
+
+    .q-actions { display:flex; gap:8px; flex-wrap:wrap; }
+
+    .badge { display:inline-block; padding:3px 10px; border-radius:5px; font-size:11px; font-weight:700; letter-spacing:.4px; border:1px solid; }
+    .badge.gobut { color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,.08); }
+
+    .primary.success { background:#16a34a; color:#fff; }
+    .primary.warn    { background:#ea580c; color:#fff; }
+
+    /* Quick-approve modal */
+    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:60; display:flex; align-items:center; justify-content:center; padding:18px; }
+    .modal { background:#111c2e; border:1px solid #1f2a3a; border-radius:12px; width:100%; max-width:480px; }
+    .modal-head { display:flex; justify-content:space-between; align-items:flex-start; padding:14px 18px; border-bottom:1px solid #1f2a3a; }
+    .modal-num { font-size:17px; font-weight:800; font-family:ui-monospace,monospace; }
+    .modal-sub { font-size:11px; color:#94a3b8; margin-top:2px; }
+    .modal-x { background:transparent; border:none; color:#94a3b8; font-size:18px; cursor:pointer; }
+    .modal-body { padding:14px 18px; }
+    .qa-hint { font-size:12px; color:#94a3b8; line-height:1.6; margin:0 0 12px; }
+    .sig-wrap { position:relative; height:150px; background:#fff; border:2px dashed #243246; border-radius:6px; overflow:hidden; touch-action:none; }
+    .sig-wrap canvas { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; display:block; }
+    .sig-clear { margin-top:8px; font-size:11px; padding:5px 12px; }
+    .modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:12px 18px; border-top:1px solid #1f2a3a; flex-wrap:wrap; }
+    .alert { background:#450a0a; border:1px solid #7f1d1d; color:#fecaca; padding:8px 12px; border-radius:6px; font-size:12px; margin-top:10px; }
+</style>
+
+@code {
+    private const string QA_SIG_ID = "qaSig";
+
+    private List<SupervisorQueueItemDto>? queue;
+    private bool   busy  = true;
+    private string error = "";
+
+    // Quick-approve modal state
+    private SupervisorQueueItemDto? qa;
+    private bool   qaBusy;
+    private string qaError = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (qa is not null)
+        {
+            try { await JS.InvokeVoidAsync("SigPad.init", QA_SIG_ID); }
+            catch { /* canvas not in DOM yet — next render */ }
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        busy = true; error = ""; StateHasChanged();
+        try
+        {
+            queue = await Api.SupervisorQueueAsync();
+        }
+        catch (HttpRequestException)
+        {
+            error = "You're offline. The sign-off queue requires a live server connection.";
+        }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+
+    private void OpenReview(SupervisorQueueItemDto q)
+        => Nav.NavigateTo($"/sign-off/review/{q.SubmissionId}");
+
+    private void OpenQuickApprove(SupervisorQueueItemDto q)
+    {
+        qa      = q;
+        qaError = "";
+        qaBusy  = false;
+    }
+
+    private void CloseQuickApprove()
+    {
+        qa      = null;
+        qaError = "";
+    }
+
+    private async Task ClearQaSig() => await JS.InvokeVoidAsync("SigPad.clear", QA_SIG_ID);
+
+    private async Task QuickApprove(int resolution)
+    {
+        if (qa is null || qaBusy) return;
+        qaError = "";
+
+        var sig = await JS.InvokeAsync<string?>("SigPad.toDataUrl", QA_SIG_ID);
+        if (string.IsNullOrEmpty(sig))
+        {
+            qaError = "Sign before approving.";
+            return;
+        }
+
+        qaBusy = true; StateHasChanged();
+        try
+        {
+            // Offline-aware: queue the action so the operator can keep moving.
+            // The queue card stays in the UI (the server hasn't ack'd yet) but
+            // the badge in the header reflects the pending action and the
+            // SyncWorker replays it the moment signal returns.
+            if (Connectivity.NetworkAccess != NetworkAccess.Internet)
+            {
+                await Actions.EnqueueSignOffAsync(qa.SubmissionId, resolution, sig);
+                CloseQuickApprove();
+                return;
+            }
+
+            var res = await Api.SupervisorSignOffAsync(qa.SubmissionId, resolution, sig);
+            if (!res.Ok)
+            {
+                qaError = string.IsNullOrEmpty(res.Error)
+                    ? "Server rejected the sign-off. Try again."
+                    : res.Error;
+                qaBusy  = false;
+                return;
+            }
+            CloseQuickApprove();
+            await LoadAsync();          // refresh the queue
+        }
+        catch (HttpRequestException)
+        {
+            // Network died mid-call — queue and close the modal.
+            await Actions.EnqueueSignOffAsync(qa.SubmissionId, resolution, sig);
+            CloseQuickApprove();
+        }
+        catch (Exception ex)
+        {
+            qaError = "Sign-off failed: " + ex.Message;
+            qaBusy  = false;
+        }
+    }
+
+    /// <summary>Reference to the inline PDF modal so we can call ShowAsync on it.</summary>
+    private PdfViewer? pdfView;
+
+    private async Task OpenPdf(SupervisorQueueItemDto q)
+    {
+        if (pdfView is null) return;
+        try
+        {
+            await pdfView.ShowAsync(
+                q.SubmissionId,
+                title: $"{q.MachineNumber} · {q.MachineName}",
+                downloadFileName: $"Checklist_{q.MachineNumber}_{q.SubmissionId}.pdf");
+        }
+        catch (Exception ex) { error = "Couldn't open PDF: " + ex.Message; }
+    }
+
+    private static string ShiftLabel(Shift s) => s switch
+    {
+        Shift.Day       => "Day (A)",
+        Shift.Afternoon => "Afternoon (B)",
+        Shift.Night     => "Night (C)",
+        _               => "—"
+    };
+}

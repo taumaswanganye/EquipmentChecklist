@@ -1,0 +1,146 @@
+@page "/my-operators"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject NavigationManager Nav
+
+<div class="page-head">
+    <div>
+        <h1>MY OPERATORS</h1>
+        <p>Operators currently assigned to you · 30-day activity</p>
+    </div>
+    <button class="ghost" @onclick="LoadAsync" disabled="@busy">↻ Refresh</button>
+</div>
+
+@if (busy && ops is null)
+{
+    <div class="state"><div class="spinner"></div><p>Loading your team…</p></div>
+}
+else if (!string.IsNullOrEmpty(error))
+{
+    <div class="state err">
+        <div class="big">⚠</div>
+        <p>@error</p>
+        <button class="primary" @onclick="LoadAsync">Try again</button>
+    </div>
+}
+else if (ops is null || ops.Count == 0)
+{
+    <div class="state">
+        <div class="big">👷</div>
+        <h2>No operators assigned</h2>
+        <p>Ask an admin to assign operators to you on the Assignments screen.</p>
+    </div>
+}
+else
+{
+    <div class="table-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>OPERATOR</th>
+                    <th>EMPLOYEE #</th>
+                    <th class="num-col">30-DAY SUBMISSIONS</th>
+                    <th class="num-col">AWAITING SIGN-OFF</th>
+                    <th class="num-col">NO-GO (30D)</th>
+                    <th>LAST SUBMISSION</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var o in ops)
+                {
+                    <tr>
+                        <td><strong>@o.FullName</strong></td>
+                        <td class="mono muted">@o.EmployeeNumber</td>
+                        <td class="num-col">@o.Submissions30d</td>
+                        <td class="num-col">
+                            @if (o.PendingSignOff > 0)
+                            {
+                                <a href="/sign-off" class="badge gobut" style="text-decoration:none">@o.PendingSignOff pending</a>
+                            }
+                            else
+                            {
+                                <span class="muted">—</span>
+                            }
+                        </td>
+                        <td class="num-col">
+                            @if (o.NoGoCount30d > 0)
+                            {
+                                <span class="badge nogo">@o.NoGoCount30d</span>
+                            }
+                            else
+                            {
+                                <span class="muted">—</span>
+                            }
+                        </td>
+                        <td class="muted mono">
+                            @(o.LastSubmissionAt?.ToString("yyyy-MM-dd HH:mm") ?? "— never —")
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <p class="foot-note">@ops.Count operator(s) on your roster</p>
+}
+
+<style>
+    .page-head { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; gap:14px; flex-wrap:wrap; }
+    .page-head h1 { font-size:24px; font-weight:800; margin:0; letter-spacing:.5px; }
+    .page-head p  { font-size:12px; color:#94a3b8; margin:2px 0 0; }
+    .ghost { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:9px 14px; border-radius:8px; cursor:pointer; font-family:inherit; font-size:13px; }
+    .ghost:disabled { opacity:.5; cursor:not-allowed; }
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:9px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit; }
+
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:60px 20px; text-align:center; color:#94a3b8; }
+    .state.err { color:#fca5a5; }
+    .state h2 { color:#e5e7eb; font-size:18px; margin:0 0 6px; }
+    .state p  { font-size:13px; max-width:380px; margin:0 0 14px; line-height:1.6; }
+    .big { font-size:48px; margin-bottom:12px; }
+    .spinner { width:30px; height:30px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+
+    .table-card { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; overflow:hidden; }
+    .data-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .data-table thead { background:#0d1729; }
+    .data-table th { text-align:left; padding:12px 16px; color:#94a3b8; font-size:11px; letter-spacing:.6px; font-weight:600; border-bottom:1px solid #1f2a3a; }
+    .data-table th.num-col, .data-table td.num-col { text-align:center; }
+    .data-table td { padding:14px 16px; border-bottom:1px solid #1a2638; }
+    .data-table tr:last-child td { border-bottom:none; }
+    .muted { color:#94a3b8; }
+    .mono  { font-family:ui-monospace,monospace; font-size:12px; }
+
+    .badge { display:inline-block; padding:3px 10px; border-radius:5px; font-size:11px; font-weight:700; letter-spacing:.4px; border:1px solid; }
+    .badge.gobut { color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,.08); }
+    .badge.nogo  { color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,.08); }
+
+    .foot-note { font-size:11px; color:#64748b; margin-top:10px; }
+</style>
+
+@code {
+    private List<SupervisorOperatorDto>? ops;
+    private bool   busy  = true;
+    private string error = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        busy = true; error = ""; StateHasChanged();
+        try
+        {
+            ops = await Api.SupervisorOperatorsAsync();
+        }
+        catch (HttpRequestException)
+        {
+            error = "You're offline. Connect to load your team roster.";
+        }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+}

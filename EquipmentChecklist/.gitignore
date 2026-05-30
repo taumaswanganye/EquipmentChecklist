@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────
+#  .gitignore — Equipment Checklist
+#  Keeps secrets, local databases and build output out of source control.
+# ─────────────────────────────────────────────────────────────────────
+
+## ── Build output ──────────────────────────────────────────────────
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userprefs
+*.swp
+*.bak
+*.orig
+
+## ── Visual Studio / Rider / VS Code ────────────────────────────────
+.vs/
+.idea/
+.vscode/
+*.sln.docstates
+*.lock.json
+*.nuget.props
+*.nuget.targets
+
+## ── ASP.NET runtime / secrets ──────────────────────────────────────
+# Offline-voucher RSA private signing key (generated on first run).
+# NEVER commit — anyone with this key can mint valid vouchers.
+App_Data/voucher_rsa.pem
+App_Data/*.pem
+App_Data/*.key
+
+# User secrets (referenced via UserSecretsId in the .csproj)
+secrets.json
+
+# Local SQLite cache used by the offline pipeline
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+digitalChecklist_offline.db
+
+# wwwroot files generated at runtime (icon library uploads, item images,
+# signature renders). Keep the folders, drop the contents.
+wwwroot/icon-library/*
+!wwwroot/icon-library/.gitkeep
+wwwroot/item-images/*
+!wwwroot/item-images/.gitkeep
+wwwroot/uploads/*
+!wwwroot/uploads/.gitkeep
+
+## ── .NET MAUI mobile project (when it's scaffolded) ────────────────
+EquipmentChecklist.Mobile/[Bb]in/
+EquipmentChecklist.Mobile/[Oo]bj/
+EquipmentChecklist.Mobile/*.binlog
+
+# Platform secrets that the MAUI tooling can drop next to the project
+*.p12
+*.pfx
+*.cer
+*.keystore
+*.jks
+google-services.json
+GoogleService-Info.plist
+
+## ── Log files ─────────────────────────────────────────────────────
+*.log
+logs/
+
+## ── OS scratch ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini

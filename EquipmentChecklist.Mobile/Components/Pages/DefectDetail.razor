@@ -1,0 +1,541 @@
+@page "/my-defects/{DefectOrderId:int}"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Models
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject ActionQueue      Actions
+@inject NavigationManager Nav
+@inject IJSRuntime        JS
+
+<div class="page-head">
+    <div>
+        <button class="back" @onclick="@(() => Nav.NavigateTo("/my-defects"))">‹ Defects</button>
+        <h1>DEFECT DETAIL</h1>
+    </div>
+    @if (defect != null)
+    {
+        @if (defect.MachineImmobilised)
+        {
+            <span class="tag nogo">🚫 NO-GO machine</span>
+        }
+        else
+        {
+            <span class="tag">@RepairLabel(defect.RepairStatus)</span>
+        }
+    }
+</div>
+
+@if (busy && defect is null)
+{
+    <div class="state">
+        <div class="spinner"></div>
+        <p>Loading defect…</p>
+    </div>
+}
+else if (!string.IsNullOrEmpty(error))
+{
+    <div class="state error">
+        <div class="big-icon">⚠</div>
+        <p>@error</p>
+        <button class="primary" @onclick="LoadAsync">Try again</button>
+    </div>
+}
+else if (defect is null)
+{
+    <div class="state">
+        <div class="big-icon">🔍</div>
+        <p>Defect not found.</p>
+    </div>
+}
+else
+{
+    @* ─── Machine + item summary ─── *@
+    <div class="card">
+        <div class="kv">
+            <div><span class="k">MACHINE</span><br/><strong>@defect.MachineNumber</strong> @defect.MachineName</div>
+            <div><span class="k">TYPE</span><br/>@defect.TypeDisplay</div>
+            <div><span class="k">REPORTED BY</span><br/>@defect.OperatorName</div>
+            <div><span class="k">REPORTED AT</span><br/>@defect.CreatedAt.ToString("yyyy-MM-dd HH:mm")</div>
+        </div>
+    </div>
+
+    @* ─── The faulty item ─── *@
+    <div class="card defect-card">
+        <div class="item-row">
+            @if (!string.IsNullOrEmpty(defect.IconPath))
+            {
+                <img class="ico" src="@IconUrl(defect.IconPath)" alt="" />
+            }
+            else
+            {
+                <div class="ico-fallback">@LetterFor(defect.ItemName)</div>
+            }
+            <div class="item-info">
+                <div class="item-name">
+                    @defect.ItemName
+                    @if (defect.IsCriticalItem)
+                    {
+                        <span class="critical">CRITICAL · NO-GO</span>
+                    }
+                </div>
+                <div class="defect-desc">@defect.DefectDescription</div>
+                @if (!string.IsNullOrWhiteSpace(defect.OperatorNotes))
+                {
+                    <div class="notes">Operator note: “@defect.OperatorNotes”</div>
+                }
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(defect.PartRequired))
+        {
+            <div class="parts-banner">
+                🧰 Parts ordered: <strong>@defect.PartRequired</strong>
+                @if (!string.IsNullOrEmpty(defect.PartNumber))
+                {
+                    <span class="muted"> · P/N @defect.PartNumber</span>
+                }
+            </div>
+        }
+    </div>
+
+    @* ─── Assignment / claim ─── *@
+    @if (!defect.IsAssignedToMe && string.IsNullOrEmpty(defect.AssignedMechanicId))
+    {
+        <div class="card">
+            <div class="claim-row">
+                <div>
+                    <strong>Unassigned</strong>
+                    <div class="muted small">Claim it to start the repair.</div>
+                </div>
+                <button class="btn primary" disabled="@busy" @onclick="ClaimAsync">
+                    ✋ Claim this job
+                </button>
+            </div>
+        </div>
+    }
+    else if (!defect.IsAssignedToMe)
+    {
+        <div class="card">
+            <div class="muted">
+                Assigned to <strong>@defect.AssignedMechanicName</strong> — read-only for you.
+            </div>
+        </div>
+    }
+    else if (defect.RepairStatus != RepairStatus.Completed)
+    {
+        @* ─── Order parts ─── *@
+        <div class="card">
+            <h3>📋 Order parts</h3>
+            <p class="muted small">Move this job into <strong>AWAITING PARTS</strong> while the workshop sources what you need.</p>
+
+            <div class="form-row">
+                <label>Part required *</label>
+                <input class="input" @bind="partRequired" placeholder="e.g. Front brake pad set" />
+            </div>
+            <div class="form-row">
+                <label>Part number (optional)</label>
+                <input class="input" @bind="partNumber" placeholder="e.g. BP-1234-CAT" />
+            </div>
+            <button class="btn warn"
+                    disabled="@(busy || string.IsNullOrWhiteSpace(partRequired))"
+                    @onclick="OrderPartAsync">
+                @(orderingPart ? "Saving…" : "📦 Save parts request")
+            </button>
+
+            @if (!string.IsNullOrEmpty(orderMsg))
+            {
+                <div class="toast @(orderOk ? "ok" : "err")">@orderMsg</div>
+            }
+        </div>
+
+        @* ─── Complete repair ─── *@
+        <div class="card">
+            <h3>✅ Complete repair</h3>
+            <p class="muted small">Sign and close. Your digital signature is required.</p>
+
+            <div class="form-row">
+                <label>Resolution notes (optional)</label>
+                <textarea class="input" rows="3" @bind="notes"
+                          placeholder="What was done. Parts swapped. Test driven."></textarea>
+            </div>
+
+            <div class="form-row">
+                <label>Your signature *</label>
+                <div class="sig-wrap">
+                    <canvas id="@SIG_ID" width="640" height="160"></canvas>
+                </div>
+                <button class="link" @onclick="ClearSig">Clear signature</button>
+            </div>
+
+            <button class="btn ok"
+                    disabled="@(busy || completing)"
+                    @onclick="CompleteAsync">
+                @(completing ? "Submitting…" : "✍ Mark repair complete")
+            </button>
+
+            @if (!string.IsNullOrEmpty(completeMsg))
+            {
+                <div class="toast @(completeOk ? "ok" : "err")">@completeMsg</div>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="card done-card">
+            <div class="big-icon">✅</div>
+            <h3>Already completed</h3>
+            <p class="muted">This defect was closed on @defect.CreatedAt.ToString("yyyy-MM-dd").</p>
+        </div>
+    }
+}
+
+<style>
+    .page-head { display:flex; justify-content:space-between; align-items:center; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+    .page-head > div:first-child { display:flex; align-items:center; gap:12px; }
+    .page-head h1 { font-size:22px; font-weight:800; margin:0; letter-spacing:.5px; }
+    .back { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:6px 12px; border-radius:7px; font-size:12px; cursor:pointer; font-family:inherit; }
+    .back:hover { background:#1a2638; border-color:#0e9488; }
+
+    .tag { display:inline-block; padding:3px 10px; border-radius:5px; font-size:11px; font-weight:700; border:1px solid #475569; color:#cbd5e1; background:rgba(148,163,184,.08); }
+    .tag.nogo { color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,.08); }
+
+    .card { background:#111c2e; border:1px solid #1f2a3a; border-radius:12px; padding:16px 18px; margin-bottom:14px; }
+    .card.defect-card { border-left:4px solid #ef4444; }
+    .card h3 { margin:0 0 4px; font-size:15px; font-weight:700; }
+
+    .kv { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+    @@media (max-width:760px) { .kv { grid-template-columns:repeat(2,1fr); } }
+    .k  { font-size:10px; color:#94a3b8; letter-spacing:.6px; font-weight:600; }
+
+    .item-row { display:flex; gap:14px; align-items:flex-start; }
+    .ico { width:54px; height:54px; object-fit:contain; background:#fff; border-radius:8px; padding:6px; }
+    .ico-fallback { width:54px; height:54px; background:#0e9488; color:#fff; font-weight:800; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:22px; }
+    .item-info { flex:1; min-width:0; }
+    .item-name { font-size:15px; font-weight:700; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .critical  { font-size:9px; font-weight:800; color:#fff; background:#dc2626; padding:2px 7px; border-radius:3px; letter-spacing:.6px; }
+    .defect-desc { font-size:13px; color:#cbd5e1; margin-top:6px; }
+    .notes     { font-size:12px; color:#cbd5e1; margin-top:6px; font-style:italic; }
+
+    .parts-banner { margin-top:12px; padding:10px 12px; background:#0c2540; border:1px solid #1e3a5f; border-radius:8px; font-size:13px; color:#7dd3fc; }
+
+    .claim-row { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+
+    .form-row { display:flex; flex-direction:column; gap:6px; margin:10px 0 12px; }
+    .form-row label { font-size:11px; color:#94a3b8; letter-spacing:.4px; font-weight:600; }
+    .input { width:100%; background:#0d1729; border:1px solid #243246; color:#e5e7eb; padding:10px 12px; border-radius:8px; font-size:13px; font-family:inherit; }
+    .input:focus { outline:none; border-color:#0e9488; }
+    textarea.input { resize:vertical; }
+
+    .sig-wrap { background:#fff; border:1px solid #243246; border-radius:8px; padding:6px; }
+    .sig-wrap canvas { display:block; width:100%; height:160px; touch-action:none; cursor:crosshair; }
+    .link { background:transparent; border:none; color:#7dd3fc; font-size:12px; cursor:pointer; padding:4px 0 0; font-family:inherit; text-align:left; }
+    .link:hover { text-decoration:underline; }
+
+    .btn { background:#1a2638; border:1px solid #243246; color:#e5e7eb; padding:11px 16px; border-radius:8px; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit; }
+    .btn:hover:not(:disabled) { background:#243246; border-color:#0e9488; }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    .btn.primary { background:#0e9488; color:#0a1726; border-color:#0e9488; }
+    .btn.primary:hover:not(:disabled) { background:#14b8a6; }
+    .btn.warn { background:#f97316; color:#0a1726; border-color:#f97316; }
+    .btn.warn:hover:not(:disabled) { background:#fb923c; }
+    .btn.ok   { background:#22c55e; color:#0a1726; border-color:#22c55e; }
+    .btn.ok:hover:not(:disabled) { background:#4ade80; }
+
+    .toast { margin-top:10px; padding:9px 12px; border-radius:7px; font-size:12px; }
+    .toast.ok  { background:rgba(34,197,94,.1);  color:#86efac; border:1px solid #166534; }
+    .toast.err { background:rgba(239,68,68,.1);  color:#fca5a5; border:1px solid #7f1d1d; }
+
+    .muted { color:#94a3b8; }
+    .small { font-size:11px; }
+
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:50px 20px; text-align:center; color:#94a3b8; }
+    .state.error { color:#fca5a5; }
+    .big-icon { font-size:36px; margin-bottom:10px; }
+    .spinner { width:28px; height:28px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:9px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; margin-top:10px; }
+
+    .done-card { text-align:center; }
+</style>
+
+@code {
+    [Parameter] public int DefectOrderId { get; set; }
+
+    private const string SIG_ID = "defSig";
+
+    private MechanicDefectDto? defect;
+    private bool   busy        = true;
+    private bool   orderingPart;
+    private bool   completing;
+    private string error       = "";
+    private string partRequired = "";
+    private string? partNumber;
+    private string? notes;
+
+    private string orderMsg    = "";
+    private bool   orderOk;
+    private string completeMsg = "";
+    private bool   completeOk;
+
+    private bool   sigInited;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var token = await Auth.GetTokenAsync();
+        if (string.IsNullOrEmpty(token))
+        {
+            Nav.NavigateTo("/login", replace: true);
+            return;
+        }
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // The canvas only appears after defect loads AND the user is allowed
+        // to complete the job — so we init lazily and only once per visit.
+        if (!sigInited && defect != null && defect.IsAssignedToMe
+            && defect.RepairStatus != RepairStatus.Completed)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("SigPad.init", SIG_ID);
+                sigInited = true;
+            }
+            catch
+            {
+                // Canvas may not be in the DOM on the first call; will retry next render.
+            }
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        busy  = true;
+        error = "";
+        StateHasChanged();
+        try
+        {
+            defect = await Api.MechanicDefectAsync(DefectOrderId);
+
+            // Pre-fill the parts form if the workshop has already started.
+            if (defect != null)
+            {
+                partRequired = defect.PartRequired ?? "";
+                partNumber   = defect.PartNumber;
+            }
+
+            // Force the signature pad to re-init on the next render — the canvas
+            // element may have been replaced when the conditional branches changed.
+            sigInited = false;
+        }
+        catch (HttpRequestException)
+        {
+            error = "Can't reach the server. Check Wi-Fi / VPN and try again.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ClaimAsync()
+    {
+        if (defect == null) return;
+        busy = true;
+        StateHasChanged();
+        try
+        {
+            // Offline-aware: queue the claim and bounce back to the queue page
+            // so the user can keep working.
+            if (Connectivity.NetworkAccess != NetworkAccess.Internet)
+            {
+                await Actions.EnqueueClaimAsync(defect.DefectOrderId);
+                Nav.NavigateTo("/my-defects");
+                return;
+            }
+
+            try
+            {
+                var res = await Api.MechanicClaimAsync(defect.DefectOrderId);
+                if (res.Ok) await LoadAsync();
+                else
+                {
+                    error = string.IsNullOrEmpty(res.Error)
+                        ? "Couldn't claim the job."
+                        : res.Error;
+                }
+            }
+            catch (HttpRequestException)
+            {
+                await Actions.EnqueueClaimAsync(defect.DefectOrderId);
+                Nav.NavigateTo("/my-defects");
+            }
+        }
+        finally
+        {
+            busy = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OrderPartAsync()
+    {
+        if (defect == null || string.IsNullOrWhiteSpace(partRequired)) return;
+        orderingPart = true;
+        orderMsg     = "";
+        StateHasChanged();
+        try
+        {
+            var pr = partRequired.Trim();
+            var pn = partNumber?.Trim();
+
+            // Offline-aware: queue the order and report queued state to the user.
+            if (Connectivity.NetworkAccess != NetworkAccess.Internet)
+            {
+                await Actions.EnqueueOrderPartAsync(defect.DefectOrderId, pr, pn);
+                orderOk  = true;
+                orderMsg = "Saved offline — the parts request will sync when signal returns.";
+                return;
+            }
+
+            try
+            {
+                var res = await Api.MechanicOrderPartAsync(defect.DefectOrderId, pr, pn);
+                orderOk  = res.Ok;
+                orderMsg = res.Ok
+                    ? "Parts request saved. The workshop has been notified."
+                    : (string.IsNullOrEmpty(res.Error)
+                        ? "Couldn't save the parts request. Try again."
+                        : res.Error);
+                if (res.Ok) await LoadAsync();
+            }
+            catch (HttpRequestException)
+            {
+                // Connectivity blip mid-call — queue and report queued state.
+                await Actions.EnqueueOrderPartAsync(defect.DefectOrderId, pr, pn);
+                orderOk  = true;
+                orderMsg = "Saved offline — the parts request will sync when signal returns.";
+            }
+        }
+        catch (Exception ex)
+        {
+            orderOk  = false;
+            orderMsg = ex.Message;
+        }
+        finally
+        {
+            orderingPart = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task CompleteAsync()
+    {
+        if (defect == null) return;
+
+        // Pull the signature from the canvas (returns "" if empty)
+        string sig = "";
+        try
+        {
+            var empty = await JS.InvokeAsync<bool>("SigPad.isEmpty", SIG_ID);
+            if (empty)
+            {
+                completeOk  = false;
+                completeMsg = "Please sign before submitting.";
+                StateHasChanged();
+                return;
+            }
+            sig = await JS.InvokeAsync<string>("SigPad.toDataUrl", SIG_ID);
+        }
+        catch
+        {
+            completeOk  = false;
+            completeMsg = "Signature pad isn't ready. Try again.";
+            StateHasChanged();
+            return;
+        }
+
+        completing  = true;
+        completeMsg = "";
+        StateHasChanged();
+        try
+        {
+            // Offline-aware: queue and report success-with-sync-pending so the
+            // mechanic can move on to the next repair without waiting for signal.
+            if (Connectivity.NetworkAccess != NetworkAccess.Internet)
+            {
+                await Actions.EnqueueCompleteAsync(defect.DefectOrderId, notes, sig);
+                completeOk  = true;
+                completeMsg = "Saved offline — the repair close will sync when signal returns.";
+                await Task.Delay(900);
+                Nav.NavigateTo("/my-defects");
+                return;
+            }
+
+            try
+            {
+                var res = await Api.MechanicCompleteAsync(defect.DefectOrderId, notes, sig);
+                completeOk  = res.Ok;
+                completeMsg = res.Ok
+                    ? "Repair closed. Returning to queue…"
+                    : (string.IsNullOrEmpty(res.Error) ? "Couldn't close the repair." : res.Error);
+
+                if (res.Ok)
+                {
+                    await Task.Delay(800);
+                    Nav.NavigateTo("/my-defects");
+                }
+            }
+            catch (HttpRequestException)
+            {
+                // Connectivity blip mid-call — queue and bounce.
+                await Actions.EnqueueCompleteAsync(defect.DefectOrderId, notes, sig);
+                completeOk  = true;
+                completeMsg = "Saved offline — the repair close will sync when signal returns.";
+                await Task.Delay(900);
+                Nav.NavigateTo("/my-defects");
+            }
+        }
+        catch (Exception ex)
+        {
+            completeOk  = false;
+            completeMsg = ex.Message;
+        }
+        finally
+        {
+            completing = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ClearSig()
+    {
+        try { await JS.InvokeVoidAsync("SigPad.clear", SIG_ID); } catch { }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    private string IconUrl(string path)
+    {
+        var b = Api.BaseAddress?.ToString().TrimEnd('/') ?? "";
+        return $"{b}/{path.TrimStart('/')}";
+    }
+
+    private static string LetterFor(string s)
+        => string.IsNullOrWhiteSpace(s) ? "?" : char.ToUpper(s[0]).ToString();
+
+    private static string RepairLabel(RepairStatus s) => s switch
+    {
+        RepairStatus.Pending       => "PENDING",
+        RepairStatus.InProgress    => "IN PROGRESS",
+        RepairStatus.AwaitingParts => "AWAITING PARTS",
+        RepairStatus.Completed     => "COMPLETED",
+        _                          => s.ToString()
+    };
+}

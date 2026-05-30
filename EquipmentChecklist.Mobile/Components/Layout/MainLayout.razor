@@ -1,0 +1,254 @@
+@inherits LayoutComponentBase
+@using EquipmentChecklist.Mobile.Services
+@inject AuthService      Auth
+@inject SubmissionQueue  Queue
+@inject ActionQueue      Actions
+@inject SyncWorker       Sync
+@inject NavigationManager Nav
+@implements IDisposable
+
+<div class="app">
+
+    @* ────────────── SIDEBAR ────────────── *@
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="brand-mark">⛏</div>
+            <div>
+                <div class="brand-name">ENALENI</div>
+                <div class="brand-sub">EQUIPMENT CHECKLIST</div>
+            </div>
+        </div>
+
+        <div class="nav-label">MAIN</div>
+
+        <NavLink href="/dashboard"   class="nav-item" Match="NavLinkMatch.Prefix">
+            <span class="nav-ico">📋</span> Dashboard
+        </NavLink>
+
+        @if (IsOperator)
+        {
+            <NavLink href="/machines" class="nav-item" Match="NavLinkMatch.Prefix">
+                <span class="nav-ico">✅</span> My Machines
+            </NavLink>
+        }
+
+        @if (IsOperator || IsSupervisor)
+        {
+            <NavLink href="/submissions" class="nav-item" Match="NavLinkMatch.Prefix">
+                <span class="nav-ico">📝</span> My Submissions
+            </NavLink>
+        }
+
+        @if (IsSupervisor)
+        {
+            <div class="nav-label">SUPERVISOR</div>
+            <NavLink href="/sign-off" class="nav-item" Match="NavLinkMatch.Prefix">
+                <span class="nav-ico">✍</span> Sign-Off Queue
+            </NavLink>
+            <NavLink href="/my-operators" class="nav-item" Match="NavLinkMatch.Prefix">
+                <span class="nav-ico">👷</span> My Operators
+            </NavLink>
+            <NavLink href="/no-go" class="nav-item" Match="NavLinkMatch.Prefix">
+                <span class="nav-ico">🚫</span> NO-GO Machines
+            </NavLink>
+        }
+
+        @if (IsMechanic)
+        {
+            <div class="nav-label">MECHANIC</div>
+            <NavLink href="/my-defects" class="nav-item" Match="NavLinkMatch.Prefix">
+                <span class="nav-ico">🔧</span> My Defects
+            </NavLink>
+            <NavLink href="/no-go" class="nav-item" Match="NavLinkMatch.Prefix">
+                <span class="nav-ico">🚫</span> NO-GO Machines
+            </NavLink>
+        }
+
+        <NavLink href="/biometric" class="nav-item" Match="NavLinkMatch.Prefix">
+            <span class="nav-ico">🔐</span> Biometric Login
+        </NavLink>
+
+        <div class="sidebar-footer">
+            MHSA · DMR · CPS L8/9<br/>
+            Enaleni Engineering and<br/>
+            Technology<br/>
+            Digital Checklist System
+        </div>
+    </aside>
+
+    @* ────────────── MAIN COLUMN ────────────── *@
+    <div class="main">
+        <header class="topbar">
+            <div class="topbar-date">
+                @DateTime.Now.ToString("dddd, dd MMMM yyyy")
+            </div>
+
+            <div class="topbar-right">
+                <span class="pill @(IsOnline ? "ok" : "off")">
+                    <span class="dot"></span>@(IsOnline ? "Online" : "Offline")
+                </span>
+
+                @if (queuedCount > 0)
+                {
+                    <span class="pill queue"
+                          title="Submissions waiting to sync"
+                          @onclick="ManualDrain"
+                          style="cursor:pointer">
+                        ☁ @queuedCount
+                    </span>
+                }
+
+                <span class="pill subtle" title="Notifications">🔔</span>
+                <span class="pill subtle">⋯</span>
+
+                <button class="user-chip" @onclick="ToggleUserMenu">
+                    <span class="avatar">@Initials</span>
+                    <span class="user-text">
+                        <span class="user-name">@(Auth.CurrentUser?.FullName ?? "—")</span>
+                        <span class="user-role">@RoleLabel</span>
+                    </span>
+                    <span class="caret">▾</span>
+                </button>
+                @if (showUserMenu)
+                {
+                    <div class="user-menu" @onclick="@(()=>showUserMenu=false)">
+                        <a class="menu-item" href="/mysubmissions">📝 My Submissions</a>
+                        <a class="menu-item" href="/biometric">🔐 Biometric login</a>
+                        <button class="menu-item danger" @onclick="SignOut">⎋ Sign out</button>
+                    </div>
+                }
+            </div>
+        </header>
+
+        <div class="content">
+            @Body
+        </div>
+    </div>
+</div>
+
+<style>
+    .app { display:flex; min-height:100vh; background:#0b1726; color:#e5e7eb;
+           font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+
+    /* Sidebar */
+    .sidebar { width:240px; flex-shrink:0; background:#0d1729; border-right:1px solid #1f2a3a; padding:18px 0; display:flex; flex-direction:column; }
+    .brand { display:flex; align-items:center; gap:10px; padding:0 18px 18px; border-bottom:1px solid #1f2a3a; margin-bottom:14px; }
+    .brand-mark { width:38px; height:38px; background:#0e9488; color:#fff; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:20px; }
+    .brand-name { font-size:14px; font-weight:800; letter-spacing:.4px; }
+    .brand-sub  { font-size:10px; color:#64748b; letter-spacing:.6px; }
+
+    .nav-label { padding:8px 18px 6px; font-size:10px; letter-spacing:1px; color:#64748b; }
+    .nav-item { display:flex; align-items:center; gap:10px; padding:9px 18px; color:#cbd5e1; text-decoration:none; font-size:13px; border-left:3px solid transparent; }
+    .nav-item:hover { background:#111c2e; }
+    .nav-item.active { background:#0b2148; color:#7dd3fc; border-left-color:#0e9488; font-weight:600; }
+    .nav-ico { font-size:14px; }
+
+    .sidebar-footer { margin-top:auto; padding:14px 18px; font-size:10px; color:#475569; line-height:1.7; font-family:ui-monospace,monospace; }
+
+    /* Topbar */
+    .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; padding:14px 22px; border-bottom:1px solid #1f2a3a; background:#0d1729; }
+    .topbar-date { font-size:13px; color:#94a3b8; }
+    .topbar-right { display:flex; align-items:center; gap:10px; position:relative; }
+
+    .pill { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; font-size:11px; border:1px solid #1f2a3a; background:#111c2e; color:#94a3b8; }
+    .pill .dot { width:7px; height:7px; border-radius:50%; background:#94a3b8; }
+    .pill.ok   { border-color:#166534; color:#a7f3d0; }
+    .pill.ok .dot { background:#22c55e; }
+    .pill.off  { border-color:#7f1d1d; color:#fca5a5; }
+    .pill.off .dot { background:#ef4444; }
+    .pill.queue { background:#451a03; border-color:#92400e; color:#fbbf24; }
+    .pill.subtle { font-size:13px; padding:5px 10px; }
+
+    .user-chip { display:flex; align-items:center; gap:8px; background:#111c2e; border:1px solid #1f2a3a; border-radius:999px; padding:5px 10px 5px 5px; color:#e5e7eb; cursor:pointer; font-family:inherit; }
+    .user-chip:hover { border-color:#243246; }
+    .avatar { width:30px; height:30px; border-radius:50%; background:#0e9488; color:#fff; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; }
+    .user-text { display:flex; flex-direction:column; align-items:flex-start; line-height:1.1; }
+    .user-name { font-size:12px; font-weight:600; }
+    .user-role { font-size:10px; color:#94a3b8; }
+    .caret { font-size:10px; color:#64748b; margin-left:2px; }
+
+    .user-menu { position:absolute; right:0; top:46px; background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:6px; z-index:30; min-width:180px; box-shadow:0 8px 22px rgba(0,0,0,.4); display:flex; flex-direction:column; }
+    .menu-item { background:transparent; border:none; color:#e5e7eb; padding:9px 12px; border-radius:6px; text-align:left; font-size:13px; cursor:pointer; text-decoration:none; font-family:inherit; }
+    .menu-item:hover { background:#1a2638; }
+    .menu-item.danger { color:#fca5a5; }
+
+    .content { flex:1; min-width:0; padding:24px 26px 36px; overflow:auto; }
+
+    /* Mobile fallback — collapse the sidebar to a thin strip */
+    @@media (max-width:760px) {
+        .sidebar      { width:62px; padding:14px 0; }
+        .brand div, .brand-sub, .brand-name, .nav-label, .nav-item span:last-child, .sidebar-footer { display:none; }
+        .nav-item     { justify-content:center; padding:12px 0; }
+        .nav-ico      { font-size:18px; }
+        .topbar       { padding:10px 14px; }
+        .topbar-date  { font-size:11px; }
+        .user-text    { display:none; }
+        .content      { padding:14px; }
+    }
+</style>
+
+@code {
+    private int   queuedCount = 0;
+    private bool  showUserMenu;
+
+    private string Initials => string.Concat(
+        (Auth.CurrentUser?.FullName ?? "?")
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Take(2)
+            .Select(w => w[0]));
+
+    private string RoleLabel
+        => Auth.CurrentUser?.Roles?.FirstOrDefault() ?? "Operator";
+
+    private bool IsOperator
+        => Auth.CurrentUser?.Roles?.Any(r => r == "Operator") ?? false;
+
+    private bool IsSupervisor
+        => Auth.CurrentUser?.Roles?.Any(r => r == "Supervisor" || r == "Admin") ?? false;
+
+    private bool IsMechanic
+        => Auth.CurrentUser?.Roles?.Any(r => r == "Mechanic" || r == "Admin") ?? false;
+
+    private bool IsOnline => Connectivity.NetworkAccess == NetworkAccess.Internet;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Queue.Changed       += OnQueueChanged;
+        Actions.Changed     += OnQueueChanged;
+        Sync.DrainCompleted += OnQueueChanged;
+        Connectivity.ConnectivityChanged += OnConnectivityChanged;
+        queuedCount = await Queue.CountAsync() + await Actions.CountAsync();
+    }
+
+    private void OnQueueChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            queuedCount = await Queue.CountAsync() + await Actions.CountAsync();
+            StateHasChanged();
+        });
+    }
+
+    private void OnConnectivityChanged(object? sender, ConnectivityChangedEventArgs e)
+        => InvokeAsync(StateHasChanged);
+
+    private void ToggleUserMenu() => showUserMenu = !showUserMenu;
+
+    private void ManualDrain() => _ = Task.Run(Sync.DrainAsync);
+
+    private async Task SignOut()
+    {
+        showUserMenu = false;
+        await Auth.SignOutAsync();
+        Nav.NavigateTo("/login", replace: true);
+    }
+
+    public void Dispose()
+    {
+        Queue.Changed       -= OnQueueChanged;
+        Actions.Changed     -= OnQueueChanged;
+        Sync.DrainCompleted -= OnQueueChanged;
+        Connectivity.ConnectivityChanged -= OnConnectivityChanged;
+    }
+}

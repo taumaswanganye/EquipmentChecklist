@@ -1,0 +1,329 @@
+@page "/my-defects"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Models
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject ActionQueue      Actions
+@inject NavigationManager Nav
+
+<div class="page-head">
+    <div>
+        <h1>MY DEFECTS</h1>
+        <p>Open repair jobs assigned to you, plus unclaimed work in the pool.</p>
+    </div>
+    <button class="reload" @onclick="LoadAsync" disabled="@busy">
+        @(busy ? "Loading…" : "🔄 Refresh")
+    </button>
+</div>
+
+@if (busy && queue is null)
+{
+    <div class="state">
+        <div class="spinner"></div>
+        <p>Pulling your defect queue…</p>
+    </div>
+}
+else if (!string.IsNullOrEmpty(error))
+{
+    <div class="state error">
+        <div class="big-icon">⚠</div>
+        <p>@error</p>
+        <button class="primary" @onclick="LoadAsync">Try again</button>
+    </div>
+}
+else if (queue is null)
+{
+    <div class="state">
+        <div class="big-icon">🔧</div>
+        <p>Nothing to show yet.</p>
+    </div>
+}
+else
+{
+    @* ─── Tab pills ─── *@
+    <div class="tabs">
+        <button class="tab @(view == View.Mine ? "on" : "")"
+                @onclick="ShowMine">
+            🔧 Assigned to me
+            <span class="cnt">@queue.MyOrders.Count</span>
+        </button>
+        <button class="tab @(view == View.Unassigned ? "on" : "")"
+                @onclick="ShowUnassigned">
+            👀 Unassigned
+            <span class="cnt">@queue.Unassigned.Count</span>
+        </button>
+    </div>
+
+    if (Rows.Count == 0)
+    {
+        <div class="state">
+            <div class="big-icon">@EmptyIcon</div>
+            <p>@EmptyMessage</p>
+        </div>
+    }
+    else
+    {
+        <div class="grid">
+            @foreach (var d in Rows)
+            {
+                <div class="card @(d.MachineImmobilised ? "nogo" : "")">
+                    <div class="card-top">
+                        <div>
+                            <div class="m-num">@d.MachineNumber</div>
+                            <div class="m-name">@d.MachineName · <span class="muted">@d.TypeDisplay</span></div>
+                        </div>
+                        @if (d.MachineImmobilised)
+                        {
+                            <span class="tag nogo">🚫 NO-GO</span>
+                        }
+                        else
+                        {
+                            <span class="tag">@RepairLabel(d.RepairStatus)</span>
+                        }
+                    </div>
+
+                    <div class="item-row">
+                        @if (!string.IsNullOrEmpty(d.IconPath))
+                        {
+                            <img class="ico" src="@IconUrl(d.IconPath)" alt="" />
+                        }
+                        else
+                        {
+                            <div class="ico-fallback">@LetterFor(d.ItemName)</div>
+                        }
+                        <div class="item-info">
+                            <div class="item-name">
+                                @d.ItemName
+                                @if (d.IsCriticalItem)
+                                {
+                                    <span class="critical">CRITICAL</span>
+                                }
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(d.OperatorNotes))
+                            {
+                                <div class="notes">“@d.OperatorNotes”</div>
+                            }
+                            else
+                            {
+                                <div class="notes muted">@d.DefectDescription</div>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="card-meta">
+                        <span>👤 @d.OperatorName</span>
+                        <span class="dot">·</span>
+                        <span>📅 @d.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                        @if (!string.IsNullOrEmpty(d.PartRequired))
+                        {
+                            <span class="dot">·</span>
+                            <span class="parts">🧰 @d.PartRequired @(string.IsNullOrEmpty(d.PartNumber) ? "" : $"({d.PartNumber})")</span>
+                        }
+                    </div>
+
+                    <div class="card-actions">
+                        @if (view == View.Unassigned)
+                        {
+                            <button class="btn primary"
+                                    disabled="@busyIds.Contains(d.DefectOrderId)"
+                                    @onclick="() => ClaimAsync(d.DefectOrderId)">
+                                @(busyIds.Contains(d.DefectOrderId) ? "Claiming…" : "✋ Claim")
+                            </button>
+                        }
+                        <button class="btn"
+                                @onclick="() => OpenDetail(d.DefectOrderId)">
+                            ✍ Open detail
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+
+<style>
+    .page-head { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+    .page-head h1 { font-size:24px; font-weight:800; margin:0; letter-spacing:.5px; }
+    .page-head p  { font-size:12px; color:#94a3b8; margin:2px 0 0; }
+    .reload { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:7px 14px; border-radius:8px; font-size:12px; cursor:pointer; font-family:inherit; }
+    .reload:hover:not(:disabled) { background:#1a2638; border-color:#0e9488; }
+    .reload:disabled { opacity:.5; cursor:not-allowed; }
+
+    .tabs { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+    .tab { background:#111c2e; border:1px solid #1f2a3a; color:#cbd5e1; padding:8px 16px; border-radius:999px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; display:flex; align-items:center; gap:8px; }
+    .tab:hover { border-color:#0e9488; }
+    .tab.on   { background:#0b2148; color:#7dd3fc; border-color:#0e9488; }
+    .tab .cnt { background:#243246; color:#e5e7eb; padding:1px 8px; border-radius:999px; font-size:11px; }
+    .tab.on .cnt { background:#0e9488; color:#0a1726; }
+
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    @@media (max-width:900px) { .grid { grid-template-columns:1fr; } }
+
+    .card { background:#111c2e; border:1px solid #1f2a3a; border-radius:12px; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+    .card.nogo { border-left:4px solid #ef4444; }
+    .card-top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+    .m-num    { font-size:16px; font-weight:800; }
+    .m-name   { font-size:12px; color:#cbd5e1; margin-top:2px; }
+    .muted    { color:#94a3b8; }
+
+    .tag { display:inline-block; padding:3px 10px; border-radius:5px; font-size:11px; font-weight:700; letter-spacing:.4px; border:1px solid #475569; color:#cbd5e1; background:rgba(148,163,184,.08); white-space:nowrap; }
+    .tag.nogo { color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,.08); }
+
+    .item-row { display:flex; gap:12px; align-items:flex-start; padding:10px 12px; background:#0d1729; border:1px solid #1a2638; border-radius:8px; }
+    .ico { width:40px; height:40px; object-fit:contain; background:#fff; border-radius:6px; padding:4px; }
+    .ico-fallback { width:40px; height:40px; background:#0e9488; color:#fff; font-weight:800; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:18px; }
+    .item-info { flex:1; min-width:0; }
+    .item-name { font-size:13px; font-weight:700; display:flex; align-items:center; gap:8px; }
+    .critical { font-size:9px; font-weight:800; color:#fff; background:#dc2626; padding:1px 6px; border-radius:3px; letter-spacing:.6px; }
+    .notes    { font-size:12px; color:#cbd5e1; margin-top:4px; font-style:italic; }
+    .notes.muted { color:#94a3b8; font-style:normal; }
+
+    .card-meta { display:flex; flex-wrap:wrap; gap:8px; font-size:11px; color:#94a3b8; align-items:center; }
+    .card-meta .dot { color:#475569; }
+    .card-meta .parts { color:#7dd3fc; }
+
+    .card-actions { display:flex; gap:8px; }
+    .btn { flex:1; background:#1a2638; border:1px solid #243246; color:#e5e7eb; padding:9px 12px; border-radius:7px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; }
+    .btn:hover:not(:disabled) { background:#243246; border-color:#0e9488; }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    .btn.primary { background:#0e9488; color:#0a1726; border-color:#0e9488; }
+    .btn.primary:hover:not(:disabled) { background:#14b8a6; }
+
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:50px 20px; text-align:center; color:#94a3b8; }
+    .state.error { color:#fca5a5; }
+    .big-icon { font-size:36px; margin-bottom:10px; }
+    .spinner { width:28px; height:28px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:9px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; margin-top:10px; }
+</style>
+
+@code {
+    private enum View { Mine, Unassigned }
+
+    private MechanicQueueDto? queue;
+    private bool   busy   = true;
+    private string error  = "";
+    private View   view   = View.Mine;
+
+    // Per-card busy guard so multiple claim taps don't double-post
+    private readonly HashSet<int> busyIds = new();
+
+    // ── Tab + nav handlers ───────────────────────────────────────────────────
+    // Pulled out of the markup because Razor 8's tokenizer can choke on inline
+    // interpolated strings inside an @onclick attribute (the curly braces of a
+    // C# $"..." get mistaken for a Razor code-block opener).
+    private void ShowMine()       => view = View.Mine;
+    private void ShowUnassigned() => view = View.Unassigned;
+    private void OpenDetail(int defectOrderId)
+        => Nav.NavigateTo($"/my-defects/{defectOrderId}");
+
+    // ── Empty-state helpers ──────────────────────────────────────────────────
+    // Out of markup so we don't put a multi-line ternary with apostrophes /
+    // em-dashes inside @(...) — that mix has tripped the Razor tokenizer in
+    // earlier builds. Plain properties are immune.
+    private string EmptyIcon => view == View.Mine ? "✅" : "🌤";
+    private string EmptyMessage => view == View.Mine
+        ? "You are all caught up. No jobs assigned right now."
+        : "No unassigned jobs in the queue. Nice work, team.";
+
+    /// <summary>
+    /// Rows to render in the current tab. Computed (rather than a local in the
+    /// markup) to avoid a nested code block inside the outer else branch — the
+    /// Razor 8 parser rejects that with "Unexpected brace after at sign".
+    /// </summary>
+    private IReadOnlyList<MechanicDefectDto> Rows =>
+        queue is null
+            ? Array.Empty<MechanicDefectDto>()
+            : (view == View.Mine ? queue.MyOrders : queue.Unassigned);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var token = await Auth.GetTokenAsync();
+        if (string.IsNullOrEmpty(token))
+        {
+            Nav.NavigateTo("/login", replace: true);
+            return;
+        }
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        busy  = true;
+        error = "";
+        StateHasChanged();
+        try
+        {
+            queue = await Api.MechanicDefectsAsync();
+            // If the "mine" tab is empty but there's work in the pool, gently steer the user.
+            if (queue != null && queue.MyOrders.Count == 0 && queue.Unassigned.Count > 0)
+                view = View.Unassigned;
+        }
+        catch (HttpRequestException)
+        {
+            error = "Can't reach the server. Check Wi-Fi / VPN and try again.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ClaimAsync(int id)
+    {
+        busyIds.Add(id);
+        StateHasChanged();
+        try
+        {
+            // Offline-aware: enqueue and let the SyncWorker replay later.
+            // The card stays in the Unassigned tab visually until the next refresh
+            // because we don't have a server-confirmed reassignment yet.
+            if (Connectivity.NetworkAccess != NetworkAccess.Internet)
+            {
+                await Actions.EnqueueClaimAsync(id);
+                return;
+            }
+
+            try
+            {
+                var res = await Api.MechanicClaimAsync(id);
+                if (res.Ok) await LoadAsync();
+            }
+            catch (HttpRequestException)
+            {
+                // Connectivity blip mid-call — queue and bail.
+                await Actions.EnqueueClaimAsync(id);
+            }
+        }
+        finally
+        {
+            busyIds.Remove(id);
+            StateHasChanged();
+        }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    private string IconUrl(string path)
+    {
+        var b = Api.BaseAddress?.ToString().TrimEnd('/') ?? "";
+        return $"{b}/{path.TrimStart('/')}";
+    }
+
+    private static string LetterFor(string s)
+        => string.IsNullOrWhiteSpace(s) ? "?" : char.ToUpper(s[0]).ToString();
+
+    private static string RepairLabel(RepairStatus s) => s switch
+    {
+        RepairStatus.Pending       => "PENDING",
+        RepairStatus.InProgress    => "IN PROGRESS",
+        RepairStatus.AwaitingParts => "AWAITING PARTS",
+        RepairStatus.Completed     => "COMPLETED",
+        _                          => s.ToString()
+    };
+}

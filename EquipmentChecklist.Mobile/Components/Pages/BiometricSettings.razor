@@ -1,0 +1,136 @@
+@page "/biometric"
+@using EquipmentChecklist.Mobile.Services
+@inject AuthService     Auth
+@inject BiometricUnlock Bio
+@inject NavigationManager Nav
+
+<div class="page-head">
+    <div>
+        <h1>BIOMETRIC LOGIN</h1>
+        <p>Use Windows Hello / fingerprint to unlock the app instead of typing your password.</p>
+    </div>
+</div>
+
+<div class="card">
+    <h3>Status</h3>
+
+    @if (!available)
+    {
+        <div class="row">
+            <span class="dot off"></span>
+            <div>
+                <div class="bold">Not available on this device</div>
+                <div class="muted">No fingerprint reader / Windows Hello enrolled, or the platform doesn't expose biometrics yet.</div>
+            </div>
+        </div>
+        <p class="hint">Set up Windows Hello in <strong>Settings → Sign-in options</strong>, then come back here.</p>
+    }
+    else if (enabled)
+    {
+        <div class="row">
+            <span class="dot ok"></span>
+            <div>
+                <div class="bold">Enabled</div>
+                <div class="muted">You'll be prompted for Windows Hello on every app open.</div>
+            </div>
+        </div>
+        <button class="primary danger" @onclick="Disable" disabled="@busy">@(busy ? "Disabling…" : "Disable biometric login")</button>
+    }
+    else
+    {
+        <div class="row">
+            <span class="dot neutral"></span>
+            <div>
+                <div class="bold">Disabled</div>
+                <div class="muted">You'll need your password every time the app opens.</div>
+            </div>
+        </div>
+        <button class="primary" @onclick="Enable" disabled="@busy">@(busy ? "Enabling…" : "Enable biometric login")</button>
+    }
+
+    @if (!string.IsNullOrEmpty(message))
+    {
+        <p class="toast">@message</p>
+    }
+</div>
+
+<div class="card">
+    <h3>How it works</h3>
+    <ul class="info">
+        <li>Your JWT and profile are stored in the device's secure store (DPAPI on Windows, Keychain on iOS, Keystore on Android).</li>
+        <li>When biometric is enabled, the app refuses to release the token until you've confirmed via Windows Hello, fingerprint, or Face ID.</li>
+        <li>If you fail biometric too many times, the app signs you out and you'll need your password.</li>
+        <li>Sign-out wipes everything: JWT, profile, cached machines, queued submissions.</li>
+    </ul>
+</div>
+
+<style>
+    .page-head { margin-bottom:18px; }
+    .page-head h1 { font-size:24px; font-weight:800; margin:0; letter-spacing:.5px; }
+    .page-head p  { font-size:12px; color:#94a3b8; margin:2px 0 0; max-width:560px; }
+
+    .card { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:18px 22px; margin-bottom:14px; max-width:680px; }
+    .card h3 { font-size:13px; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:.5px; margin:0 0 12px; }
+
+    .row { display:flex; align-items:flex-start; gap:12px; margin-bottom:14px; }
+    .dot { width:10px; height:10px; border-radius:50%; background:#6b7280; margin-top:6px; flex-shrink:0; }
+    .dot.ok      { background:#22c55e; box-shadow:0 0 0 4px rgba(34,197,94,.15); }
+    .dot.off     { background:#ef4444; }
+    .dot.neutral { background:#94a3b8; }
+    .bold { font-size:14px; font-weight:700; }
+    .muted { font-size:12px; color:#94a3b8; margin-top:2px; }
+
+    .hint { font-size:12px; color:#94a3b8; margin-top:8px; }
+
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:10px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit; }
+    .primary.danger { background:#7f1d1d; color:#fee2e2; }
+    .primary:disabled { opacity:.55; cursor:not-allowed; }
+
+    .info { font-size:13px; color:#cbd5e1; line-height:1.7; margin:0; padding-left:18px; }
+    .info li { margin-bottom:4px; }
+
+    .toast { margin-top:10px; font-size:12px; color:#7dd3fc; }
+</style>
+
+@code {
+    private bool   available;
+    private bool   enabled;
+    private bool   busy;
+    private string message = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+        available = await Bio.IsAvailableAsync();
+        enabled   = await Auth.IsBiometricEnabledAsync();
+    }
+
+    private async Task Enable()
+    {
+        busy = true; message = "";
+        try
+        {
+            var r = await Bio.PromptAsync("Confirm to enable biometric sign-in");
+            if (r == BiometricResult.Success)
+            {
+                await Auth.EnableBiometricsAsync();
+                enabled = true;
+                message = "✓ Biometric login is on. You'll be prompted on the next app open.";
+            }
+            else if (r == BiometricResult.Cancelled)
+                message = "Cancelled.";
+            else
+                message = "Biometric check failed. Try again.";
+        }
+        finally { busy = false; }
+    }
+
+    private async Task Disable()
+    {
+        busy = true; message = "";
+        await Auth.DisableBiometricsAsync();
+        enabled = false;
+        message = "Biometric login is off.";
+        busy = false;
+    }
+}

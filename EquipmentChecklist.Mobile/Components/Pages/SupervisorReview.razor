@@ -1,0 +1,551 @@
+@page "/sign-off/review/{SubmissionId:int}"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Models
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject ActionQueue      Actions
+@inject NavigationManager Nav
+@inject IJSRuntime       JS
+
+<div class="rev-shell">
+
+    @* ────────────── TOP BAR ────────────── *@
+    <header class="topbar">
+        <button class="back" @onclick="Back">‹ Queue</button>
+        <div class="title-block">
+            <h1>@(review?.MachineNumber ?? "Review")</h1>
+            <p>
+                @(review?.MachineName)
+                @if (review is not null)
+                {
+                    <span> · @ShiftLabel(review.Shift) · @review.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                }
+            </p>
+        </div>
+        @if (defectCount > 0)
+        {
+            <div class="crit-badge">⚠ @defectCount defect(s)</div>
+        }
+    </header>
+
+    @if (busy && review is null)
+    {
+        <div class="state"><div class="spinner"></div><p>Loading submission…</p></div>
+    }
+    else if (review is null)
+    {
+        <div class="state err">
+            <div class="big">⚠</div>
+            <h2>Couldn't load this submission</h2>
+            <p>@(string.IsNullOrEmpty(error) ? "Try again from the queue." : error)</p>
+            <button class="primary" @onclick="Back">Back to queue</button>
+        </div>
+    }
+    else
+    {
+        @* ────────────── OPERATOR INFO ────────────── *@
+        <section class="card op-card">
+            <div class="op-grid">
+                <div>
+                    <div class="lbl">OPERATOR</div>
+                    <div class="val">@review.OperatorName</div>
+                    <div class="sub">#@review.OperatorEmployeeNumber</div>
+                </div>
+                <div>
+                    <div class="lbl">KM / HOURS</div>
+                    <div class="val mono">@(review.KmOrHourMeter?.ToString() ?? "—")</div>
+                </div>
+                <div>
+                    <div class="lbl">SHIFT</div>
+                    <div class="val">@ShiftLabel(review.Shift)</div>
+                </div>
+                <div>
+                    <div class="lbl">FITNESS</div>
+                    <div class="val">@(review.FitnessDeclarationSigned ? "✓ Signed" : "✕ Not signed")</div>
+                </div>
+            </div>
+        </section>
+
+        @if (!string.IsNullOrEmpty(review.OperatorRemarks))
+        {
+            <section class="card">
+                <h3>OPERATOR REMARKS</h3>
+                <p class="remarks">@review.OperatorRemarks</p>
+            </section>
+        }
+
+        @* ────────────── DEFECTS (highlight first) ────────────── *@
+        if (Defects.Count > 0)
+        {
+            <section class="card defects">
+                <h3>DEFECTS · @Defects.Count</h3>
+                @foreach (var i in Defects)
+                {
+                    <div class="def-row @(i.IsNoGoItem ? "critical" : "")">
+                        <div class="icon-cell">@FirstChar(i.ItemName)</div>
+                        <div class="def-text">
+                            <div class="def-name">@i.ItemName</div>
+                            @if (i.IsNoGoItem)
+                            {
+                                <span class="tag-nogo">NO-GO</span>
+                            }
+                            <div class="def-note">@(string.IsNullOrEmpty(i.Notes) ? "(no note from operator)" : i.Notes)</div>
+                        </div>
+                    </div>
+                }
+            </section>
+        }
+
+        @* ────────────── IN-ORDER ITEMS (collapsed) ────────────── *@
+        <section class="card">
+            <h3>IN-ORDER · @InOrder.Count</h3>
+            <div class="ok-grid">
+                @foreach (var i in InOrder)
+                {
+                    <div class="ok-pill">✓ @i.ItemName</div>
+                }
+            </div>
+        </section>
+
+        @* ────────────── OPERATOR SIGNATURE ────────────── *@
+        @if (!string.IsNullOrEmpty(review.OperatorSignature))
+        {
+            <section class="card">
+                <h3>OPERATOR SIGNATURE</h3>
+                <img src="@review.OperatorSignature" alt="operator signature" class="op-sig" />
+            </section>
+        }
+
+        @* ────────────── SUPERVISOR SIGN-OFF ────────────── *@
+        <section class="card sign-card">
+            <h3>SUPERVISOR SIGN-OFF</h3>
+            <p class="hint">
+                Sign below to approve this submission. Choose the resolution:
+                <strong>24H</strong> means repair within the shift; <strong>30D</strong> means
+                schedule before the next service.
+            </p>
+            <div class="sig-wrap">
+                <canvas id="@SIG_ID"></canvas>
+            </div>
+            <button class="ghost sig-clear" type="button" @onclick="ClearSig">✕ Clear signature</button>
+
+            @if (!string.IsNullOrEmpty(error))
+            {
+                <div class="alert">@error</div>
+            }
+
+            <div class="approve-row">
+                <button class="primary warn" disabled="@busy"
+                        @onclick="() => Approve(2)">
+                    ✍ Approve · Repair within 24H
+                </button>
+                <button class="primary" disabled="@busy"
+                        @onclick="() => Approve(3)">
+                    ✍ Approve · 30-day service
+                </button>
+            </div>
+
+            <div class="reject-row">
+                <div class="reject-hint">
+                    Machine unfit to operate? Reject this submission — the machine
+                    will be <strong>immobilised</strong> and defects sent straight to a mechanic.
+                </div>
+                <button class="primary reject" disabled="@busy" @onclick="OpenReject">
+                    🛑 Reject submission
+                </button>
+            </div>
+        </section>
+    }
+</div>
+
+@if (showRejectModal)
+{
+    <div class="modal-backdrop" @onclick="CloseReject"></div>
+    <div class="modal-card" @onclick:stopPropagation="true">
+        <div class="modal-head">
+            <h2>🛑 Reject submission</h2>
+            <button class="x" @onclick="CloseReject">✕</button>
+        </div>
+
+        <p class="modal-warn">
+            This will set the submission to <strong>REJECTED</strong>, mark
+            <strong>@review?.MachineNumber</strong> as <strong>NO-GO</strong>, and create
+            <strong>@defectCount</strong> defect order(s) for the chosen mechanic.
+            <span class="muted">Action cannot be undone from the app.</span>
+        </p>
+
+        <div class="form-row">
+            <label>Reason *</label>
+            <textarea class="input" rows="3" @bind="rejectReason"
+                      placeholder="Why is this machine unfit? e.g. brakes failing, oil leak under chassis"></textarea>
+        </div>
+
+        <div class="form-row">
+            <label>Assign defects to mechanic *</label>
+            @if (mechanicsLoading)
+            {
+                <div class="loading-row"><div class="mini-spinner"></div> Loading mechanics…</div>
+            }
+            else if (mechanics is null || mechanics.Count == 0)
+            {
+                <div class="alert">No active mechanics found. Add one in Admin before rejecting.</div>
+            }
+            else
+            {
+                <select class="input" @bind="rejectMechanicId">
+                    <option value="">— pick a mechanic —</option>
+                    @foreach (var m in mechanics)
+                    {
+                        <option value="@m.Id">
+                            @m.FullName · #@m.EmployeeNumber  (@m.OpenJobs open job@(m.OpenJobs == 1 ? "" : "s"))
+                        </option>
+                    }
+                </select>
+                <div class="hint-sm">
+                    Sorted by lowest workload first to keep the queue balanced.
+                </div>
+            }
+        </div>
+
+        @if (!string.IsNullOrEmpty(rejectError))
+        {
+            <div class="alert">@rejectError</div>
+        }
+
+        <div class="modal-actions">
+            <button class="ghost" @onclick="CloseReject" disabled="@rejecting">Cancel</button>
+            <button class="primary reject" disabled="@(rejecting || mechanicsLoading)"
+                    @onclick="ConfirmReject">
+                @(rejecting ? "Rejecting…" : "🛑 Confirm reject")
+            </button>
+        </div>
+    </div>
+}
+
+<style>
+    .rev-shell { padding:18px 22px 32px; min-height:100vh; }
+
+    /* Top bar */
+    .topbar { display:flex; align-items:flex-start; gap:14px; margin-bottom:18px; }
+    .back { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:6px 12px; border-radius:8px; font-size:13px; cursor:pointer; font-family:inherit; }
+    .title-block { flex:1; }
+    .title-block h1 { font-size:22px; font-weight:800; margin:0; letter-spacing:.5px; font-family:ui-monospace,monospace; }
+    .title-block p  { font-size:12px; color:#94a3b8; margin:2px 0 0; }
+    .crit-badge { background:rgba(127,29,29,.25); border:1px solid #b91c1c; color:#fca5a5; padding:6px 14px; border-radius:8px; font-size:12px; font-weight:700; letter-spacing:.4px; white-space:nowrap; }
+
+    /* States */
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:60px 20px; text-align:center; color:#94a3b8; }
+    .state.err { color:#fca5a5; }
+    .state h2 { color:#e5e7eb; font-size:18px; margin:0 0 8px; }
+    .state p  { font-size:13px; max-width:340px; margin:0 0 14px; line-height:1.6; }
+    .big { font-size:48px; margin-bottom:12px; }
+    .spinner { width:30px; height:30px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+
+    /* Cards */
+    .card { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:16px 18px; margin-bottom:14px; }
+    .card h3 { margin:0 0 12px; font-size:11px; color:#94a3b8; letter-spacing:.6px; font-weight:600; }
+    .remarks { font-size:13px; color:#cbd5e1; line-height:1.6; margin:0; font-style:italic; }
+    .mono { font-family:ui-monospace,monospace; }
+
+    /* Operator-info grid */
+    .op-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+    @@media (max-width:680px) { .op-grid { grid-template-columns:1fr 1fr; } }
+    .lbl { font-size:10px; color:#94a3b8; letter-spacing:.6px; font-weight:600; }
+    .val { font-size:15px; font-weight:700; margin-top:4px; }
+    .sub { font-size:11px; color:#94a3b8; margin-top:2px; }
+
+    /* Defects */
+    .card.defects { border-color:#7f1d1d; }
+    .def-row { display:flex; gap:12px; padding:10px 0; border-top:1px solid #1a2638; }
+    .def-row:first-of-type { border-top:none; padding-top:0; }
+    .def-row.critical { background:rgba(127,29,29,.08); margin:0 -18px; padding:10px 18px; }
+    .icon-cell { width:30px; height:30px; border-radius:6px; background:rgba(239,68,68,.18); color:#fca5a5; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; flex-shrink:0; }
+    .def-text { flex:1; min-width:0; }
+    .def-name { font-size:13px; font-weight:600; }
+    .tag-nogo { font-size:9px; color:#fca5a5; background:rgba(239,68,68,.15); padding:1px 6px; border-radius:3px; display:inline-block; margin:2px 0; font-weight:700; letter-spacing:.4px; }
+    .def-note { font-size:12px; color:#fca5a5; font-style:italic; margin-top:4px; line-height:1.5; }
+
+    /* OK items */
+    .ok-grid { display:flex; flex-wrap:wrap; gap:6px; }
+    .ok-pill { font-size:11px; color:#86efac; background:rgba(34,197,94,.08); border:1px solid #166534; padding:3px 9px; border-radius:999px; }
+
+    .op-sig { max-width:240px; max-height:90px; background:#fff; padding:6px; border-radius:6px; }
+
+    /* Signature */
+    .sign-card { border-color:#0e9488; }
+    .hint { font-size:12px; color:#94a3b8; line-height:1.6; margin:0 0 12px; }
+    .sig-wrap { position:relative; height:160px; background:#fff; border:2px dashed #243246; border-radius:6px; overflow:hidden; touch-action:none; }
+    .sig-wrap canvas { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; display:block; }
+    .sig-clear { margin-top:8px; font-size:11px; padding:5px 12px; }
+    .ghost { background:transparent; border:1px solid #243246; color:#cbd5e1; border-radius:6px; cursor:pointer; font-family:inherit; }
+
+    .approve-row { display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; }
+    .primary { background:#16a34a; color:#fff; border:none; padding:12px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; flex:1; font-family:inherit; }
+    .primary.warn { background:#ea580c; }
+    .primary:disabled { opacity:.55; cursor:not-allowed; }
+
+    .alert { background:#450a0a; border:1px solid #7f1d1d; color:#fecaca; padding:10px 14px; border-radius:8px; font-size:13px; margin-top:12px; }
+
+    /* Reject row at the bottom of the sign-off card */
+    .reject-row    { margin-top:18px; padding-top:14px; border-top:1px dashed #243246; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .reject-hint   { flex:1; font-size:11px; color:#94a3b8; line-height:1.55; min-width:220px; }
+    .primary.reject { background:#dc2626; flex:0 0 auto; max-width:240px; }
+    .primary.reject:hover:not(:disabled) { background:#ef4444; }
+
+    /* Modal */
+    .modal-backdrop { position:fixed; inset:0; background:rgba(2,6,23,.7); z-index:50; }
+    .modal-card     { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:min(540px,94vw); max-height:90vh; overflow:auto; z-index:60; background:#0d1729; border:1px solid #243246; border-radius:12px; padding:20px 22px; box-shadow:0 24px 60px rgba(0,0,0,.5); }
+    .modal-head     { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+    .modal-head h2  { margin:0; font-size:17px; font-weight:800; color:#fecaca; }
+    .x              { background:transparent; border:none; color:#94a3b8; font-size:18px; cursor:pointer; }
+    .x:hover        { color:#fff; }
+    .modal-warn     { font-size:12px; color:#cbd5e1; line-height:1.55; background:rgba(220,38,38,.08); border:1px solid #7f1d1d; border-radius:8px; padding:10px 12px; margin:0 0 14px; }
+    .muted          { color:#94a3b8; }
+
+    .form-row       { display:flex; flex-direction:column; gap:6px; margin:10px 0 14px; }
+    .form-row label { font-size:11px; color:#94a3b8; letter-spacing:.4px; font-weight:600; }
+    .input          { width:100%; background:#0a1726; border:1px solid #243246; color:#e5e7eb; padding:10px 12px; border-radius:8px; font-size:13px; font-family:inherit; }
+    .input:focus    { outline:none; border-color:#0e9488; }
+    textarea.input  { resize:vertical; min-height:74px; }
+    select.input    { appearance:none; cursor:pointer; }
+    .hint-sm        { font-size:10px; color:#64748b; }
+
+    .loading-row    { display:flex; align-items:center; gap:10px; font-size:12px; color:#94a3b8; }
+    .mini-spinner   { width:14px; height:14px; border:2px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; }
+
+    .modal-actions  { display:flex; gap:10px; margin-top:6px; justify-content:flex-end; }
+    .modal-actions .ghost   { padding:10px 16px; font-size:13px; }
+    .modal-actions .primary { flex:0 0 auto; padding:10px 18px; font-size:13px; }
+</style>
+
+@code {
+    private const string SIG_ID = "supSig";
+
+    [Parameter] public int SubmissionId { get; set; }
+
+    private SupervisorReviewDto? review;
+    private bool   busy  = true;
+    private string error = "";
+
+    // ── Reject modal state ──────────────────────────────────────────────────
+    private bool   showRejectModal;
+    private bool   mechanicsLoading;
+    private bool   rejecting;
+    private string rejectReason     = "";
+    private string rejectMechanicId = "";
+    private string rejectError      = "";
+    private List<SupervisorMechanicDto>? mechanics;
+
+    private int defectCount => review?.Items.Count(i => i.Status == ItemStatus.Defect) ?? 0;
+
+    /// <summary>
+    /// Defects to render in the highlighted card. Computed (not a local in
+    /// markup) to avoid a nested code block inside an outer else branch — the
+    /// Razor 8 parser rejects that with "Unexpected brace after at sign".
+    /// </summary>
+    private IReadOnlyList<SupervisorReviewItemDto> Defects =>
+        review is null
+            ? Array.Empty<SupervisorReviewItemDto>()
+            : review.Items.Where(i => i.Status == ItemStatus.Defect).ToList();
+
+    /// <summary>Items the operator passed. Same reason for the computed shape.</summary>
+    private IReadOnlyList<SupervisorReviewItemDto> InOrder =>
+        review is null
+            ? Array.Empty<SupervisorReviewItemDto>()
+            : review.Items.Where(i => i.Status == ItemStatus.InOrder).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (review is not null)
+        {
+            try { await JS.InvokeVoidAsync("SigPad.init", SIG_ID); }
+            catch { /* canvas not in DOM yet */ }
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        busy = true; error = ""; StateHasChanged();
+        try
+        {
+            review = await Api.SupervisorReviewAsync(SubmissionId);
+            if (review == null) error = "Submission not found.";
+        }
+        catch (HttpRequestException)
+        {
+            error = "You're offline. The review pipeline needs a live server connection.";
+        }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+
+    private async Task ClearSig() => await JS.InvokeVoidAsync("SigPad.clear", SIG_ID);
+
+    private void Back() => Nav.NavigateTo("/sign-off");
+
+    private async Task Approve(int resolution)
+    {
+        if (busy) return;
+        error = "";
+        var sig = await JS.InvokeAsync<string?>("SigPad.toDataUrl", SIG_ID);
+        if (string.IsNullOrEmpty(sig))
+        {
+            error = "Sign before approving.";
+            return;
+        }
+
+        busy = true; StateHasChanged();
+        try
+        {
+            // Offline-aware: if there's no internet, queue the action and bounce
+            // back to the queue. The SyncWorker will replay when signal returns.
+            if (Connectivity.NetworkAccess != NetworkAccess.Internet)
+            {
+                await Actions.EnqueueSignOffAsync(SubmissionId, resolution, sig);
+                Nav.NavigateTo("/sign-off");
+                return;
+            }
+
+            var res = await Api.SupervisorSignOffAsync(SubmissionId, resolution, sig);
+            if (!res.Ok)
+            {
+                error = string.IsNullOrEmpty(res.Error)
+                    ? "Server rejected the sign-off. Try again."
+                    : res.Error;
+                return;
+            }
+            Nav.NavigateTo("/sign-off");
+        }
+        catch (HttpRequestException)
+        {
+            // Network died mid-call — queue and bail.
+            await Actions.EnqueueSignOffAsync(SubmissionId, resolution, sig);
+            Nav.NavigateTo("/sign-off");
+        }
+        catch (Exception ex) { error = "Sign-off failed: " + ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+
+    private static string ShiftLabel(Shift s) => s switch
+    {
+        Shift.Day       => "Day (A)",
+        Shift.Afternoon => "Afternoon (B)",
+        Shift.Night     => "Night (C)",
+        _               => "—"
+    };
+
+    private static string FirstChar(string s) =>
+        string.IsNullOrWhiteSpace(s) ? "?" : s.Trim()[0].ToString().ToUpperInvariant();
+
+    // ── Reject modal handlers ──────────────────────────────────────────────
+    private async Task OpenReject()
+    {
+        showRejectModal  = true;
+        rejectError      = "";
+        rejectReason     = "";
+        rejectMechanicId = "";
+        StateHasChanged();
+
+        // Lazy-load the mechanic list the first time the modal opens.
+        if (mechanics is null)
+        {
+            mechanicsLoading = true;
+            StateHasChanged();
+            try
+            {
+                mechanics = await Api.SupervisorMechanicsAsync() ?? new();
+            }
+            catch (HttpRequestException)
+            {
+                rejectError = "Can't reach the server to fetch mechanics. Try again.";
+                mechanics   = new();
+            }
+            catch (Exception ex)
+            {
+                rejectError = ex.Message;
+                mechanics   = new();
+            }
+            finally
+            {
+                mechanicsLoading = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private void CloseReject()
+    {
+        if (rejecting) return;            // don't slam the door mid-request
+        showRejectModal = false;
+        rejectError     = "";
+        StateHasChanged();
+    }
+
+    private async Task ConfirmReject()
+    {
+        if (rejecting) return;
+        rejectError = "";
+
+        // Client-side validation matches the server's BadRequest rules.
+        if (string.IsNullOrWhiteSpace(rejectReason))
+        {
+            rejectError = "Enter a reason before rejecting.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(rejectMechanicId))
+        {
+            rejectError = "Pick a mechanic to receive the defect orders.";
+            return;
+        }
+
+        rejecting = true;
+        StateHasChanged();
+        try
+        {
+            // Offline-aware: queue the rejection rather than failing the action.
+            if (Connectivity.NetworkAccess != NetworkAccess.Internet)
+            {
+                await Actions.EnqueueRejectAsync(SubmissionId, rejectReason.Trim(), rejectMechanicId);
+                showRejectModal = false;
+                Nav.NavigateTo("/sign-off");
+                return;
+            }
+
+            var res = await Api.SupervisorRejectAsync(SubmissionId, rejectReason.Trim(), rejectMechanicId);
+            if (!res.Ok)
+            {
+                rejectError = string.IsNullOrEmpty(res.Error)
+                    ? "Server refused the rejection. Try again."
+                    : res.Error;
+                return;
+            }
+            // Success — close modal and bounce back to the queue.
+            showRejectModal = false;
+            Nav.NavigateTo("/sign-off");
+        }
+        catch (HttpRequestException)
+        {
+            // Network died mid-call — queue and bail.
+            await Actions.EnqueueRejectAsync(SubmissionId, rejectReason.Trim(), rejectMechanicId);
+            showRejectModal = false;
+            Nav.NavigateTo("/sign-off");
+        }
+        catch (Exception ex)
+        {
+            rejectError = ex.Message;
+        }
+        finally
+        {
+            rejecting = false;
+            StateHasChanged();
+        }
+    }
+}

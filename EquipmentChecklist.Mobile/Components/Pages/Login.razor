@@ -1,0 +1,215 @@
+@page "/"
+@page "/login"
+@layout EquipmentChecklist.Mobile.Components.Layout.MinimalLayout
+@using EquipmentChecklist.Mobile.Services
+@using Microsoft.AspNetCore.Components.Web
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject BiometricUnlock  Bio
+@inject NavigationManager Nav
+
+<div class="login-shell">
+    <div class="login-card">
+        <div class="brand">
+            <div class="brand-icon">⛏</div>
+            <h1>Equipment Checklist</h1>
+            <p>Sign in to start your shift.</p>
+        </div>
+
+        @if (!string.IsNullOrEmpty(error))
+        {
+            <div class="alert">@error</div>
+        }
+
+        <label>Email</label>
+        <input @bind="email" type="email" autocomplete="username"
+               placeholder="operator@belfast.co.za" />
+
+        <label>Password</label>
+        <input @bind="password" type="password" autocomplete="current-password"
+               placeholder="••••••••" @onkeyup="OnPwKey" />
+
+        @if (bioAvailable)
+        {
+            <label class="bio-toggle">
+                <input type="checkbox" @bind="enableBio" />
+                <span>🔐 Use biometrics / Windows Hello next time</span>
+            </label>
+        }
+
+        <button class="primary" @onclick="DoLogin" disabled="@busy">
+            @(busy ? "Signing in…" : "Sign In")
+        </button>
+
+        <p class="hint">
+            Use the same email and password you use for the web app.
+        </p>
+    </div>
+</div>
+
+<style>
+    .login-shell {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0b1726;
+        padding: 24px;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    .login-card {
+        background: #111c2e;
+        color: #e5e7eb;
+        border: 1px solid #1f2a3a;
+        border-radius: 14px;
+        padding: 36px 28px;
+        width: 100%;
+        max-width: 380px;
+    }
+    .brand        { text-align: center; margin-bottom: 24px; }
+    .brand-icon   {
+        width: 56px; height: 56px;
+        margin: 0 auto 10px;
+        background: #1f3a93;
+        color: #fff;
+        border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 28px;
+    }
+    .brand h1     { font-size: 18px; margin: 0; }
+    .brand p      { font-size: 12px; color: #94a3b8; margin: 4px 0 0; }
+
+    label         { display: block; font-size: 11px; color: #94a3b8; margin: 10px 0 6px; text-transform: uppercase; letter-spacing: .4px; }
+    input         {
+        width: 100%; box-sizing: border-box;
+        padding: 11px 12px;
+        background: #0b1726;
+        border: 1px solid #243246;
+        color: #e5e7eb;
+        border-radius: 8px;
+        font-size: 14px;
+    }
+    button.primary {
+        margin-top: 18px;
+        width: 100%;
+        padding: 12px;
+        background: #1f3a93;
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    button.primary:disabled { opacity: .55; cursor: not-allowed; }
+
+    .alert {
+        background: #450a0a; border: 1px solid #7f1d1d;
+        color: #fecaca; padding: 10px 12px;
+        border-radius: 6px; font-size: 13px;
+        margin-bottom: 12px;
+    }
+    .hint {
+        font-size: 11px; color: #64748b; text-align: center; margin-top: 16px;
+    }
+
+    .bio-toggle {
+        display:flex; align-items:center; gap:8px; cursor:pointer;
+        margin:14px 0 0; font-size:12px; color:#94a3b8;
+        text-transform:none; letter-spacing:0;
+    }
+    .bio-toggle input { width:16px; height:16px; accent-color:#1f3a93; }
+</style>
+
+@code {
+    private string email        = "";
+    private string password     = "";
+    private bool   busy;
+    private string error        = "";
+    private bool   enableBio    = false;
+    private bool   bioAvailable = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        bioAvailable = await Bio.IsAvailableAsync();
+        if (bioAvailable && await Auth.IsBiometricEnabledAsync())
+            enableBio = true;  // pre-tick the box for returning users
+
+        var restore = await Auth.RestoreAsync();
+        switch (restore)
+        {
+            case RestoreResult.Unlocked:
+                Nav.NavigateTo("/dashboard");
+                break;
+
+            case RestoreResult.BiometricCancelled:
+                error = "Biometric prompt was dismissed. Sign in to continue.";
+                break;
+
+            case RestoreResult.BiometricFailed:
+                error = "Biometric check failed too many times. Sign in with your password.";
+                break;
+
+            // NoSession / Expired / Corrupt → no message, just show the form.
+        }
+    }
+
+    private void OnPwKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") _ = DoLogin();
+    }
+
+    private async Task DoLogin()
+    {
+        if (busy) return;
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+        {
+            error = "Email and password are required.";
+            return;
+        }
+
+        busy = true;
+        error = "";
+        try
+        {
+            var reply = await Api.LoginAsync(email.Trim(), password);
+            if (reply == null)
+            {
+                error = "Invalid email or password.";
+                return;
+            }
+            await Auth.SignInAsync(reply, password, enableBiometrics: enableBio && bioAvailable);
+            Nav.NavigateTo("/dashboard");
+        }
+        catch (HttpRequestException)
+        {
+            // Server unreachable — try offline sign-in against the cached
+            // profile. Works after the operator has signed in successfully
+            // here once with internet.
+            var offline = await Auth.OfflineSignInAsync(email.Trim(), password);
+            switch (offline)
+            {
+                case OfflineSignInResult.Success:
+                    Nav.NavigateTo("/dashboard");
+                    return;
+
+                case OfflineSignInResult.UserUnknown:
+                    error = "You're offline and we don't have a cached profile for this email. " +
+                            "Sign in once with internet first.";
+                    return;
+
+                case OfflineSignInResult.WrongPassword:
+                    error = "Invalid email or password.";
+                    return;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = "Login failed: " + ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}

@@ -1,0 +1,137 @@
+@page "/no-go"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject NavigationManager Nav
+
+<div class="page-head">
+    <div>
+        <h1>NO-GO MACHINES</h1>
+        <p>Machines currently immobilised across the fleet</p>
+    </div>
+    <button class="ghost" @onclick="LoadAsync" disabled="@busy">↻ Refresh</button>
+</div>
+
+@if (busy && machines is null)
+{
+    <div class="state"><div class="spinner"></div><p>Loading immobilised machines…</p></div>
+}
+else if (!string.IsNullOrEmpty(error))
+{
+    <div class="state err">
+        <div class="big">⚠</div>
+        <p>@error</p>
+        <button class="primary" @onclick="LoadAsync">Try again</button>
+    </div>
+}
+else if (machines is null || machines.Count == 0)
+{
+    <div class="state">
+        <div class="big">✅</div>
+        <h2>Fleet is clear</h2>
+        <p>No machines are currently immobilised.</p>
+    </div>
+}
+else
+{
+    <p class="count-line">@machines.Count machine(s) currently immobilised</p>
+
+    <div class="ng-grid">
+        @foreach (var m in machines)
+        {
+            <div class="ng-card">
+                <div class="ng-strip">⛔ IMMOBILISED</div>
+
+                <div class="ng-body">
+                    <div class="ng-num">@m.MachineNumber</div>
+                    <div class="ng-name">@m.MachineName</div>
+                    <div class="ng-type">@m.TypeDisplay</div>
+
+                    @if (!string.IsNullOrEmpty(m.ImmobilisedReason))
+                    {
+                        <div class="ng-reason">
+                            <strong>Reason:</strong> @m.ImmobilisedReason
+                        </div>
+                    }
+
+                    <div class="ng-stats">
+                        <div class="ng-stat">
+                            <span class="k">Open defects</span>
+                            <span class="v">@m.OpenDefects</span>
+                        </div>
+                        <div class="ng-stat">
+                            <span class="k">Operator</span>
+                            <span class="v">@(m.AssignedOperator ?? "—")</span>
+                        </div>
+                        <div class="ng-stat">
+                            <span class="k">Mechanic</span>
+                            <span class="v">@(m.AssignedMechanic ?? "—")</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<style>
+    .page-head { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; gap:14px; flex-wrap:wrap; }
+    .page-head h1 { font-size:24px; font-weight:800; margin:0; letter-spacing:.5px; }
+    .page-head p  { font-size:12px; color:#94a3b8; margin:2px 0 0; }
+    .ghost { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:9px 14px; border-radius:8px; cursor:pointer; font-family:inherit; font-size:13px; }
+    .ghost:disabled { opacity:.5; cursor:not-allowed; }
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:9px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit; }
+
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:60px 20px; text-align:center; color:#94a3b8; }
+    .state.err { color:#fca5a5; }
+    .state h2 { color:#e5e7eb; font-size:18px; margin:0 0 6px; }
+    .state p  { font-size:13px; max-width:380px; margin:0 0 14px; line-height:1.6; }
+    .big { font-size:48px; margin-bottom:12px; }
+    .spinner { width:30px; height:30px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+
+    .count-line { font-size:12px; color:#94a3b8; margin:0 0 14px; }
+
+    .ng-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+    .ng-card { background:#1a0a0a; border:1px solid #b91c1c; border-radius:12px; overflow:hidden; }
+    .ng-strip { background:#7f1d1d; color:#fee2e2; padding:7px 14px; font-size:11px; font-weight:700; letter-spacing:.6px; text-align:center; }
+    .ng-body { padding:18px 18px 16px; }
+    .ng-num  { font-size:22px; font-weight:800; font-family:ui-monospace,monospace; margin-bottom:4px; }
+    .ng-name { font-size:13px; color:#cbd5e1; margin-bottom:2px; }
+    .ng-type { font-size:12px; color:#94a3b8; margin-bottom:12px; }
+    .ng-reason { font-size:12px; color:#fca5a5; line-height:1.5; background:rgba(239,68,68,.08); padding:8px 10px; border-radius:6px; margin-bottom:12px; word-break:break-word; }
+    .ng-reason strong { color:#fee2e2; }
+
+    .ng-stats { display:grid; grid-template-columns:1fr; gap:6px; padding-top:8px; border-top:1px solid #5b1d1d; }
+    .ng-stat  { display:flex; justify-content:space-between; align-items:center; font-size:12px; }
+    .ng-stat .k { color:#94a3b8; text-transform:uppercase; letter-spacing:.4px; font-size:10px; }
+    .ng-stat .v { color:#fca5a5; font-weight:600; }
+</style>
+
+@code {
+    private List<NoGoMachineDto>? machines;
+    private bool   busy  = true;
+    private string error = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        busy = true; error = ""; StateHasChanged();
+        try
+        {
+            machines = await Api.SupervisorNoGoAsync();
+        }
+        catch (HttpRequestException)
+        {
+            error = "You're offline. Connect to load the NO-GO fleet.";
+        }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+}

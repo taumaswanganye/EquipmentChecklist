@@ -1,0 +1,517 @@
+@page "/checklist/{MachineId:int}"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Models
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject LocalCache       Cache
+@inject SubmissionQueue  Queue
+@inject SyncWorker       Sync
+@inject NavigationManager Nav
+@inject IJSRuntime       JS
+
+<div class="chk-shell">
+
+    @* ────────────── TOP BAR ────────────── *@
+    <header class="topbar">
+        <button class="back" @onclick="Back">‹ Back</button>
+        <div class="title-block">
+            <h1>@(machineLabel?.ToUpper() ?? template?.Name?.ToUpper() ?? "CHECKLIST")</h1>
+            <p>@machineSubtitle</p>
+        </div>
+        @if (CriticalDefects > 0)
+        {
+            <div class="crit-badge">✕ NO-GO · @CriticalDefects CRITICAL</div>
+        }
+        else if (template is not null)
+        {
+            <div class="crit-badge subtle">@items.Count items</div>
+        }
+    </header>
+
+    @if (busy && template is null)
+    {
+        <div class="state"><div class="spinner"></div><p>Loading checklist…</p></div>
+    }
+    else if (template is null)
+    {
+        <div class="state err">
+            <div class="big">⚠</div>
+            <h2>Couldn't load this checklist</h2>
+            <p>@(string.IsNullOrEmpty(error) ? "Try again from My Machines." : error)</p>
+            <button class="primary" @onclick="Back">Back to machines</button>
+        </div>
+    }
+    else
+    {
+        @* ────────────── HEADER FIELDS ────────────── *@
+        <section class="meta">
+            <div class="meta-field">
+                <label>SHIFT <span class="req">*</span></label>
+                <select @bind="form.Shift">
+                    <option value="@Shift.Day">Day</option>
+                    <option value="@Shift.Afternoon">Afternoon</option>
+                    <option value="@Shift.Night">Night</option>
+                </select>
+            </div>
+            <div class="meta-field">
+                <label>KM / HOUR METER <span class="req">*</span></label>
+                <input type="number" inputmode="numeric" @bind="form.KmOrHourMeter"
+                       placeholder="Current reading" />
+            </div>
+            <div class="meta-field">
+                <label>DATE &amp; TIME</label>
+                <input type="text" value="@DateTime.Now.ToString("yyyy-MM-dd HH:mm")" readonly />
+            </div>
+        </section>
+
+        @* ────────────── ITEM GRID HEADER ────────────── *@
+        <div class="items-head">
+            <div class="items-title">
+                <span class="ico">📋</span>
+                <span>INSPECTION ITEMS</span>
+                <span class="count">(@items.Count items)</span>
+            </div>
+            <div class="legend">⚠ Red border = critical NO-GO item</div>
+        </div>
+
+        @* Column-header strip *@
+        <div class="grid-head">
+            <div class="ghcol">
+                <span class="lbl">ITEM</span>
+                <span class="lbl ok-col">IN ORDER</span>
+                <span class="lbl def-col">DEFECT</span>
+            </div>
+            <div class="ghcol">
+                <span class="lbl">ITEM</span>
+                <span class="lbl ok-col">IN ORDER</span>
+                <span class="lbl def-col">DEFECT</span>
+            </div>
+        </div>
+
+        @* ────────────── ITEM GRID ────────────── *@
+        <div class="grid">
+            @foreach (var item in items)
+            {
+                var t = item.Template;
+                var ok  = item.Status == ItemStatus.InOrder;
+                var def = item.Status == ItemStatus.Defect;
+
+                <div class="item @(t.IsNoGoItem ? "critical" : "") @(def ? "is-def" : "")">
+                    <div class="ico-cell @IconColorClass(t)">
+                        @if (!string.IsNullOrEmpty(t.IconPath))
+                        {
+                            <img src="@IconUrl(t.IconPath)" alt=""
+                                 onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+                        }
+                        <span class="ico-letter" style="@(string.IsNullOrEmpty(t.IconPath) ? "display:flex" : "display:none")">
+                            @FirstChar(t.ItemName)
+                        </span>
+                    </div>
+
+                    <div class="name-cell">
+                        <div class="name">@t.ItemName</div>
+                        @if (t.IsNoGoItem)
+                        {
+                            <div class="tag-nogo">NO-GO</div>
+                        }
+                    </div>
+
+                    <button class="radio ok @(ok ? "on" : "")" type="button"
+                            @onclick="() => SetStatus(item, ItemStatus.InOrder)">
+                        <span class="ring"></span>
+                        <span class="mark">✓</span>
+                    </button>
+                    <button class="radio def @(def ? "on" : "")" type="button"
+                            @onclick="() => SetStatus(item, ItemStatus.Defect)">
+                        <span class="ring"></span>
+                        <span class="mark">✕</span>
+                    </button>
+
+                    @if (def)
+                    {
+                        <div class="defect-note">
+                            <span class="pencil">✎</span>
+                            <input type="text" @bind="item.Notes" placeholder="Describe the defect…" />
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @* ────────────── FITNESS DECLARATION ────────────── *@
+        <section class="card">
+            <h3>Fitness declaration</h3>
+            <p class="quote">
+                "I am healthy, in good physical condition and mental state, well rested
+                and do not feel fatigued in order to operate this equipment."
+            </p>
+            <label class="check">
+                <input type="checkbox" @bind="form.FitnessDeclarationSigned" />
+                <span>I confirm the above declaration.</span>
+            </label>
+        </section>
+
+        @* ────────────── REMARKS ────────────── *@
+        <section class="card">
+            <h3>Remarks (optional)</h3>
+            <textarea rows="2" @bind="form.OperatorRemarks"
+                      placeholder="Anything else worth noting…"></textarea>
+        </section>
+
+        @* ────────────── SIGNATURE ────────────── *@
+        <section class="card">
+            <h3>Operator signature
+                <button class="sig-clear" type="button" @onclick="ClearSig">✕ Clear</button>
+            </h3>
+            <div class="sig-wrap">
+                <canvas id="@SIG_ID"></canvas>
+            </div>
+        </section>
+
+        @if (!string.IsNullOrEmpty(error))
+        {
+            <div class="alert">@error</div>
+        }
+
+        <div class="submit-bar">
+            <button class="primary submit" @onclick="DoSubmit" disabled="@busy">
+                @(busy ? "Submitting…" : "Submit checklist")
+            </button>
+        </div>
+    }
+
+</div>
+
+<style>
+    .chk-shell { min-height:100vh; background:#0b1726; color:#e5e7eb; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:18px 22px 30px; }
+
+    /* Top bar */
+    .topbar { display:flex; align-items:flex-start; gap:14px; margin-bottom:18px; }
+    .back { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:6px 12px; border-radius:8px; font-size:13px; cursor:pointer; font-family:inherit; }
+    .title-block { flex:1; }
+    .title-block h1 { font-size:24px; font-weight:800; margin:0; letter-spacing:.5px; }
+    .title-block p  { font-size:12px; color:#94a3b8; margin:2px 0 0; }
+    .crit-badge { background:rgba(127,29,29,.25); border:1px solid #b91c1c; color:#fca5a5; padding:6px 14px; border-radius:8px; font-size:12px; font-weight:700; letter-spacing:.4px; white-space:nowrap; }
+    .crit-badge.subtle { background:#111c2e; border-color:#1f2a3a; color:#94a3b8; font-weight:600; }
+
+    /* Loading / error states */
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:60px 20px; text-align:center; color:#94a3b8; }
+    .state.err { color:#fca5a5; }
+    .state h2 { color:#e5e7eb; font-size:18px; margin:0 0 8px; }
+    .state p  { font-size:13px; max-width:340px; margin:0 0 14px; line-height:1.6; }
+    .big { font-size:48px; margin-bottom:12px; }
+    .spinner { width:30px; height:30px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+
+    /* Meta row */
+    .meta { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:18px; }
+    @@media (max-width:760px) { .meta { grid-template-columns:1fr; } }
+    .meta-field label { display:block; font-size:10px; color:#94a3b8; text-transform:uppercase; letter-spacing:.8px; margin-bottom:6px; font-weight:600; }
+    .meta-field .req { color:#ef4444; }
+    .meta-field select, .meta-field input {
+        width:100%; box-sizing:border-box;
+        background:#0d1729; border:1px solid #1f2a3a; color:#e5e7eb;
+        padding:11px 14px; border-radius:8px; font-size:14px; font-family:inherit;
+    }
+    .meta-field select:focus, .meta-field input:focus { outline:none; border-color:#0e9488; }
+    .meta-field input[readonly] { color:#94a3b8; background:#0a1322; }
+
+    /* Items header bar */
+    .items-head { display:flex; justify-content:space-between; align-items:center; padding:11px 14px; background:#0d1729; border:1px solid #1f2a3a; border-radius:8px 8px 0 0; }
+    .items-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:700; letter-spacing:.4px; }
+    .items-title .ico { font-size:16px; }
+    .items-title .count { font-weight:400; color:#94a3b8; font-size:12px; }
+    .legend { font-size:11px; color:#ef4444; }
+
+    .grid-head { display:grid; grid-template-columns:1fr 1fr; gap:0; background:#0d1729; border-left:1px solid #1f2a3a; border-right:1px solid #1f2a3a; }
+    @@media (max-width:760px) { .grid-head { grid-template-columns:1fr; } }
+    .ghcol { display:grid; grid-template-columns: 38px 1fr 60px 60px; gap:8px; padding:8px 14px; align-items:center; }
+    .ghcol + .ghcol { border-left:1px solid #1f2a3a; }
+    .ghcol .lbl { font-size:10px; color:#94a3b8; letter-spacing:.5px; font-weight:600; }
+    .ghcol .lbl:first-of-type { grid-column:2; }
+    .ghcol .ok-col, .ghcol .def-col { text-align:center; }
+    .ghcol .ok-col  { color:#22c55e; }
+    .ghcol .def-col { color:#ef4444; }
+
+    /* Grid */
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:0; background:#0d1729; border:1px solid #1f2a3a; border-top:none; border-radius:0 0 8px 8px; margin-bottom:18px; }
+    @@media (max-width:760px) { .grid { grid-template-columns:1fr; } }
+
+    .item { display:grid; grid-template-columns: 38px 1fr 60px 60px; gap:8px; padding:10px 14px; border-bottom:1px solid #1a2638; align-items:center; position:relative; }
+    .item:nth-child(2n) { border-left:1px solid #1f2a3a; }
+    @@media (max-width:760px) { .item:nth-child(2n) { border-left:none; } }
+    .item.critical::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:#ef4444; }
+    .item.critical { padding-left:18px; }
+
+    .ico-cell { width:32px; height:32px; border-radius:6px; display:flex; align-items:center; justify-content:center; flex-shrink:0; background:rgba(255,255,255,.04); }
+    .ico-cell img { max-width:24px; max-height:24px; object-fit:contain; }
+    .ico-letter { font-size:13px; font-weight:700; color:#fff; }
+    .ico-cell.red    { background:rgba(239,68,68,.18); }
+    .ico-cell.orange { background:rgba(249,115,22,.18); }
+    .ico-cell.amber  { background:rgba(245,158,11,.18); }
+    .ico-cell.green  { background:rgba(34,197,94,.18); }
+    .ico-cell.cyan   { background:rgba(6,182,212,.18); }
+
+    .name-cell { min-width:0; }
+    .name { font-size:13px; font-weight:600; color:#e5e7eb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tag-nogo { font-size:9px; color:#fca5a5; background:rgba(239,68,68,.15); padding:1px 6px; border-radius:3px; display:inline-block; margin-top:2px; font-weight:700; letter-spacing:.4px; }
+
+    /* Radio toggles */
+    .radio { background:transparent; border:none; cursor:pointer; padding:0; display:flex; align-items:center; justify-content:center; position:relative; height:32px; width:60px; }
+    .radio .ring { width:22px; height:22px; border-radius:50%; border:2px solid; display:block; box-sizing:border-box; }
+    .radio.ok  .ring { border-color:#166534; }
+    .radio.def .ring { border-color:#7f1d1d; }
+    .radio .mark { position:absolute; font-size:13px; font-weight:700; opacity:0; transition:opacity .1s; }
+    .radio.ok  .mark { color:#22c55e; }
+    .radio.def .mark { color:#ef4444; }
+    .radio.on  .ring { background:rgba(255,255,255,.04); border-width:2.5px; }
+    .radio.ok.on  .ring { background:rgba(34,197,94,.18); border-color:#22c55e; }
+    .radio.def.on .ring { background:rgba(239,68,68,.18); border-color:#ef4444; }
+    .radio.on  .mark { opacity:1; }
+    .radio:hover:not(.on) .ring { background:rgba(255,255,255,.05); }
+
+    /* Defect note input under the row */
+    .defect-note { grid-column:1/-1; margin-top:6px; display:flex; align-items:center; gap:6px; background:#0a1322; border:1px solid #243246; border-radius:6px; padding:6px 10px; }
+    .defect-note .pencil { color:#94a3b8; font-size:13px; }
+    .defect-note input { flex:1; background:transparent; border:none; color:#e5e7eb; padding:4px 0; font-size:12px; font-family:inherit; }
+    .defect-note input:focus { outline:none; }
+
+    /* Cards below */
+    .card { background:#0d1729; border:1px solid #1f2a3a; border-radius:8px; padding:14px 16px; margin-bottom:14px; }
+    .card h3 { margin:0 0 12px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; align-items:center; color:#94a3b8; text-transform:uppercase; letter-spacing:.5px; }
+    .quote { font-size:13px; font-style:italic; color:#94a3b8; line-height:1.6; margin:0 0 10px; }
+    .check { display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; }
+    .check input { width:18px; height:18px; accent-color:#16a34a; }
+    .card textarea {
+        width:100%; box-sizing:border-box;
+        background:#0a1322; border:1px solid #243246; color:#e5e7eb;
+        padding:10px 12px; border-radius:6px; font-size:13px; font-family:inherit;
+    }
+    .card textarea:focus { outline:none; border-color:#0e9488; }
+
+    .sig-clear { background:transparent; border:1px solid #7f1d1d; color:#fca5a5; padding:4px 10px; border-radius:6px; font-size:11px; cursor:pointer; font-family:inherit; }
+    .sig-wrap  { position:relative; height:140px; background:#fff; border:2px dashed #243246; border-radius:6px; overflow:hidden; touch-action:none; }
+    .sig-wrap canvas { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; display:block; }
+
+    .alert { background:#450a0a; border:1px solid #7f1d1d; color:#fecaca; padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:12px; }
+
+    .submit-bar { padding-top:6px; }
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:11px 22px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit; }
+    .primary.submit { width:100%; padding:14px; font-size:15px; }
+    .primary:disabled { opacity:.55; cursor:not-allowed; }
+</style>
+
+@code {
+    private const string SIG_ID = "opSig";
+
+    [Parameter] public int MachineId { get; set; }
+
+    private SyncTemplateDto?  template;
+    private List<ItemEntry>   items = new();
+    private SubmissionForm    form  = new();
+    private string?           machineLabel;
+    private string?           machineSubtitle;
+    private bool              busy  = true;
+    private string            error = "";
+
+    private int CriticalDefects =>
+        items.Count(i => i.Template.IsNoGoItem && i.Status == ItemStatus.Defect);
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (template is not null)
+        {
+            try { await JS.InvokeVoidAsync("SigPad.init", SIG_ID); }
+            catch { /* canvas not in DOM yet — next render will catch it */ }
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        busy = true; error = "";
+
+        try
+        {
+            var cached = await Cache.GetTemplateAsync(MachineId);
+            if (cached is not null) { ApplyTemplate(cached); busy = false; StateHasChanged(); }
+        }
+        catch { }
+
+        try
+        {
+            var cm = (await Cache.GetMachinesAsync()).FirstOrDefault(x => x.Id == MachineId);
+            if (cm is not null)
+            {
+                machineLabel    = cm.MachineName;
+                machineSubtitle = $"Machine #{cm.MachineNumber} · {cm.TypeDisplay} · Pre-Use Inspection";
+            }
+        }
+        catch { }
+
+        try
+        {
+            var fresh = await Api.TemplateAsync(MachineId);
+            if (fresh is not null)
+            {
+                ApplyTemplate(fresh);
+                try { await Cache.SaveTemplateAsync(fresh); } catch { }
+            }
+            else if (template is null)
+            {
+                error = "Server didn't return a template. It may not exist or your session expired.";
+            }
+        }
+        catch (HttpRequestException)
+        {
+            if (template is null) error = "You're offline and this checklist isn't cached. Open it once online first.";
+        }
+        catch (Exception ex) { if (template is null) error = ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+
+    private void ApplyTemplate(SyncTemplateDto t)
+    {
+        if (template is not null
+            && template.TemplateId == t.TemplateId
+            && items.Count == t.Items.Count) return;
+
+        template = t;
+        items = t.Items
+            // Critical first, then by SortOrder — matches the reference UI's left/right split
+            .OrderByDescending(i => i.IsNoGoItem)
+            .ThenBy(i => i.SortOrder)
+            .Select(i => new ItemEntry { Template = i })
+            .ToList();
+    }
+
+    private void SetStatus(ItemEntry item, ItemStatus status)
+    {
+        item.Status = status;
+        if (status == ItemStatus.InOrder) item.Notes = null;
+    }
+
+    private async Task ClearSig() => await JS.InvokeVoidAsync("SigPad.clear", SIG_ID);
+
+    private void Back() => Nav.NavigateTo("/machines");
+
+    private async Task DoSubmit()
+    {
+        if (busy) return;
+        error = "";
+
+        if (form.KmOrHourMeter is null or <= 0)  { error = "Enter the KM / Hour meter reading."; return; }
+        if (items.Any(i => i.Status is null))    { error = "Mark every item as either In Order or Defect."; return; }
+        if (!form.FitnessDeclarationSigned)      { error = "Tick the fitness declaration before submitting."; return; }
+
+        var sig = await JS.InvokeAsync<string?>("SigPad.toDataUrl", SIG_ID);
+        if (string.IsNullOrEmpty(sig))
+        { error = "Sign with your finger / pen before submitting."; return; }
+
+        if (items.Any(i => i.Status == ItemStatus.Defect && string.IsNullOrWhiteSpace(i.Notes)))
+        { error = "Describe every defect before submitting."; return; }
+
+        busy = true; StateHasChanged();
+        try
+        {
+            var req = new SyncSubmissionRequest
+            {
+                LocalId                  = Guid.NewGuid(),
+                MachineId                = MachineId,
+                Shift                    = form.Shift,
+                KmOrHourMeter            = form.KmOrHourMeter,
+                OperatorRemarks          = string.IsNullOrWhiteSpace(form.OperatorRemarks) ? null : form.OperatorRemarks,
+                FitnessDeclarationSigned = form.FitnessDeclarationSigned,
+                OperatorSignature        = sig,
+                SubmittedAt              = DateTime.UtcNow,
+                Items = items.Select(i => new SubmissionItemDto
+                {
+                    TemplateItemId = i.Template.Id,
+                    Status         = i.Status!.Value,
+                    Notes          = i.Notes
+                }).ToList()
+            };
+
+            var result = await Api.SubmitAsync(req);
+            if (result is null)
+            {
+                error = "Submission failed. Check connectivity and try again.";
+                return;
+            }
+            Nav.NavigateTo("/dashboard?ok=1");
+        }
+        catch (HttpRequestException)
+        {
+            try
+            {
+                var req = new SyncSubmissionRequest
+                {
+                    LocalId                  = Guid.NewGuid(),
+                    MachineId                = MachineId,
+                    Shift                    = form.Shift,
+                    KmOrHourMeter            = form.KmOrHourMeter,
+                    OperatorRemarks          = string.IsNullOrWhiteSpace(form.OperatorRemarks) ? null : form.OperatorRemarks,
+                    FitnessDeclarationSigned = form.FitnessDeclarationSigned,
+                    OperatorSignature        = sig,
+                    SubmittedAt              = DateTime.UtcNow,
+                    Items = items.Select(i => new SubmissionItemDto
+                    {
+                        TemplateItemId = i.Template.Id,
+                        Status         = i.Status!.Value,
+                        Notes          = i.Notes
+                    }).ToList()
+                };
+                await Queue.EnqueueAsync(req);
+                _ = Task.Run(Sync.DrainAsync);
+                Nav.NavigateTo("/dashboard?queued=1");
+            }
+            catch (Exception qex) { error = "You're offline and we couldn't queue this locally either: " + qex.Message; }
+        }
+        catch (Exception ex) { error = "Submit failed: " + ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    private string IconUrl(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "";
+        var baseAddr = Api.BaseAddress?.ToString().TrimEnd('/');
+        return $"{baseAddr}/{path.TrimStart('/')}";
+    }
+
+    private string FirstChar(string s) =>
+        string.IsNullOrWhiteSpace(s) ? "?" : s.Trim()[0].ToString().ToUpperInvariant();
+
+    /// <summary>Deterministic tint for the icon background based on item name.</summary>
+    private string IconColorClass(SyncTemplateItemDto t)
+    {
+        if (t.IsNoGoItem) return "red";
+
+        var n = (t.ItemName ?? "").ToUpperInvariant();
+        if (n.Contains("OIL") || n.Contains("FUEL") || n.Contains("HYDRAULIC") || n.Contains("COOLANT")) return "amber";
+        if (n.Contains("WINDOW") || n.Contains("MIRROR") || n.Contains("WIPER")) return "cyan";
+        if (n.Contains("AIR")) return "cyan";
+        return "orange";
+    }
+
+    private class SubmissionForm
+    {
+        public Shift  Shift                    { get; set; } = Shift.Day;
+        public int?   KmOrHourMeter            { get; set; }
+        public string OperatorRemarks          { get; set; } = "";
+        public bool   FitnessDeclarationSigned { get; set; }
+    }
+
+    private class ItemEntry
+    {
+        public SyncTemplateItemDto Template { get; set; } = null!;
+        public ItemStatus?         Status   { get; set; }
+        public string?             Notes    { get; set; }
+    }
+}

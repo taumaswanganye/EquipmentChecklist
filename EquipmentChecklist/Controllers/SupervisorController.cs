@@ -14,14 +14,20 @@ public class SupervisorController : Controller
     private readonly ApplicationDbContext         _db;
     private readonly ChecklistService             _svc;
     private readonly UserManager<ApplicationUser> _users;
+    private readonly EmailService                 _email;
+    private readonly ILogger<SupervisorController> _log;
 
     public SupervisorController(ApplicationDbContext db,
                                 ChecklistService svc,
-                                UserManager<ApplicationUser> users)
+                                UserManager<ApplicationUser> users,
+                                EmailService email,
+                                ILogger<SupervisorController> log)
     {
         _db    = db;
         _svc   = svc;
         _users = users;
+        _email = email;
+        _log   = log;
     }
 
     // ── Sign-Off Queue ────────────────────────────────────────────────────────
@@ -115,6 +121,7 @@ public class SupervisorController : Controller
 
         var submission = await _db.ChecklistSubmissions
             .Include(s => s.Machine)
+            .Include(s => s.Operator)
             .Include(s => s.Items).ThenInclude(i => i.TemplateItem)
             .FirstOrDefaultAsync(s => s.Id == id);
 
@@ -137,6 +144,7 @@ public class SupervisorController : Controller
 
         // Create a DefectOrder for every defective item and assign to the chosen mechanic
         var defects = submission.Items.Where(i => i.Status == ItemStatus.Defect).ToList();
+        int created = 0;
         foreach (var item in defects)
         {
             // Avoid duplicates – skip if a pending order already exists for this item
@@ -154,9 +162,37 @@ public class SupervisorController : Controller
                 RepairStatus       = RepairStatus.InProgress,
                 CreatedAt          = DateTime.UtcNow
             });
+            created++;
         }
 
         await _db.SaveChangesAsync();
+
+        // ── Notify the assigned mechanic by email ──
+        // Mirrors the mobile API. Failures are logged and swallowed — the
+        // rejection itself has already been persisted.
+        try
+        {
+            var mech       = await _users.FindByIdAsync(mechanicId);
+            var supervisor = await _users.FindByIdAsync(supervisorId);
+            if (mech != null && supervisor != null)
+            {
+                await _email.SendRejectionNotificationAsync(
+                    mechanicEmail:  mech.Email ?? "",
+                    mechanicName:   mech.FullName,
+                    operatorName:   submission.Operator.FullName,
+                    machineNumber:  submission.Machine.MachineNumber,
+                    machineName:    submission.Machine.MachineName,
+                    reason:         rejectionReason,
+                    defectCount:    created,
+                    supervisorName: supervisor.FullName);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Rejection-notification email failed for submission {SubmissionId} (web). " +
+                                "Reject persisted; email pipeline was skipped.", id);
+        }
+
         TempData["Success"] = "Submission rejected. Machine immobilised and defects sent to mechanic.";
         return RedirectToAction("Index");
     }

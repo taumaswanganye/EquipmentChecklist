@@ -1,0 +1,415 @@
+@page "/submissions"
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Models
+@using EquipmentChecklist.Mobile.Services
+@inject ApiClient        Api
+@inject AuthService      Auth
+@inject LocalCache       Cache
+@inject NavigationManager Nav
+
+<div class="page-head">
+    <div>
+        <h1>MY SUBMISSIONS</h1>
+        <p>All your recent pre-use inspection records</p>
+    </div>
+    <button class="new-btn" @onclick="@(() => Nav.NavigateTo("/machines"))">
+        ▶ New Checklist
+    </button>
+</div>
+
+@* ───────────── STATUS FILTER PILLS ───────────── *@
+<div class="filter-row">
+    <button class="filter-pill go @(filter == FilterMode.Go ? "on" : "")"
+            @onclick="() => SetFilter(FilterMode.Go)">
+        <span class="cnt">@goCount</span> GO
+    </button>
+    <button class="filter-pill gobut @(filter == FilterMode.GoBut ? "on" : "")"
+            @onclick="() => SetFilter(FilterMode.GoBut)">
+        <span class="cnt">@goButCount</span> GO-BUT
+    </button>
+    <button class="filter-pill nogo @(filter == FilterMode.NoGo ? "on" : "")"
+            @onclick="() => SetFilter(FilterMode.NoGo)">
+        <span class="cnt">@noGoCount</span> NO-GO
+    </button>
+    <button class="filter-pill total @(filter == FilterMode.All ? "on" : "")"
+            @onclick="() => SetFilter(FilterMode.All)">
+        <span class="cnt">@(all?.Count ?? 0)</span> Total
+    </button>
+</div>
+
+@if (busy && all is null)
+{
+    <div class="state"><div class="spinner"></div><p>Loading your submissions…</p></div>
+}
+else if (!string.IsNullOrEmpty(error))
+{
+    <div class="state err">
+        <div class="big">⚠</div>
+        <p>@error</p>
+        <button class="primary" @onclick="LoadAsync">Try again</button>
+    </div>
+}
+else if (Filtered.Count == 0)
+{
+    <div class="state">
+        <div class="big">📋</div>
+        <p>@(filter == FilterMode.All ? "No submissions yet." : "No submissions match this filter.")</p>
+    </div>
+}
+else
+{
+    <div class="table-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>MACHINE</th>
+                    <th>DATE &amp; TIME</th>
+                    <th>SHIFT</th>
+                    <th class="num-col">KM / HOURS</th>
+                    <th>ITEMS</th>
+                    <th>RESULT</th>
+                    <th class="actions-col">ACTIONS</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in PagedRows)
+                {
+                    var (cls, label) = StatusBadge(s.Status);
+                    <tr class="row-@cls">
+                        <td>
+                            <div class="m-num">@s.MachineNumber</div>
+                            <div class="m-name muted">@s.MachineName</div>
+                        </td>
+                        <td>
+                            <div class="mono">@s.SubmittedAt.ToString("yyyy-MM-dd")</div>
+                            <div class="mono muted">@s.SubmittedAt.ToString("HH:mm")</div>
+                        </td>
+                        <td>@ShiftLabel(s.Shift)</td>
+                        <td class="num-col mono">@(s.KmOrHourMeter?.ToString() ?? "—")</td>
+                        <td>
+                            @s.ItemCount total
+                            @if (s.DefectCount > 0)
+                            {
+                                <span class="def-count">(@s.DefectCount @(s.DefectCount == 1 ? "defect" : "defects"))</span>
+                            }
+                        </td>
+                        <td><span class="badge @cls">@label</span></td>
+                        <td class="actions-col">
+                            <button class="act-btn"  @onclick="() => View(s)">👁 View</button>
+                            <button class="act-btn"  @onclick="() => OpenPdf(s)">📄 PDF</button>
+                            <button class="act-btn icon" title="More">⋮</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        @if (TotalPages > 1)
+        {
+            <div class="pager">
+                <span class="pager-info">
+                    Showing @FirstRowIndex–@LastRowIndex of @Filtered.Count
+                </span>
+                <div class="pager-btns">
+                    <button class="pg" disabled="@(currentPage == 1)"
+                            @onclick="@(() => Goto(currentPage - 1))">‹ Prev</button>
+
+                    @foreach (var p in VisiblePages)
+                    {
+                        if (p == -1)
+                        {
+                            <span class="pg dots">…</span>
+                        }
+                        else
+                        {
+                            <button class="pg @(p == currentPage ? "on" : "")"
+                                    @onclick="@(() => Goto(p))">@p</button>
+                        }
+                    }
+
+                    <button class="pg" disabled="@(currentPage == TotalPages)"
+                            @onclick="@(() => Goto(currentPage + 1))">Next ›</button>
+                </div>
+            </div>
+        }
+    </div>
+
+    <p class="foot-note">Showing @Filtered.Count most recent submissions.</p>
+}
+
+@if (viewing is not null)
+{
+    <div class="modal-backdrop" @onclick="CloseView">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-head">
+                <div>
+                    <div class="modal-num">@viewing.MachineNumber</div>
+                    <div class="modal-sub">@viewing.MachineName</div>
+                </div>
+                <button class="modal-x" @onclick="CloseView">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="kv"><span class="k">Result</span><span class="v"><span class="badge @StatusBadgeCls(viewing.Status)">@StatusBadgeLabel(viewing.Status)</span></span></div>
+                <div class="kv"><span class="k">Date</span><span class="v mono">@viewing.SubmittedAt.ToString("dddd, dd MMM yyyy")</span></div>
+                <div class="kv"><span class="k">Time</span><span class="v mono">@viewing.SubmittedAt.ToString("HH:mm")</span></div>
+                <div class="kv"><span class="k">Shift</span><span class="v">@ShiftLabel(viewing.Shift)</span></div>
+                <div class="kv"><span class="k">KM / Hours</span><span class="v mono">@(viewing.KmOrHourMeter?.ToString() ?? "—")</span></div>
+                <div class="kv"><span class="k">Items</span><span class="v">@viewing.ItemCount total</span></div>
+                <div class="kv"><span class="k">Defects</span><span class="v" style="@(viewing.DefectCount > 0 ? "color:#fca5a5;font-weight:700" : "")">@viewing.DefectCount</span></div>
+                <div class="kv"><span class="k">Operator</span><span class="v">@viewing.OperatorName</span></div>
+            </div>
+            <div class="modal-foot">
+                <button class="ghost" @onclick="CloseView">Close</button>
+                <button class="primary" @onclick="() => OpenPdf(viewing)">📄 Open PDF</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* Inline PDF popup — opened via OpenPdf → pdfView.ShowAsync(...) *@
+<PdfViewer @ref="pdfView" />
+
+<style>
+    /* Page head */
+    .page-head { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; gap:14px; flex-wrap:wrap; }
+    .page-head h1 { font-size:24px; font-weight:800; margin:0; letter-spacing:.5px; }
+    .page-head p  { font-size:12px; color:#94a3b8; margin:2px 0 0; }
+    .new-btn { background:#0e9488; color:#0a1726; border:none; padding:10px 18px; border-radius:8px; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit; }
+    .new-btn:hover { background:#14b8a6; }
+
+    /* Filter pills */
+    .filter-row { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+    .filter-pill { display:inline-flex; align-items:center; gap:8px; padding:8px 14px; border-radius:8px; background:transparent; border:1.5px solid; font-size:12px; font-weight:700; letter-spacing:.4px; cursor:pointer; font-family:inherit; }
+    .filter-pill .cnt { background:rgba(255,255,255,.08); padding:1px 7px; border-radius:4px; min-width:18px; text-align:center; }
+    .filter-pill.go        { border-color:#22c55e; color:#22c55e; }
+    .filter-pill.gobut     { border-color:#06b6d4; color:#06b6d4; }
+    .filter-pill.nogo      { border-color:#ef4444; color:#ef4444; }
+    .filter-pill.total     { border-color:#243246; color:#94a3b8; }
+    .filter-pill.on        { background:rgba(255,255,255,.04); }
+    .filter-pill.go.on     { background:rgba(34,197,94,.12); }
+    .filter-pill.gobut.on  { background:rgba(6,182,212,.12); }
+    .filter-pill.nogo.on   { background:rgba(239,68,68,.12); }
+    .filter-pill.total.on  { background:rgba(255,255,255,.06); color:#e5e7eb; }
+
+    /* States */
+    .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:60px 20px; text-align:center; color:#94a3b8; }
+    .state.err { color:#fca5a5; }
+    .big { font-size:42px; margin-bottom:12px; }
+    .spinner { width:30px; height:30px; border:3px solid #1f2a3a; border-top-color:#0e9488; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 12px; }
+    @@keyframes spin { to { transform:rotate(360deg); } }
+    .primary { background:#0e9488; color:#0a1726; border:none; padding:9px 18px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit; }
+
+    /* Table */
+    .table-card { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; overflow:hidden; }
+    .data-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .data-table thead { background:#0d1729; }
+    .data-table th { text-align:left; padding:12px 14px; color:#94a3b8; font-size:10px; letter-spacing:.6px; font-weight:600; border-bottom:1px solid #1f2a3a; white-space:nowrap; }
+    .data-table th.num-col, .data-table td.num-col { text-align:right; }
+    .data-table th.actions-col, .data-table td.actions-col { text-align:right; }
+    .data-table td { padding:12px 14px; border-bottom:1px solid #1a2638; vertical-align:middle; }
+    .data-table tr:last-child td { border-bottom:none; }
+
+    /* Coloured left-edge strip per row, based on result */
+    .data-table tbody tr { position:relative; }
+    .data-table tbody tr.row-go      td:first-child { box-shadow:inset 3px 0 0 #22c55e; }
+    .data-table tbody tr.row-nogo    td:first-child { box-shadow:inset 3px 0 0 #ef4444; }
+    .data-table tbody tr.row-gobut   td:first-child { box-shadow:inset 3px 0 0 #06b6d4; }
+    .data-table tbody tr.row-rejected td:first-child { box-shadow:inset 3px 0 0 #f97316; }
+
+    .m-num  { font-size:13px; font-weight:700; font-family:ui-monospace,monospace; }
+    .m-name { font-size:11px; }
+    .muted  { color:#94a3b8; }
+    .mono   { font-family:ui-monospace,monospace; font-size:12px; }
+    .def-count { color:#fca5a5; font-weight:600; margin-left:4px; }
+
+    .badge { display:inline-block; padding:3px 10px; border-radius:5px; font-size:11px; font-weight:700; letter-spacing:.4px; border:1px solid; white-space:nowrap; }
+    .badge.go      { color:#22c55e; border-color:#22c55e; background:rgba(34,197,94,.08); }
+    .badge.nogo    { color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,.08); }
+    .badge.gobut   { color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,.08); }
+    .badge.rejected{ color:#f97316; border-color:#f97316; background:rgba(249,115,22,.08); }
+
+    .act-btn { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:5px 10px; border-radius:5px; font-size:11px; cursor:pointer; margin-left:4px; font-family:inherit; }
+    .act-btn:hover { background:#1a2638; border-color:#0e9488; }
+    .act-btn.icon { padding:5px 8px; min-width:0; }
+
+    /* Pager */
+    .pager { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; background:#0d1729; border-top:1px solid #1f2a3a; flex-wrap:wrap; }
+    .pager-info { font-size:11px; color:#94a3b8; }
+    .pager-btns { display:flex; align-items:center; gap:4px; }
+    .pg { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:5px 10px; border-radius:6px; font-size:12px; cursor:pointer; min-width:32px; font-family:inherit; }
+    .pg:hover:not(:disabled):not(.dots) { background:#1a2638; border-color:#0e9488; }
+    .pg.on { background:#0e9488; color:#0a1726; border-color:#0e9488; font-weight:700; }
+    .pg:disabled { opacity:.35; cursor:not-allowed; }
+    .pg.dots { border:none; cursor:default; color:#64748b; }
+
+    .foot-note { font-size:11px; color:#64748b; margin-top:14px; }
+
+    /* Modal */
+    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:50; display:flex; align-items:center; justify-content:center; padding:16px; }
+    .modal { background:#111c2e; border:1px solid #1f2a3a; border-radius:12px; width:100%; max-width:440px; }
+    .modal-head { display:flex; justify-content:space-between; align-items:flex-start; padding:16px 18px; border-bottom:1px solid #1f2a3a; }
+    .modal-num { font-size:18px; font-weight:800; font-family:ui-monospace,monospace; }
+    .modal-sub { font-size:12px; color:#94a3b8; }
+    .modal-x { background:transparent; border:none; color:#94a3b8; font-size:18px; cursor:pointer; }
+    .modal-body { padding:14px 18px; }
+    .kv { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #1a2638; font-size:13px; }
+    .kv:last-child { border-bottom:none; }
+    .kv .k { color:#94a3b8; font-size:11px; text-transform:uppercase; letter-spacing:.4px; padding-top:2px; }
+    .modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:12px 18px; border-top:1px solid #1f2a3a; }
+    .ghost { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:8px 16px; border-radius:6px; font-family:inherit; font-size:13px; cursor:pointer; }
+</style>
+
+@code {
+    private const int PAGE_SIZE = 5;
+
+    private List<RecentSubmissionDto>? all;
+    private RecentSubmissionDto?       viewing;
+    private bool   busy        = true;
+    private string error       = "";
+    private int    currentPage = 1;
+    private FilterMode filter  = FilterMode.All;
+
+    private int goCount    => all?.Count(s => s.Status == ChecklistStatus.Go) ?? 0;
+    private int goButCount => all?.Count(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService) ?? 0;
+    private int noGoCount  => all?.Count(s => s.Status == ChecklistStatus.NoGo) ?? 0;
+
+    private List<RecentSubmissionDto> Filtered =>
+        all is null ? new List<RecentSubmissionDto>()
+        : filter switch
+        {
+            FilterMode.Go    => all.Where(s => s.Status == ChecklistStatus.Go).ToList(),
+            FilterMode.GoBut => all.Where(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService).ToList(),
+            FilterMode.NoGo  => all.Where(s => s.Status == ChecklistStatus.NoGo).ToList(),
+            _                => all
+        };
+
+    private int TotalPages =>
+        Filtered.Count == 0 ? 1 : (int)Math.Ceiling(Filtered.Count / (double)PAGE_SIZE);
+
+    private IEnumerable<RecentSubmissionDto> PagedRows =>
+        Filtered.Skip((currentPage - 1) * PAGE_SIZE).Take(PAGE_SIZE);
+
+    private int FirstRowIndex => Filtered.Count == 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+    private int LastRowIndex  => Math.Min(currentPage * PAGE_SIZE, Filtered.Count);
+
+    private IEnumerable<int> VisiblePages
+    {
+        get
+        {
+            var total = TotalPages;
+            const int window = 1;
+            for (int p = 1; p <= total; p++)
+            {
+                if (p == 1 || p == total ||
+                    (p >= currentPage - window && p <= currentPage + window))
+                    yield return p;
+                else if (p == currentPage - window - 1 || p == currentPage + window + 1)
+                    yield return -1;
+            }
+        }
+    }
+
+    private void Goto(int page) => currentPage = Math.Clamp(page, 1, TotalPages);
+
+    private void SetFilter(FilterMode m)
+    {
+        filter      = m;
+        currentPage = 1;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var token = await Auth.GetTokenAsync();
+        if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        busy = true; error = ""; StateHasChanged();
+
+        var email = Auth.CurrentUser?.Email;
+
+        // 1. Cache first.
+        if (!string.IsNullOrEmpty(email))
+        {
+            try
+            {
+                var cached = await Cache.GetRecentSubmissionsAsync(email);
+                if (cached.Count > 0) { all = cached; busy = false; StateHasChanged(); }
+            }
+            catch { }
+        }
+
+        // 2. Refresh from server.
+        try
+        {
+            var fresh = await Api.RecentSubmissionsAsync(200);
+            if (fresh != null)
+            {
+                all         = fresh;
+                currentPage = 1;
+                if (!string.IsNullOrEmpty(email))
+                    try { await Cache.SaveRecentSubmissionsAsync(email, fresh); } catch { }
+            }
+            else if (all == null)
+                error = "Your session has expired. Please sign in again.";
+        }
+        catch (HttpRequestException)
+        {
+            if (all == null || all.Count == 0)
+                error = "You're offline and we don't have any cached submissions yet.";
+        }
+        catch (Exception ex) { if (all == null) error = ex.Message; }
+        finally { busy = false; StateHasChanged(); }
+    }
+
+    private void View(RecentSubmissionDto s) => viewing = s;
+    private void CloseView() => viewing = null;
+
+    /// <summary>Reference to the inline PDF viewer so we can call ShowAsync on it.</summary>
+    private PdfViewer? pdfView;
+
+    /// <summary>Opens the server's checklist PDF in an in-app popup viewer
+    /// (blob URL + WebView2 native PDF reader). Requires a live connection.</summary>
+    private async Task OpenPdf(RecentSubmissionDto s)
+    {
+        if (pdfView is null) return;
+        try
+        {
+            await pdfView.ShowAsync(
+                s.SubmissionId,
+                title: $"{s.MachineNumber} · {s.MachineName}",
+                downloadFileName: $"Checklist_{s.MachineNumber}_{s.SubmissionId}.pdf");
+        }
+        catch (Exception ex)
+        {
+            error = "Couldn't open the PDF: " + ex.Message;
+        }
+    }
+
+    private static string ShiftLabel(Shift s) => s switch
+    {
+        Shift.Day       => "Day (A)",
+        Shift.Afternoon => "Afternoon (B)",
+        Shift.Night     => "Night (C)",
+        _               => "—"
+    };
+
+    private static (string Cls, string Label) StatusBadge(ChecklistStatus s) => s switch
+    {
+        ChecklistStatus.Go                => ("go",       "GO"),
+        ChecklistStatus.GoButRepair24H    => ("gobut",    "GO-BUT 24H"),
+        ChecklistStatus.GoTillNextService => ("gobut",    "GO-BUT 30D"),
+        ChecklistStatus.NoGo              => ("nogo",     "NO-GO"),
+        ChecklistStatus.Rejected          => ("rejected", "REJECTED"),
+        _                                 => ("gobut",    "PENDING")
+    };
+
+    // Single-value accessors so markup can call them without tuple destructuring,
+    // which avoids needing a nested code block inside an outer if/else.
+    private static string StatusBadgeCls(ChecklistStatus s)   => StatusBadge(s).Cls;
+    private static string StatusBadgeLabel(ChecklistStatus s) => StatusBadge(s).Label;
+
+    private enum FilterMode { All, Go, GoBut, NoGo }
+}

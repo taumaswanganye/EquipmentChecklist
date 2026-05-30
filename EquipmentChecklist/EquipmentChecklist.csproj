@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>belfast-checklist-001</UserSecretsId>
     <RootNamespace>EquipmentChecklist</RootNamespace>
+    <DefaultItemExcludes>$(DefaultItemExcludes);EquipmentChecklist.Mobile\**\*</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,7 +28,7 @@
     <PackageReference Include="PdfPig" Version="0.1.9" />
     <!-- Biometric / passwordless (WebAuthn / FIDO2) -->
     <PackageReference Include="Fido2.AspNet" Version="3.0.1" />
-    <PackageReference Include="Fido2"        Version="3.0.1" />
+    <PackageReference Include="Fido2" Version="3.0.1" />
     <!-- Tools -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.0" />
   </ItemGroup>
