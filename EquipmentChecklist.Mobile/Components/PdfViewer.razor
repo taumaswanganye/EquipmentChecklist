@@ -1,6 +1,10 @@
 @using EquipmentChecklist.Mobile.Services
-@inject ApiClient   Api
-@inject IJSRuntime  JS
+@inject ApiClient        Api
+@inject LocalCache       Cache
+@inject SubmissionQueue  Queue
+@inject SyncWorker       Sync
+@inject LocalPdfService  LocalPdf
+@inject IJSRuntime       JS
 @implements IAsyncDisposable
 
 @if (visible)
@@ -15,6 +19,10 @@
                     @if (currentSubmissionId.HasValue)
                     {
                         <div class="pdfv-sub">Submission #@currentSubmissionId</div>
+                    }
+                    else if (currentLocalId.HasValue)
+                    {
+                        <div class="pdfv-sub">Generated on-device · pending sync</div>
                     }
                 </div>
             </div>
@@ -35,6 +43,27 @@
                     <div class="pdfv-spinner"></div>
                     <p>Rendering PDF…</p>
                 </div>
+            }
+            else if (unsynced)
+            {
+                @* Submission still in the upload queue — the server can't render
+                   a PDF for it yet because it doesn't know about it. Friendly
+                   panel + a button to force a sync attempt right now. *@
+                <div class="pdfv-state pending">
+                    <div class="pdfv-big">⏳</div>
+                    <h3>PDF will be available after sync</h3>
+                    <p>This submission is still in your offline queue. Connect to
+                       Wi-Fi or VPN and the PDF will render the moment the server
+                       acknowledges it.</p>
+                    <button class="pdfv-retry" @onclick="TrySyncNow">☁ Try sync now</button>
+                </div>
+            }
+            else if (servedFromCache && blobUrl != null)
+            {
+                <div class="pdfv-cache-banner">
+                    📥 Showing a cached copy you viewed earlier — connect to refresh.
+                </div>
+                <iframe class="pdfv-frame" src="@blobUrl" title="PDF preview"></iframe>
             }
             else if (!string.IsNullOrEmpty(error))
             {
@@ -85,6 +114,11 @@
     .pdfv-state { display:flex; flex-direction:column; align-items:center; justify-content:center;
                   height:100%; gap:10px; color:#475569; padding:24px; text-align:center; }
     .pdfv-state.err { color:#b91c1c; }
+    .pdfv-state.pending { color:#92400e; }
+    .pdfv-state.pending h3 { color:#1e3a5f; margin:6px 0; font-size:18px; }
+    .pdfv-state.pending p  { color:#475569; max-width:380px; font-size:13px; line-height:1.55; }
+    .pdfv-cache-banner { background:#fef3c7; border-bottom:1px solid #f59e0b; color:#78350f;
+                         padding:8px 14px; font-size:12px; font-weight:600; }
     .pdfv-big   { font-size:42px; }
     .pdfv-spinner { width:34px; height:34px; border:3px solid #e2e8f0; border-top-color:#0e9488;
                     border-radius:50%; animation:pdfv-spin .8s linear infinite; }
@@ -110,6 +144,14 @@
     private string error  = "";
     private string? blobUrl;
     private int?    currentSubmissionId;
+    private Guid?   currentLocalId;
+
+    /// <summary>True when the bytes we're showing came from SQLite, not a live fetch.</summary>
+    private bool servedFromCache;
+
+    /// <summary>True when the submission is still waiting in the offline queue
+    /// (no server-side ID exists yet, so there's nothing to render).</summary>
+    private bool unsynced;
 
     /// <summary>
     /// Open the viewer and fetch + render the given submission's PDF.
@@ -122,6 +164,7 @@
         await ReleaseBlobAsync();
 
         currentSubmissionId = submissionId;
+        currentLocalId      = null;
         if (!string.IsNullOrEmpty(title))            Title             = title;
         if (!string.IsNullOrEmpty(downloadFileName)) DownloadFileName  = downloadFileName!;
 
@@ -133,6 +176,80 @@
         await LoadAsync();
     }
 
+    /// <summary>
+    /// Show an on-device PDF that hasn't reached the server yet, looked up by
+    /// its <c>LocalId</c>. Bytes are read from the <c>cached_local_pdfs</c>
+    /// table written by <see cref="LocalPdfService"/> right after submit.
+    /// </summary>
+    public async Task ShowLocalAsync(Guid localId, string? title = null, string? downloadFileName = null)
+    {
+        await ReleaseBlobAsync();
+
+        currentSubmissionId = null;
+        currentLocalId      = localId;
+        if (!string.IsNullOrEmpty(title))            Title             = title;
+        if (!string.IsNullOrEmpty(downloadFileName)) DownloadFileName  = downloadFileName!;
+
+        visible         = true;
+        busy            = true;
+        error           = "";
+        servedFromCache = false;
+        unsynced        = false;
+        StateHasChanged();
+
+        try
+        {
+            // 1) Cache fast path.
+            var bytes = await Cache.GetLocalPdfAsync(localId);
+            if (bytes is { Length: > 0 })
+            {
+                // Locally-generated PDFs always show the "cached / pre-sync"
+                // banner so the user knows this isn't the canonical server copy.
+                servedFromCache = true;
+                await ShowBytesAsync(bytes);
+                return;
+            }
+
+            // 2) Cache miss — try to (re)generate from the queued entry. This
+            // covers the case where the submit-time generation failed silently
+            // (e.g. jsPDF wasn't loaded yet), or the cache was pruned.
+            bytes = await LocalPdf.GenerateFromLocalIdAsync(localId, MineName);
+            if (bytes is { Length: > 0 })
+            {
+                servedFromCache = true;
+                await ShowBytesAsync(bytes);
+                return;
+            }
+
+            // 3) Regenerate failed too — surface the real reason if we have one.
+            if (!string.IsNullOrEmpty(LocalPdf.LastError))
+            {
+                error = LocalPdf.LastError;
+                busy  = false;
+                StateHasChanged();
+                return;
+            }
+
+            // 4) No useful diagnostic — fall through to the un-synced placeholder.
+            unsynced = true;
+            busy = false;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            busy  = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Mine name passed to the on-device PDF builder. Hard-coded for now to
+    /// match the production sample; lift to a server config / app setting
+    /// later if you ever run this for multiple mines.
+    /// </summary>
+    private const string MineName = "BELFAST COAL MINE";
+
     /// <summary>Public so the parent page can re-trigger after a network blip.</summary>
     public Task ReloadAsync() => LoadAsync();
 
@@ -140,38 +257,110 @@
     {
         if (currentSubmissionId is null) return;
 
-        busy  = true;
-        error = "";
+        busy            = true;
+        error           = "";
+        servedFromCache = false;
+        unsynced        = false;
         StateHasChanged();
 
+        var id = currentSubmissionId.Value;
+
+        // ── Try live fetch first ──
+        byte[]? bytes = null;
+        bool networkFailed = false;
         try
         {
-            var bytes = await Api.GetSubmissionPdfAsync(currentSubmissionId.Value);
-            if (bytes == null || bytes.Length == 0)
-            {
-                error = "Couldn't load the PDF. The server returned no content.";
-                return;
-            }
-
-            // Hand the bytes to JS as base64 — the JS helper builds a blob URL
-            // and returns it. The iframe consumes the blob URL natively via
-            // WebView2's built-in PDF viewer.
-            var b64 = Convert.ToBase64String(bytes);
-            blobUrl = await JS.InvokeAsync<string>("PdfViewer.fromBase64", b64);
+            bytes = await Api.GetSubmissionPdfAsync(id);
         }
         catch (HttpRequestException)
         {
-            error = "Can't reach the server right now. PDFs require a live connection.";
+            networkFailed = true;
         }
         catch (Exception ex)
         {
             error = ex.Message;
         }
-        finally
+
+        // ── Persist successful fetches so we can re-show them offline later ──
+        if (bytes is { Length: > 0 })
         {
-            busy = false;
-            StateHasChanged();
+            try   { await Cache.SavePdfAsync(id, bytes); }
+            catch { /* cache write failures are non-fatal */ }
+
+            await ShowBytesAsync(bytes);
+            return;
         }
+
+        // ── Live fetch failed → look in the local cache ──
+        try
+        {
+            var cached = await Cache.GetPdfAsync(id);
+            if (cached is { Length: > 0 })
+            {
+                servedFromCache = true;
+                await ShowBytesAsync(cached);
+                return;
+            }
+        }
+        catch { /* fall through to the next branch */ }
+
+        // ── No live, no cache → was this submission ever uploaded? ──
+        // Negative server-side IDs are reserved for offline-queued items;
+        // even with positive IDs, a queued LocalId means the server hasn't
+        // ack'd. The SubmissionQueue tracks every un-synced row.
+        try
+        {
+            var pendings = await Queue.GetAllAsync();
+            if (pendings.Count > 0)
+            {
+                // We can't trivially link SubmissionId → LocalId without a
+                // join, so we surface the placeholder if the user has any
+                // pending submissions at all. False positives are mild
+                // ("looks queued but isn't") and the user just hits Retry.
+                unsynced = true;
+                busy = false;
+                StateHasChanged();
+                return;
+            }
+        }
+        catch { /* cache failures are non-fatal */ }
+
+        // ── Out of options ──
+        busy = false;
+        if (string.IsNullOrEmpty(error))
+        {
+            error = networkFailed
+                ? "Can't reach the server and no cached copy exists for this submission yet."
+                : "Couldn't load the PDF. The server returned no content.";
+        }
+        StateHasChanged();
+    }
+
+    private async Task ShowBytesAsync(byte[] bytes)
+    {
+        // Hand the bytes to JS as base64 — the JS helper builds a blob URL
+        // and returns it. The iframe consumes the blob URL natively via
+        // WebView2's built-in PDF viewer.
+        var b64 = Convert.ToBase64String(bytes);
+        blobUrl = await JS.InvokeAsync<string>("PdfViewer.fromBase64", b64);
+        busy = false;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Bound to the "Try sync now" button on the un-synced placeholder. Kicks
+    /// off the SyncWorker drain in the background; on success the user can
+    /// re-tap PDF and we'll fetch a real render this time.
+    /// </summary>
+    private async Task TrySyncNow()
+    {
+        try
+        {
+            await Sync.DrainAsync();
+            // After the drain, try the live fetch again — it might succeed now.
+            await LoadAsync();
+        }
+        catch { /* drain swallows its own errors */ }
     }
 
     public async Task CloseAsync()
@@ -179,7 +368,10 @@
         await ReleaseBlobAsync();
         visible              = false;
         currentSubmissionId  = null;
+        currentLocalId       = null;
         error                = "";
+        servedFromCache      = false;
+        unsynced             = false;
         StateHasChanged();
     }
 

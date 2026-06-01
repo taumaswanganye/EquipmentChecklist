@@ -2,11 +2,15 @@
 @using EquipmentChecklist.DTOs
 @using EquipmentChecklist.Models
 @using EquipmentChecklist.Mobile.Services
+@using Plugin.Maui.Audio
 @inject ApiClient        Api
 @inject AuthService      Auth
 @inject LocalCache       Cache
 @inject SubmissionQueue  Queue
 @inject SyncWorker       Sync
+@inject ApiHealth        Health
+@inject LocalPdfService  LocalPdf
+@inject IAudioManager    AudioMgr
 @inject NavigationManager Nav
 @inject IJSRuntime       JS
 
@@ -133,7 +137,52 @@
                         <div class="defect-note">
                             <span class="pencil">✎</span>
                             <input type="text" @bind="item.Notes" placeholder="Describe the defect…" />
+
+                            @* Camera button — captures a photo of the defect.
+                               Stamps onto item.PhotoBase64 + PhotoMimeType so
+                               the submit pipeline ships them with the row. *@
+                            <button type="button" class="cam-btn @(item.HasPhoto ? "on" : "")"
+                                    title="@(item.HasPhoto ? "Replace photo" : "Take a photo")"
+                                    @onclick="() => CapturePhotoAsync(item)">
+                                @(item.HasPhoto ? "📷✓" : "📷")
+                            </button>
+
+                            @* Voice memo button — record / stop / replace.
+                               State machine on item.AudioState drives the
+                               icon + tooltip; busy state disables it. *@
+                            <button type="button"
+                                    class="mic-btn @(item.IsRecording ? "rec" : (item.HasAudio ? "on" : ""))"
+                                    disabled="@audioBusy"
+                                    title="@AudioTooltip(item)"
+                                    @onclick="() => ToggleRecordingAsync(item)">
+                                @(item.IsRecording ? "⏺" : (item.HasAudio ? "🎤✓" : "🎤"))
+                            </button>
                         </div>
+
+                        @if (item.HasPhoto)
+                        {
+                            <div class="defect-photo">
+                                <img src="@item.PhotoDataUrl" alt="defect photo" />
+                                <button type="button" class="photo-x" title="Remove photo"
+                                        @onclick="() => RemovePhoto(item)">✕</button>
+                            </div>
+                        }
+
+                        @if (item.HasAudio)
+                        {
+                            <div class="defect-audio">
+                                <audio controls src="@item.AudioDataUrl"></audio>
+                                <button type="button" class="audio-x" title="Remove voice memo"
+                                        @onclick="() => RemoveAudio(item)">✕</button>
+                            </div>
+                        }
+                        else if (item.IsRecording)
+                        {
+                            <div class="defect-audio recording">
+                                <span class="rec-dot"></span>
+                                <span class="rec-label">Recording… tap 🎤 again to stop</span>
+                            </div>
+                        }
                     }
                 </div>
             }
@@ -175,13 +224,37 @@
         }
 
         <div class="submit-bar">
-            <button class="primary submit" @onclick="DoSubmit" disabled="@busy">
-                @(busy ? "Submitting…" : "Submit checklist")
+            <button class="primary submit" @onclick="DoSubmit" disabled="@submitting">
+                @(submitting ? "Submitting…" : "Submit checklist")
             </button>
         </div>
     }
 
 </div>
+
+@* ────────────── SUBMIT PROGRESS OVERLAY ────────────── *@
+@if (submitting)
+{
+    <div class="submit-overlay">
+        <div class="submit-card">
+            <div class="submit-spinner"></div>
+            <h2>@submitTitle</h2>
+            <p class="submit-step">@submitStep</p>
+            @if (submitStages is { Count: > 0 })
+            {
+                <ul class="submit-stages">
+                    @foreach (var s in submitStages)
+                    {
+                        <li class="@s.Cls">
+                            <span class="bullet">@s.Glyph</span>
+                            <span class="label">@s.Label</span>
+                        </li>
+                    }
+                </ul>
+            }
+        </div>
+    </div>
+}
 
 <style>
     .chk-shell { min-height:100vh; background:#0b1726; color:#e5e7eb; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:18px 22px 30px; }
@@ -277,6 +350,56 @@
     .defect-note input { flex:1; background:transparent; border:none; color:#e5e7eb; padding:4px 0; font-size:12px; font-family:inherit; }
     .defect-note input:focus { outline:none; }
 
+    /* Per-defect camera button + photo preview */
+    .cam-btn  { background:transparent; border:1px solid #243246; color:#cbd5e1;
+                padding:4px 9px; border-radius:6px; font-size:13px; cursor:pointer;
+                font-family:inherit; flex-shrink:0; min-width:44px; }
+    .cam-btn:hover { background:#111c2e; border-color:#0e9488; }
+    .cam-btn.on { color:#86efac; border-color:#166534; background:rgba(34,197,94,.08); }
+
+    .defect-photo { grid-column:1/-1; margin-top:6px; position:relative;
+                    display:inline-block; max-width:160px; }
+    .defect-photo img { width:100%; max-height:120px; object-fit:cover;
+                        border-radius:6px; border:1px solid #243246; display:block; }
+    .photo-x  { position:absolute; top:4px; right:4px; width:22px; height:22px;
+                border-radius:50%; background:rgba(2,6,23,.75); color:#fff;
+                border:none; cursor:pointer; font-size:11px; line-height:1;
+                display:flex; align-items:center; justify-content:center;
+                font-family:inherit; }
+    .photo-x:hover { background:#dc2626; }
+
+    /* Voice-memo button (same chrome as camera, with red pulsing variant
+       while recording so the operator can't lose track of the state). */
+    .mic-btn  { background:transparent; border:1px solid #243246; color:#cbd5e1;
+                padding:4px 9px; border-radius:6px; font-size:13px; cursor:pointer;
+                font-family:inherit; flex-shrink:0; min-width:44px; }
+    .mic-btn:hover:not(:disabled) { background:#111c2e; border-color:#0e9488; }
+    .mic-btn:disabled { opacity:.5; cursor:not-allowed; }
+    .mic-btn.on  { color:#86efac; border-color:#166534; background:rgba(34,197,94,.08); }
+    .mic-btn.rec { color:#fff; border-color:#dc2626; background:#dc2626;
+                   animation:mic-pulse 1.1s ease-in-out infinite; }
+    @@keyframes mic-pulse {
+        0%, 100% { box-shadow:0 0 0 0 rgba(220,38,38,.7); }
+        50%      { box-shadow:0 0 0 6px rgba(220,38,38,0); }
+    }
+
+    /* Inline audio player + "recording…" pill */
+    .defect-audio { grid-column:1/-1; margin-top:6px; display:flex; align-items:center;
+                    gap:8px; position:relative; }
+    .defect-audio audio { flex:1; max-width:280px; height:34px; }
+    .audio-x  { width:22px; height:22px; border-radius:50%; background:#1a2638;
+                color:#cbd5e1; border:1px solid #243246; cursor:pointer;
+                font-size:11px; line-height:1; display:flex; align-items:center;
+                justify-content:center; font-family:inherit; flex-shrink:0; }
+    .audio-x:hover { background:#dc2626; color:#fff; border-color:#dc2626; }
+
+    .defect-audio.recording { background:rgba(220,38,38,.08); border:1px solid #7f1d1d;
+                              border-radius:6px; padding:6px 10px; }
+    .rec-dot   { display:inline-block; width:8px; height:8px; border-radius:50%;
+                 background:#dc2626; animation:rec-blink 1s ease-in-out infinite; }
+    @@keyframes rec-blink { 50% { opacity:.25; } }
+    .rec-label { font-size:12px; color:#fca5a5; }
+
     /* Cards below */
     .card { background:#0d1729; border:1px solid #1f2a3a; border-radius:8px; padding:14px 16px; margin-bottom:14px; }
     .card h3 { margin:0 0 12px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; align-items:center; color:#94a3b8; text-transform:uppercase; letter-spacing:.5px; }
@@ -300,6 +423,38 @@
     .primary { background:#0e9488; color:#0a1726; border:none; padding:11px 22px; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; font-family:inherit; }
     .primary.submit { width:100%; padding:14px; font-size:15px; }
     .primary:disabled { opacity:.55; cursor:not-allowed; }
+
+    /* ── Submit progress overlay ───────────────────────────────────────── */
+    .submit-overlay { position:fixed; inset:0; background:rgba(2,6,23,.82); z-index:120;
+                      display:flex; align-items:center; justify-content:center; padding:18px;
+                      backdrop-filter:blur(2px); }
+    .submit-card    { background:#0d1729; border:1px solid #243246; border-radius:14px;
+                      padding:30px 28px 24px; width:100%; max-width:360px;
+                      box-shadow:0 24px 60px rgba(0,0,0,.55); text-align:center;
+                      animation:submitPop .25s ease-out; }
+    @@keyframes submitPop {
+        from { transform:scale(.92); opacity:0; }
+        to   { transform:scale(1);   opacity:1; }
+    }
+    .submit-spinner { width:46px; height:46px; border:4px solid #1f2a3a;
+                      border-top-color:#0e9488; border-radius:50%;
+                      animation:spin .9s linear infinite; margin:0 auto 14px; }
+    .submit-card h2 { font-size:17px; font-weight:800; margin:0 0 6px; color:#e5e7eb;
+                      letter-spacing:.3px; }
+    .submit-step    { font-size:12px; color:#94a3b8; margin:0 0 14px; min-height:16px; }
+
+    .submit-stages  { list-style:none; padding:0; margin:14px 0 0; text-align:left;
+                      border-top:1px solid #1f2a3a; padding-top:14px; }
+    .submit-stages li { display:flex; align-items:center; gap:10px; padding:5px 0;
+                        font-size:12px; color:#475569; transition:color .15s; }
+    .submit-stages li .bullet { width:18px; text-align:center; font-size:13px;
+                                color:#475569; }
+    .submit-stages li.done   { color:#86efac; }
+    .submit-stages li.done   .bullet { color:#22c55e; }
+    .submit-stages li.active { color:#7dd3fc; font-weight:600; }
+    .submit-stages li.active .bullet { color:#0e9488; }
+    .submit-stages li.error  { color:#fca5a5; }
+    .submit-stages li.error  .bullet { color:#ef4444; }
 </style>
 
 @code {
@@ -314,6 +469,59 @@
     private string?           machineSubtitle;
     private bool              busy  = true;
     private string            error = "";
+
+    // ── Submit progress state ────────────────────────────────────────────────
+    /// <summary>True while DoSubmit is running. Drives the overlay + disables the button.</summary>
+    private bool   submitting;
+    private string submitTitle = "Submitting checklist…";
+    private string submitStep  = "";
+
+    /// <summary>
+    /// Per-step state for the overlay's stage list. We use this rather than
+    /// magic-string switches in markup so the visual progress is unambiguous —
+    /// every step is either pending (◯), active (●), done (✓), or errored (✕).
+    /// </summary>
+    private List<SubmitStage> submitStages = new();
+
+    private record SubmitStage(string Key, string Label)
+    {
+        public string Status { get; set; } = "pending";  // pending | active | done | error
+        public string Cls    => Status;
+        public string Glyph  => Status switch
+        {
+            "done"   => "✓",
+            "active" => "●",
+            "error"  => "✕",
+            _        => "○"
+        };
+    }
+
+    /// <summary>
+    /// Advance a stage by key. <c>"done"</c> on the previous step + <c>"active"</c>
+    /// on the new one + a refreshed sub-line. Always followed by
+    /// <c>StateHasChanged()</c> so the overlay reflects the change immediately.
+    /// </summary>
+    private void SetStage(string key, string status, string? subline = null)
+    {
+        var stage = submitStages.FirstOrDefault(s => s.Key == key);
+        if (stage != null) stage.Status = status;
+        if (subline != null) submitStep = subline;
+        StateHasChanged();
+    }
+
+    private void InitSubmitStages(bool willGoOnline)
+    {
+        submitStages = new List<SubmitStage>
+        {
+            new("validate",  "Checking inputs"),
+            new(willGoOnline ? "upload" : "queue",
+                              willGoOnline ? "Uploading to server" : "Saving to offline queue"),
+            new("pdf",       "Generating PDF receipt"),
+            new("done",      "All set")
+        };
+        submitTitle = "Submitting checklist…";
+        submitStep  = "Starting…";
+    }
 
     private int CriticalDefects =>
         items.Count(i => i.Template.IsNoGoItem && i.Status == ItemStatus.Defect);
@@ -394,7 +602,174 @@
     private void SetStatus(ItemEntry item, ItemStatus status)
     {
         item.Status = status;
-        if (status == ItemStatus.InOrder) item.Notes = null;
+        if (status == ItemStatus.InOrder)
+        {
+            // Going green wipes any defect-only state — text note, photo,
+            // AND audio. Also stops an in-flight recording so the recorder
+            // doesn't leak. Avoids "ghost" data hanging around if the
+            // operator toggles back and forth before submitting.
+            item.Notes         = null;
+            item.PhotoBase64   = null;
+            item.PhotoMimeType = null;
+            if (item.Recorder is not null)
+            {
+                _ = item.Recorder.StopAsync();
+                item.Recorder = null;
+            }
+            item.AudioBase64   = null;
+            item.AudioMimeType = null;
+        }
+    }
+
+    /// <summary>
+    /// Open the device camera (MAUI MediaPicker) and stamp the resulting
+    /// bytes onto the item as base64. Best-effort: a permission denial or
+    /// missing-camera silently no-ops so the operator can still type a note.
+    /// </summary>
+    private async Task CapturePhotoAsync(ItemEntry item)
+    {
+        try
+        {
+            if (!MediaPicker.Default.IsCaptureSupported) return;
+
+            var photo = await MediaPicker.Default.CapturePhotoAsync();
+            if (photo is null) return;  // user cancelled
+
+            // Read the bytes once into memory. Phone cameras default to
+            // 2–4 MB JPEGs — fine for now, will add a resize pass when we
+            // see network pain in the field.
+            using var src = await photo.OpenReadAsync();
+            using var ms  = new MemoryStream();
+            await src.CopyToAsync(ms);
+            var bytes = ms.ToArray();
+            if (bytes.Length == 0) return;
+
+            item.PhotoBase64   = Convert.ToBase64String(bytes);
+            item.PhotoMimeType = photo.ContentType ?? "image/jpeg";
+            StateHasChanged();
+        }
+        catch (FeatureNotSupportedException)
+        {
+            // No camera on this device — UI just stays unchanged.
+        }
+        catch (PermissionException)
+        {
+            // User denied the camera permission. Same — silent no-op so they
+            // can still submit by typing the defect note.
+        }
+        catch (Exception ex)
+        {
+            // Defensive: surface any other failure in the inline error strip
+            // so the operator knows the photo didn't attach but the rest of
+            // the submission still works.
+            error = "Couldn't take the photo: " + ex.Message;
+            StateHasChanged();
+        }
+    }
+
+    private void RemovePhoto(ItemEntry item)
+    {
+        item.PhotoBase64   = null;
+        item.PhotoMimeType = null;
+    }
+
+    // ── Voice memo recording ─────────────────────────────────────────────────
+
+    /// <summary>Global guard so concurrent recordings can't start across rows.
+    /// Plugin.Maui.Audio only supports one recorder at a time on Android.</summary>
+    private bool audioBusy;
+
+    private string AudioTooltip(ItemEntry item) =>
+        item.IsRecording  ? "Stop recording"
+        : item.HasAudio   ? "Re-record voice memo"
+        :                   "Record a voice memo";
+
+    /// <summary>
+    /// Tap-to-toggle recorder. First tap on a defect row asks for the mic
+    /// permission, opens a recorder, starts capturing. Second tap stops,
+    /// drains the resulting stream into base64, and stamps it onto the item.
+    /// Errors (permission denied, no microphone, plugin failure) leave the
+    /// item in a clean idle state and surface a friendly message.
+    /// </summary>
+    private async Task ToggleRecordingAsync(ItemEntry item)
+    {
+        if (audioBusy) return;
+        audioBusy = true;
+        try
+        {
+            // ── Stop path ──
+            if (item.Recorder is not null)
+            {
+                IAudioSource? src = null;
+                try   { src = await item.Recorder.StopAsync(); }
+                catch (Exception ex) { error = "Couldn't stop the recording: " + ex.Message; }
+                item.Recorder = null;
+
+                if (src is null) { StateHasChanged(); return; }
+
+                try
+                {
+                    using var stream = src.GetAudioStream();
+                    using var ms     = new MemoryStream();
+                    await stream.CopyToAsync(ms);
+                    var bytes = ms.ToArray();
+                    if (bytes.Length == 0)
+                    {
+                        error = "Recording was empty. Try again.";
+                    }
+                    else
+                    {
+                        item.AudioBase64   = Convert.ToBase64String(bytes);
+                        // Plugin.Maui.Audio default container differs by
+                        // platform. Browser HTML5 <audio> handles both with
+                        // the right MIME — m4a on mobile, wav on Windows.
+                        item.AudioMimeType =
+#if WINDOWS
+                            "audio/wav";
+#else
+                            "audio/m4a";
+#endif
+                    }
+                }
+                catch (Exception ex)
+                {
+                    error = "Couldn't save the recording: " + ex.Message;
+                }
+                return;
+            }
+
+            // ── Start path ──
+            // Ask Android for mic permission. iOS / Windows will also prompt
+            // the first time the recorder accesses the device.
+            var status = await Permissions.RequestAsync<Permissions.Microphone>();
+            if (status != PermissionStatus.Granted)
+            {
+                error = "Microphone permission was denied — you can still type the defect note.";
+                return;
+            }
+
+            try
+            {
+                var rec = AudioMgr.CreateRecorder();
+                await rec.StartAsync();
+                item.Recorder = rec;
+            }
+            catch (Exception ex)
+            {
+                error = "Couldn't start recording: " + ex.Message;
+            }
+        }
+        finally
+        {
+            audioBusy = false;
+            StateHasChanged();
+        }
+    }
+
+    private void RemoveAudio(ItemEntry item)
+    {
+        item.AudioBase64   = null;
+        item.AudioMimeType = null;
     }
 
     private async Task ClearSig() => await JS.InvokeVoidAsync("SigPad.clear", SIG_ID);
@@ -403,9 +778,10 @@
 
     private async Task DoSubmit()
     {
-        if (busy) return;
+        if (submitting) return;
         error = "";
 
+        // ── Stage 0 · pre-flight validation (still inline, instant) ──
         if (form.KmOrHourMeter is null or <= 0)  { error = "Enter the KM / Hour meter reading."; return; }
         if (items.Any(i => i.Status is null))    { error = "Mark every item as either In Order or Defect."; return; }
         if (!form.FitnessDeclarationSigned)      { error = "Tick the fitness declaration before submitting."; return; }
@@ -417,64 +793,176 @@
         if (items.Any(i => i.Status == ItemStatus.Defect && string.IsNullOrWhiteSpace(i.Notes)))
         { error = "Describe every defect before submitting."; return; }
 
-        busy = true; StateHasChanged();
-        try
-        {
-            var req = new SyncSubmissionRequest
-            {
-                LocalId                  = Guid.NewGuid(),
-                MachineId                = MachineId,
-                Shift                    = form.Shift,
-                KmOrHourMeter            = form.KmOrHourMeter,
-                OperatorRemarks          = string.IsNullOrWhiteSpace(form.OperatorRemarks) ? null : form.OperatorRemarks,
-                FitnessDeclarationSigned = form.FitnessDeclarationSigned,
-                OperatorSignature        = sig,
-                SubmittedAt              = DateTime.UtcNow,
-                Items = items.Select(i => new SubmissionItemDto
-                {
-                    TemplateItemId = i.Template.Id,
-                    Status         = i.Status!.Value,
-                    Notes          = i.Notes
-                }).ToList()
-            };
+        // ── Show the overlay and start the staged flow ──
+        //
+        // "Online" means BOTH device-has-internet AND the API answered the
+        // most recent ping. Pure Wi-Fi state isn't enough — we've all seen
+        // the spinner stuck at "Uploading…" because the device thought it
+        // had signal but the server was unreachable (VPN dropped, captive
+        // portal, server down). ApiHealth.IsOnline gives the honest answer.
+        var goingOnline = Health.IsOnline;
+        submitting = true;
+        InitSubmitStages(goingOnline);
+        StateHasChanged();
+        await Task.Yield();  // let Blazor paint the overlay before we block on I/O
 
-            var result = await Api.SubmitAsync(req);
-            if (result is null)
+        var req = new SyncSubmissionRequest
+        {
+            LocalId                  = Guid.NewGuid(),
+            MachineId                = MachineId,
+            Shift                    = form.Shift,
+            KmOrHourMeter            = form.KmOrHourMeter,
+            OperatorRemarks          = string.IsNullOrWhiteSpace(form.OperatorRemarks) ? null : form.OperatorRemarks,
+            FitnessDeclarationSigned = form.FitnessDeclarationSigned,
+            OperatorSignature        = sig,
+            SubmittedAt              = DateTime.UtcNow,
+            Items = items.Select(i => new SubmissionItemDto
             {
-                error = "Submission failed. Check connectivity and try again.";
-                return;
-            }
-            Nav.NavigateTo("/dashboard?ok=1");
-        }
-        catch (HttpRequestException)
+                TemplateItemId = i.Template.Id,
+                Status         = i.Status!.Value,
+                Notes          = i.Notes,
+                PhotoBase64    = i.PhotoBase64,
+                PhotoMimeType  = i.PhotoMimeType,
+                AudioBase64    = i.AudioBase64,
+                AudioMimeType  = i.AudioMimeType
+            }).ToList()
+        };
+
+        // ── Stage 1 · validate ──
+        SetStage("validate", "active", "Verifying every item is marked…");
+        await Task.Delay(150);  // tiny pause so the user can see the stage tick over
+        SetStage("validate", "done");
+
+        // ── Stage 2 · upload or queue ──
+        //
+        // The rule: NEVER fail a submission outright. If the server takes
+        // it → great. If anything goes wrong (no network, server down,
+        // timeout, server returned non-2xx, exception) → fall through to
+        // the offline queue. The SyncWorker will replay it the moment the
+        // API is reachable again. The mine has no signal underground;
+        // surfacing a generic "Submission failed" there means losing the
+        // operator's work.
+        var uploadKey = goingOnline ? "upload" : "queue";
+        SetStage(uploadKey, "active",
+            goingOnline ? "Sending to the server…" : "Storing locally so it syncs later…");
+
+        bool serverAccepted = false;
+        if (goingOnline)
         {
             try
             {
-                var req = new SyncSubmissionRequest
+                var result = await Api.SubmitAsync(req);
+                if (result != null)
                 {
-                    LocalId                  = Guid.NewGuid(),
-                    MachineId                = MachineId,
-                    Shift                    = form.Shift,
-                    KmOrHourMeter            = form.KmOrHourMeter,
-                    OperatorRemarks          = string.IsNullOrWhiteSpace(form.OperatorRemarks) ? null : form.OperatorRemarks,
-                    FitnessDeclarationSigned = form.FitnessDeclarationSigned,
-                    OperatorSignature        = sig,
-                    SubmittedAt              = DateTime.UtcNow,
-                    Items = items.Select(i => new SubmissionItemDto
-                    {
-                        TemplateItemId = i.Template.Id,
-                        Status         = i.Status!.Value,
-                        Notes          = i.Notes
-                    }).ToList()
-                };
+                    serverAccepted = true;
+                    SetStage(uploadKey, "done", "Server confirmed.");
+                }
+                // result == null → server returned non-2xx. Fall through to
+                // queue so the operator's work isn't lost.
+            }
+            catch (HttpRequestException) { /* network died mid-call → queue */ }
+            catch (TaskCanceledException) { /* HttpClient timeout → queue */ }
+            catch (Exception ex)
+            {
+                // Any other failure (serialization, etc.) — still try to queue
+                // before we error out. Capture the message in case the queue
+                // fallback also fails so the user gets the original cause.
+                error = "Submit failed, attempting offline queue: " + ex.Message;
+            }
+        }
+
+        if (!serverAccepted)
+        {
+            try
+            {
                 await Queue.EnqueueAsync(req);
                 _ = Task.Run(Sync.DrainAsync);
-                Nav.NavigateTo("/dashboard?queued=1");
+
+                // Relabel the stage so the user understands what happened —
+                // they tapped Submit expecting an upload, and we want them
+                // to see clearly that the work is saved (just not on the
+                // server yet).
+                var sw = submitStages.FirstOrDefault(s => s.Key == uploadKey);
+                if (sw != null)
+                {
+                    submitStages[submitStages.IndexOf(sw)] =
+                        new SubmitStage(uploadKey, "Saved to offline queue") { Status = "done" };
+                }
+                submitStep = goingOnline
+                    ? "Server unreachable — will sync when the API is back."
+                    : "Saved offline — will sync when signal returns.";
+                StateHasChanged();
             }
-            catch (Exception qex) { error = "You're offline and we couldn't queue this locally either: " + qex.Message; }
+            catch (Exception qex)
+            {
+                // Truly catastrophic: even SQLite write failed. This is the
+                // ONLY place where we surface an error and abort the flow.
+                SetStage(uploadKey, "error", qex.Message);
+                error = "Couldn't save locally either: " + qex.Message;
+                submitting = false;
+                StateHasChanged();
+                return;
+            }
         }
-        catch (Exception ex) { error = "Submit failed: " + ex.Message; }
-        finally { busy = false; StateHasChanged(); }
+
+        // ── Stage 3 · on-device PDF ──
+        SetStage("pdf", "active", "Rendering on-device PDF receipt…");
+        try
+        {
+            await TryGenerateLocalPdfAsync(req);
+            SetStage("pdf", "done");
+        }
+        catch
+        {
+            // Already swallowed inside TryGenerateLocalPdfAsync, but keep the
+            // overlay honest if anything bubbles out.
+            SetStage("pdf", "error", "PDF receipt couldn't be generated (the submission is still saved).");
+        }
+
+        // ── Stage 4 · done · short pause so the green ticks are visible ──
+        SetStage("done", "done", serverAccepted
+            ? "All done — heading to dashboard."
+            : "Queued. Heading to dashboard.");
+        await Task.Delay(400);
+
+        submitting = false;
+        // Reflect what actually happened, not what we expected. A
+        // submission can start "going online" but end up queued if the
+        // server flaked mid-call — the URL hint should be honest.
+        Nav.NavigateTo(serverAccepted ? "/dashboard?ok=1" : "/dashboard?queued=1");
+    }
+
+    /// <summary>
+    /// Best-effort on-device PDF render. Looks up the machine in the cache
+    /// (we know it's there because we got here from /machines/{id}), then
+    /// calls jsPDF via <see cref="LocalPdfService"/>. Failures are swallowed
+    /// — the user shouldn't see a submission "fail" because the local PDF
+    /// pipeline hiccuped.
+    /// </summary>
+    private async Task TryGenerateLocalPdfAsync(SyncSubmissionRequest req)
+    {
+        try
+        {
+            if (template is null) return;
+
+            var machine = (await Cache.GetMachinesAsync())
+                .FirstOrDefault(m => m.Id == MachineId);
+            if (machine is null) return;
+
+            var user = Auth.CurrentUser;
+            if (user is null) return;
+
+            // Mine name is currently hard-coded to match the production sample.
+            // If we ever expose it as a server config, swap this for a fetch.
+            const string mineName = "BELFAST COAL MINE";
+
+            await LocalPdf.GenerateAndCacheAsync(req, template, machine, user, mineName);
+        }
+        catch
+        {
+            // Intentional swallow — local PDF generation is a "nice to have"
+            // and must not block the submission flow.
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -513,5 +1001,33 @@
         public SyncTemplateItemDto Template { get; set; } = null!;
         public ItemStatus?         Status   { get; set; }
         public string?             Notes    { get; set; }
+
+        /// <summary>Base64 of the captured photo (no <c>data:</c> prefix).
+        /// Set by <c>CapturePhotoAsync</c>, cleared by <c>RemovePhoto</c>.</summary>
+        public string?             PhotoBase64   { get; set; }
+        public string?             PhotoMimeType { get; set; }
+
+        public bool   HasPhoto    => !string.IsNullOrEmpty(PhotoBase64);
+        /// <summary>Convenience for binding directly to an &lt;img src&gt;.</summary>
+        public string PhotoDataUrl =>
+            HasPhoto
+                ? $"data:{PhotoMimeType ?? "image/jpeg"};base64,{PhotoBase64}"
+                : "";
+
+        // ── Voice memo state ──────────────────────────────────────────────────
+        /// <summary>Base64 of the captured audio (no <c>data:</c> prefix).
+        /// Set when StopRecording succeeds, cleared by RemoveAudio.</summary>
+        public string?         AudioBase64   { get; set; }
+        public string?         AudioMimeType { get; set; }
+        /// <summary>Active recorder when the operator is currently recording.
+        /// Null otherwise. Reset to null after StopAsync regardless of outcome.</summary>
+        public IAudioRecorder? Recorder      { get; set; }
+
+        public bool   IsRecording => Recorder is not null;
+        public bool   HasAudio    => !string.IsNullOrEmpty(AudioBase64);
+        public string AudioDataUrl =>
+            HasAudio
+                ? $"data:{AudioMimeType ?? "audio/m4a"};base64,{AudioBase64}"
+                : "";
     }
 }

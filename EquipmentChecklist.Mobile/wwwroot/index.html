@@ -25,6 +25,12 @@
 
     <script src="js/sigpad.js"></script>
     <script src="js/pdfviewer.js"></script>
+    <!-- jsPDF + autotable: vendored so on-device PDF generation works offline.
+         Download once with the PowerShell snippet in the runbook — do NOT
+         switch to a CDN, the whole point is offline-first. -->
+    <script src="lib/jspdf.umd.min.js"></script>
+    <script src="lib/jspdf.plugin.autotable.min.js"></script>
+    <script src="js/pdfgenerator.js"></script>
     <script src="_framework/blazor.webview.js" autostart="false"></script>
 
 </body>

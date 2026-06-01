@@ -63,6 +63,17 @@ public class SyncController : ControllerBase
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //                            LIVENESS / PING
+    // Cheap, anonymous endpoint the mobile app hits every ~20s to decide
+    // whether the status-bar pill should read "Online" or "Offline". Returning
+    // anything other than a 2xx (404, 500, timeout) lets the client flip the
+    // pill so users know the API is unreachable even if Wi-Fi is up.
+    // ══════════════════════════════════════════════════════════════════════════
+    [HttpGet("ping")]
+    [AllowAnonymous]
+    public IActionResult Ping() => Ok(new { ok = true, at = DateTime.UtcNow });
+
+    // ══════════════════════════════════════════════════════════════════════════
     //                                LOGIN
     // ══════════════════════════════════════════════════════════════════════════
     [HttpPost("login")]
@@ -573,7 +584,21 @@ public class SyncController : ControllerBase
                     IconPath       = i.TemplateItem.IconPath,
                     IsNoGoItem     = i.TemplateItem.IsNoGoItem,
                     Status         = i.Status,
-                    Notes          = i.Notes
+                    Notes          = i.Notes,
+                    // Defect photo — base64 only if the operator attached one.
+                    // The supervisor/operator UI shows it as a thumbnail next
+                    // to the item; the PDF renderer embeds it inline.
+                    PhotoBase64    = i.PhotoData == null || i.PhotoData.Length == 0
+                                         ? null
+                                         : Convert.ToBase64String(i.PhotoData),
+                    PhotoMimeType  = i.PhotoMimeType,
+                    // Same shape for the voice memo — base64 only if recorded.
+                    // The UI renders an HTML5 <audio controls> using a
+                    // data: URL built from this string.
+                    AudioBase64    = i.AudioData == null || i.AudioData.Length == 0
+                                         ? null
+                                         : Convert.ToBase64String(i.AudioData),
+                    AudioMimeType  = i.AudioMimeType
                 })
                 .ToList()
         });
@@ -1062,6 +1087,89 @@ public class SyncController : ControllerBase
             Unassigned     = unassigned,
             CompletedToday = completedToday,
             NoGoMachines   = noGoMachines
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //                FULL SUBMISSION DETAILS · role-aware view
+    // Returns enough data to render a complete read-only view of the checklist
+    // (items + statuses + defect notes + operator remarks + signature). Reuses
+    // SupervisorReviewDto because it already has exactly the right shape.
+    // ══════════════════════════════════════════════════════════════════════════
+    [HttpGet("submissions/{id:int}/details")]
+    [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
+    public async Task<ActionResult<SupervisorReviewDto>> SubmissionDetails(int id)
+    {
+        var user = await CurrentUser();
+        if (user == null) return Unauthorized();
+
+        var s = await _db.ChecklistSubmissions
+            .Include(x => x.Machine)
+            .Include(x => x.Operator)
+            .Include(x => x.Items).ThenInclude(i => i.TemplateItem)
+            .FirstOrDefaultAsync(x => x.Id == id);
+        if (s == null) return NotFound();
+
+        // Same role gate as the PDF endpoint — keeps access rules consistent.
+        var roles        = await _users.GetRolesAsync(user);
+        var isAdmin      = roles.Contains("Admin");
+        var isSupervisor = roles.Contains("Supervisor");
+        var isMechanic   = roles.Contains("Mechanic");
+
+        bool allowed = isAdmin || s.OperatorId == user.Id;
+        if (!allowed && isSupervisor)
+        {
+            allowed = await _db.OperatorSupervisorAssignments.AnyAsync(a =>
+                a.SupervisorId == user.Id && a.IsActive && a.OperatorId == s.OperatorId);
+        }
+        if (!allowed && isMechanic)
+        {
+            allowed = await _db.MachineAssignments.AnyAsync(a =>
+                a.MachineId == s.MachineId && a.IsActive && a.MechanicId == user.Id);
+        }
+        if (!allowed) return Forbid();
+
+        return Ok(new SupervisorReviewDto
+        {
+            SubmissionId             = s.Id,
+            Status                   = s.Status,
+            MachineNumber            = s.Machine.MachineNumber,
+            MachineName              = s.Machine.MachineName,
+            MachineType              = s.Machine.TypeDisplay(),
+            OperatorName             = s.Operator.FullName,
+            OperatorEmployeeNumber   = s.Operator.EmployeeNumber,
+            SubmittedAt              = s.SubmittedAt,
+            Shift                    = s.Shift,
+            KmOrHourMeter            = s.KmOrHourMeter,
+            OperatorRemarks          = s.OperatorRemarks,
+            OperatorSignature        = s.OperatorSignature,
+            FitnessDeclarationSigned = s.FitnessDeclarationSigned,
+            Items = s.Items
+                .OrderBy(i => i.TemplateItem.SortOrder)
+                .Select(i => new SupervisorReviewItemDto
+                {
+                    TemplateItemId = i.TemplateItem.Id,
+                    ItemName       = i.TemplateItem.ItemName,
+                    IconPath       = i.TemplateItem.IconPath,
+                    IsNoGoItem     = i.TemplateItem.IsNoGoItem,
+                    Status         = i.Status,
+                    Notes          = i.Notes,
+                    // Defect photo — base64 only if the operator attached one.
+                    // The supervisor/operator UI shows it as a thumbnail next
+                    // to the item; the PDF renderer embeds it inline.
+                    PhotoBase64    = i.PhotoData == null || i.PhotoData.Length == 0
+                                         ? null
+                                         : Convert.ToBase64String(i.PhotoData),
+                    PhotoMimeType  = i.PhotoMimeType,
+                    // Same shape for the voice memo — base64 only if recorded.
+                    // The UI renders an HTML5 <audio controls> using a
+                    // data: URL built from this string.
+                    AudioBase64    = i.AudioData == null || i.AudioData.Length == 0
+                                         ? null
+                                         : Convert.ToBase64String(i.AudioData),
+                    AudioMimeType  = i.AudioMimeType
+                })
+                .ToList()
         });
     }
 

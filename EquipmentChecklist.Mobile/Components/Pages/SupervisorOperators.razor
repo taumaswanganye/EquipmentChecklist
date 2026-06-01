@@ -3,6 +3,7 @@
 @using EquipmentChecklist.Mobile.Services
 @inject ApiClient        Api
 @inject AuthService      Auth
+@inject LocalCache       Cache
 @inject NavigationManager Nav
 
 <div class="page-head">
@@ -126,6 +127,24 @@ else
     protected override async Task OnInitializedAsync()
     {
         if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+
+        // Paint cached roster first so the page works offline; then revalidate.
+        try
+        {
+            var email = Auth.CurrentUser?.Email;
+            if (!string.IsNullOrEmpty(email))
+            {
+                var cached = await Cache.GetSupervisorOperatorsAsync(email);
+                if (cached is { Count: > 0 })
+                {
+                    ops  = cached;
+                    busy = false;
+                    StateHasChanged();
+                }
+            }
+        }
+        catch { /* cache failures are non-fatal */ }
+
         await LoadAsync();
     }
 
@@ -134,11 +153,25 @@ else
         busy = true; error = ""; StateHasChanged();
         try
         {
-            ops = await Api.SupervisorOperatorsAsync();
+            var fresh = await Api.SupervisorOperatorsAsync();
+            if (fresh != null)
+            {
+                ops = fresh;
+                try
+                {
+                    var email = Auth.CurrentUser?.Email;
+                    if (!string.IsNullOrEmpty(email))
+                        await Cache.SaveSupervisorOperatorsAsync(email, fresh);
+                }
+                catch { /* cache write failures are non-fatal */ }
+            }
         }
         catch (HttpRequestException)
         {
-            error = "You're offline. Connect to load your team roster.";
+            if (ops is null)
+                error = "You're offline and have no cached roster yet — connect once to populate it.";
+            else
+                error = "You're offline. Showing the most recent team roster we cached.";
         }
         catch (Exception ex) { error = ex.Message; }
         finally { busy = false; StateHasChanged(); }

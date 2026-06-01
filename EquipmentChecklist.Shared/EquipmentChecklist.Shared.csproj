@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Platform-agnostic class library shared between the ASP.NET Core server
+    and the MAUI Blazor Hybrid mobile app.
+
+    Why netstandard2.1?
+      * Works on every TFM both projects can pick:
+          - server net8.0 / net9.0
+          - mobile net9.0-windows / net9.0-android / net9.0-ios
+      * Avoids dragging Web SDK assemblies into the Android build graph
+        (the root cause of "Unable to find project information for
+        EquipmentChecklist.csproj" when Mobile targets Android).
+
+    What lives here:
+      * DTOs/DTOs.cs   — request/response shapes for /api/sync/*
+      * Models/Enums.cs — shared enums (ChecklistStatus, ItemStatus,
+                         Shift, UserRole, RepairStatus, MachineType)
+
+    What does NOT live here:
+      * EF Core entities  → stay in the server project
+      * ApplicationUser    → IdentityUser dependency → server only
+      * Any controller / service / razor file → server or mobile
+  -->
+  <PropertyGroup>
+    <!--
+      Multi-target so every consumer gets an explicit match in the assets
+      file. netstandard2.1 alone *should* satisfy net9.0-android by spec,
+      but in practice some MAUI Android restore paths look up
+      `net9.0-android` as a literal key in project.assets.json and fail
+      with NETSDK1005 when only netstandard2.1 is present.
+
+        netstandard2.1 → the lowest common denominator, kept for
+                         compatibility with any future net8.0+ project
+                         that wants to consume Shared.
+        net8.0         → the server (Microsoft.NET.Sdk.Web, net8.0).
+        net9.0         → the mobile project (net9.0-windows + net9.0-android
+                         both consume net9.0 libraries).
+    -->
+    <TargetFrameworks>netstandard2.1;net8.0;net9.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>EquipmentChecklist</RootNamespace>
+    <!--
+      netstandard2.1 defaults LangVersion to C# 8, which doesn't understand
+      modern syntax used in the moved files (file-scoped namespaces,
+      target-typed `new()`, records, etc). The compiler itself supports
+      anything the installed SDK does — we just have to opt in.
+    -->
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+</Project>

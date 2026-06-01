@@ -38,9 +38,22 @@ public class ChecklistService
         var submissionItems = dto.Items.Select(i => new SubmissionItem
         {
             TemplateItemId = i.TemplateItemId,
-            Status = i.Status,
-            Notes = i.Notes,
-            Submission = submission
+            Status         = i.Status,
+            Notes          = i.Notes,
+            // Decode the optional defect photo. Stored inline as bytea —
+            // small enough that one query pulls it back with the submission,
+            // big enough that we'll want to add a compression pass later.
+            PhotoData      = string.IsNullOrEmpty(i.PhotoBase64)
+                                 ? null
+                                 : Convert.FromBase64String(i.PhotoBase64),
+            PhotoMimeType  = i.PhotoMimeType,
+            // Same shape as the photo: decode base64 → bytea column. Null when
+            // the operator didn't record anything (always null on InOrder items).
+            AudioData      = string.IsNullOrEmpty(i.AudioBase64)
+                                 ? null
+                                 : Convert.FromBase64String(i.AudioBase64),
+            AudioMimeType  = i.AudioMimeType,
+            Submission     = submission
         }).ToList();
 
         submission.Items = submissionItems;

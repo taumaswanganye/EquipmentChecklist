@@ -5,6 +5,7 @@
 @inject ApiClient        Api
 @inject AuthService      Auth
 @inject ActionQueue      Actions
+@inject LocalCache       Cache
 @inject NavigationManager Nav
 
 <div class="page-head">
@@ -245,6 +246,27 @@ else
             Nav.NavigateTo("/login", replace: true);
             return;
         }
+
+        // Paint cached defects so the mechanic can see what's assigned even
+        // underground without signal. Then revalidate from the API.
+        try
+        {
+            var email = Auth.CurrentUser?.Email;
+            if (!string.IsNullOrEmpty(email))
+            {
+                var cached = await Cache.GetMechanicDefectsAsync(email);
+                if (cached != null)
+                {
+                    queue = cached;
+                    busy  = false;
+                    if (queue.MyOrders.Count == 0 && queue.Unassigned.Count > 0)
+                        view = View.Unassigned;
+                    StateHasChanged();
+                }
+            }
+        }
+        catch { /* cache failures are non-fatal */ }
+
         await LoadAsync();
     }
 
@@ -255,14 +277,29 @@ else
         StateHasChanged();
         try
         {
-            queue = await Api.MechanicDefectsAsync();
-            // If the "mine" tab is empty but there's work in the pool, gently steer the user.
-            if (queue != null && queue.MyOrders.Count == 0 && queue.Unassigned.Count > 0)
-                view = View.Unassigned;
+            var fresh = await Api.MechanicDefectsAsync();
+            if (fresh != null)
+            {
+                queue = fresh;
+                // If the "mine" tab is empty but there's work in the pool, gently steer the user.
+                if (queue.MyOrders.Count == 0 && queue.Unassigned.Count > 0)
+                    view = View.Unassigned;
+
+                try
+                {
+                    var email = Auth.CurrentUser?.Email;
+                    if (!string.IsNullOrEmpty(email))
+                        await Cache.SaveMechanicDefectsAsync(email, fresh);
+                }
+                catch { /* cache write failures are non-fatal */ }
+            }
         }
         catch (HttpRequestException)
         {
-            error = "Can't reach the server. Check Wi-Fi / VPN and try again.";
+            if (queue is null)
+                error = "You're offline and have no cached defects yet — connect once to populate them.";
+            else
+                error = "You're offline. Showing the most recent defect queue we cached.";
         }
         catch (Exception ex)
         {

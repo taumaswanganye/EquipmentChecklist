@@ -4,10 +4,15 @@
 @inject SubmissionQueue  Queue
 @inject ActionQueue      Actions
 @inject SyncWorker       Sync
+@inject ApiHealth        Health
+@inject LocalCache       Cache
 @inject NavigationManager Nav
 @implements IDisposable
 
-<div class="app">
+<div class="app @(drawerOpen ? "drawer-open" : "")">
+
+    @* Mobile-only backdrop. Tap to close the drawer. *@
+    <div class="drawer-scrim" @onclick="CloseDrawer"></div>
 
     @* ────────────── SIDEBAR ────────────── *@
     <aside class="sidebar">
@@ -21,51 +26,51 @@
 
         <div class="nav-label">MAIN</div>
 
-        <NavLink href="/dashboard"   class="nav-item" Match="NavLinkMatch.Prefix">
-            <span class="nav-ico">📋</span> Dashboard
+        <NavLink href="/dashboard"   class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+            <span class="nav-ico">📋</span><span class="nav-text">Dashboard</span>
         </NavLink>
 
         @if (IsOperator)
         {
-            <NavLink href="/machines" class="nav-item" Match="NavLinkMatch.Prefix">
-                <span class="nav-ico">✅</span> My Machines
+            <NavLink href="/machines" class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+                <span class="nav-ico">✅</span><span class="nav-text">My Machines</span>
             </NavLink>
         }
 
         @if (IsOperator || IsSupervisor)
         {
-            <NavLink href="/submissions" class="nav-item" Match="NavLinkMatch.Prefix">
-                <span class="nav-ico">📝</span> My Submissions
+            <NavLink href="/submissions" class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+                <span class="nav-ico">📝</span><span class="nav-text">My Submissions</span>
             </NavLink>
         }
 
         @if (IsSupervisor)
         {
             <div class="nav-label">SUPERVISOR</div>
-            <NavLink href="/sign-off" class="nav-item" Match="NavLinkMatch.Prefix">
-                <span class="nav-ico">✍</span> Sign-Off Queue
+            <NavLink href="/sign-off" class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+                <span class="nav-ico">✍</span><span class="nav-text">Sign-Off Queue</span>
             </NavLink>
-            <NavLink href="/my-operators" class="nav-item" Match="NavLinkMatch.Prefix">
-                <span class="nav-ico">👷</span> My Operators
+            <NavLink href="/my-operators" class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+                <span class="nav-ico">👷</span><span class="nav-text">My Operators</span>
             </NavLink>
-            <NavLink href="/no-go" class="nav-item" Match="NavLinkMatch.Prefix">
-                <span class="nav-ico">🚫</span> NO-GO Machines
+            <NavLink href="/no-go" class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+                <span class="nav-ico">🚫</span><span class="nav-text">NO-GO Machines</span>
             </NavLink>
         }
 
         @if (IsMechanic)
         {
             <div class="nav-label">MECHANIC</div>
-            <NavLink href="/my-defects" class="nav-item" Match="NavLinkMatch.Prefix">
-                <span class="nav-ico">🔧</span> My Defects
+            <NavLink href="/my-defects" class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+                <span class="nav-ico">🔧</span><span class="nav-text">My Defects</span>
             </NavLink>
-            <NavLink href="/no-go" class="nav-item" Match="NavLinkMatch.Prefix">
-                <span class="nav-ico">🚫</span> NO-GO Machines
+            <NavLink href="/no-go" class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+                <span class="nav-ico">🚫</span><span class="nav-text">NO-GO Machines</span>
             </NavLink>
         }
 
-        <NavLink href="/biometric" class="nav-item" Match="NavLinkMatch.Prefix">
-            <span class="nav-ico">🔐</span> Biometric Login
+        <NavLink href="/biometric" class="nav-item" Match="NavLinkMatch.Prefix" @onclick="CloseDrawer">
+            <span class="nav-ico">🔐</span><span class="nav-text">Biometric Login</span>
         </NavLink>
 
         <div class="sidebar-footer">
@@ -78,9 +83,44 @@
 
     @* ────────────── MAIN COLUMN ────────────── *@
     <div class="main">
+
+        @* Stale-data banner. Shown when the device hasn't seen the API in
+           a while. Cache holds machines, defects, queues etc indefinitely
+           so the app keeps working — this is a heads-up that the *content*
+           may be stale (new assignments, new defect orders, etc). *@
+        @if (daysSinceSync.HasValue)
+        {
+            @if (daysSinceSync.Value >= 20)
+            {
+                <div class="stale-banner critical">
+                    <span class="ic">⚠</span>
+                    <div class="msg">
+                        <strong>It's been @daysSinceSync.Value days since you last synced.</strong>
+                        Connect to Wi-Fi or VPN to receive new machines, defects,
+                        and team updates assigned to you.
+                    </div>
+                </div>
+            }
+            else if (daysSinceSync.Value >= 14)
+            {
+                <div class="stale-banner warn">
+                    <span class="ic">📡</span>
+                    <div class="msg">
+                        Last synced <strong>@daysSinceSync.Value days ago</strong> —
+                        connect to Wi-Fi soon to pull fresh assignments.
+                    </div>
+                </div>
+            }
+        }
+
         <header class="topbar">
+            <button class="hamburger" @onclick="ToggleDrawer" title="Menu">
+                <span></span><span></span><span></span>
+            </button>
+
             <div class="topbar-date">
-                @DateTime.Now.ToString("dddd, dd MMMM yyyy")
+                <span class="full">@DateTime.Now.ToString("dddd, dd MMMM yyyy")</span>
+                <span class="short">@DateTime.Now.ToString("ddd, dd MMM")</span>
             </div>
 
             <div class="topbar-right">
@@ -175,15 +215,67 @@
 
     .content { flex:1; min-width:0; padding:24px 26px 36px; overflow:auto; }
 
-    /* Mobile fallback — collapse the sidebar to a thin strip */
+    /* Stale-data banner — sits at the very top of the main column, above
+       the topbar. Two severities; both non-dismissable so operators in the
+       field can't just click them away and forget. */
+    .stale-banner { display:flex; align-items:center; gap:12px;
+                    padding:10px 16px; font-size:13px; line-height:1.45;
+                    border-bottom:1px solid; }
+    .stale-banner .ic  { font-size:18px; flex-shrink:0; }
+    .stale-banner .msg { flex:1; min-width:0; }
+    .stale-banner.warn     { background:#7c5302; color:#fde68a; border-bottom-color:#a16207; }
+    .stale-banner.warn  strong { color:#fef3c7; }
+    .stale-banner.critical { background:#7f1d1d; color:#fecaca; border-bottom-color:#b91c1c; }
+    .stale-banner.critical strong { color:#fff; }
+
+    /* Hamburger + drawer scrim: hidden on desktop, used on mobile only */
+    .hamburger    { display:none; background:transparent; border:none; padding:8px;
+                    margin-right:6px; cursor:pointer; width:36px; height:36px;
+                    flex-direction:column; justify-content:center; gap:4px;
+                    align-items:center; }
+    .hamburger span { display:block; width:20px; height:2px; background:#cbd5e1;
+                      border-radius:2px; transition:transform .2s, opacity .2s; }
+    .drawer-scrim { display:none; }
+    .topbar-date .short { display:none; }
+
+    /* ── Mobile (phone) ─────────────────────────────────────────────────── */
     @@media (max-width:760px) {
-        .sidebar      { width:62px; padding:14px 0; }
-        .brand div, .brand-sub, .brand-name, .nav-label, .nav-item span:last-child, .sidebar-footer { display:none; }
-        .nav-item     { justify-content:center; padding:12px 0; }
-        .nav-ico      { font-size:18px; }
-        .topbar       { padding:10px 14px; }
-        .topbar-date  { font-size:11px; }
-        .user-text    { display:none; }
+        /* Slide-out drawer pattern: sidebar lives off-screen by default and
+           translates in when .drawer-open is set on .app. */
+        .sidebar {
+            position:fixed; left:0; top:0; bottom:0; z-index:50;
+            width:260px; padding:18px 0;
+            transform:translateX(-100%);
+            transition:transform .22s ease-out;
+            box-shadow:0 0 0 transparent;
+        }
+        .drawer-open .sidebar {
+            transform:translateX(0);
+            box-shadow:6px 0 24px rgba(0,0,0,.45);
+        }
+        .drawer-scrim {
+            display:block; position:fixed; inset:0; z-index:40;
+            background:rgba(2,6,23,.55);
+            opacity:0; pointer-events:none;
+            transition:opacity .22s ease-out;
+        }
+        .drawer-open .drawer-scrim {
+            opacity:1; pointer-events:auto;
+        }
+
+        /* Hamburger replaces the sidebar's always-visible role */
+        .hamburger { display:flex; }
+
+        /* Long date wraps; switch to a compact format */
+        .topbar-date .full  { display:none; }
+        .topbar-date .short { display:inline; }
+        .topbar-date  { font-size:12px; color:#cbd5e1; }
+
+        /* Topbar tightening */
+        .topbar       { padding:10px 12px; gap:8px; }
+        .user-text    { display:none; }      /* keep the avatar dot, drop name+role */
+        .pill.subtle  { display:none; }      /* drop the … / 🔔 chips on phones */
+
         .content      { padding:14px; }
     }
 </style>
@@ -191,6 +283,24 @@
 @code {
     private int   queuedCount = 0;
     private bool  showUserMenu;
+
+    /// <summary>
+    /// Whether the mobile slide-out drawer is currently visible. Always
+    /// false on desktop — the CSS @@media query makes the sidebar visible
+    /// regardless of this flag once the viewport is wide enough.
+    /// </summary>
+    private bool  drawerOpen;
+
+    /// <summary>
+    /// Whole days between now and the most recent successful API ping for
+    /// the signed-in user. Null when there's no cached record yet (first
+    /// launch) so we don't scare brand-new users. The banner thresholds
+    /// are 14 (warn, yellow) and 20 (critical, red).
+    /// </summary>
+    private int?  daysSinceSync;
+
+    private void ToggleDrawer() => drawerOpen = !drawerOpen;
+    private void CloseDrawer()  => drawerOpen = false;
 
     private string Initials => string.Concat(
         (Auth.CurrentUser?.FullName ?? "?")
@@ -210,15 +320,72 @@
     private bool IsMechanic
         => Auth.CurrentUser?.Roles?.Any(r => r == "Mechanic" || r == "Admin") ?? false;
 
-    private bool IsOnline => Connectivity.NetworkAccess == NetworkAccess.Internet;
+    /// <summary>
+    /// "Can I actually reach the API right now?" Combines device-network state
+    /// with the most recent server ping from <see cref="ApiHealth"/>. Pure
+    /// device connectivity isn't enough — Wi-Fi can be on while the server is
+    /// unreachable (VPN dropped, captive portal, server down).
+    /// </summary>
+    private bool IsOnline => Health.IsOnline;
 
     protected override async Task OnInitializedAsync()
     {
         Queue.Changed       += OnQueueChanged;
         Actions.Changed     += OnQueueChanged;
         Sync.DrainCompleted += OnQueueChanged;
+        Health.Changed      += OnHealthChanged;
         Connectivity.ConnectivityChanged += OnConnectivityChanged;
+        // Recompute the stale-data banner whenever the user navigates so
+        // the message refreshes through the day without depending on a
+        // health transition firing.
+        Nav.LocationChanged += OnLocationChanged;
+
         queuedCount = await Queue.CountAsync() + await Actions.CountAsync();
+        await RefreshDaysSinceSyncAsync();
+    }
+
+    private void OnHealthChanged()
+    {
+        // Successful ping bumped LastSyncedAt in SQLite; re-read so the
+        // banner can drop off without waiting for navigation.
+        InvokeAsync(async () =>
+        {
+            await RefreshDaysSinceSyncAsync();
+            StateHasChanged();
+        });
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+        => InvokeAsync(async () =>
+        {
+            await RefreshDaysSinceSyncAsync();
+            StateHasChanged();
+        });
+
+    /// <summary>
+    /// Read the cached user's LastSyncedAt and compute whole-day age.
+    /// Null user / null timestamp leaves <see cref="daysSinceSync"/> null
+    /// so the banner stays hidden — we don't nag people who've never been
+    /// online (probably first launch on a brand-new device).
+    /// </summary>
+    private async Task RefreshDaysSinceSyncAsync()
+    {
+        try
+        {
+            var email = Auth.CurrentUser?.Email;
+            if (string.IsNullOrEmpty(email)) { daysSinceSync = null; return; }
+
+            var last = await Cache.GetLastSyncedAtAsync(email);
+            if (last is null) { daysSinceSync = null; return; }
+
+            var days = (int)Math.Floor((DateTime.UtcNow - last.Value).TotalDays);
+            daysSinceSync = days < 0 ? 0 : days;
+        }
+        catch
+        {
+            // Cache read failure shouldn't break the layout. Banner stays off.
+            daysSinceSync = null;
+        }
     }
 
     private void OnQueueChanged()
@@ -249,6 +416,8 @@
         Queue.Changed       -= OnQueueChanged;
         Actions.Changed     -= OnQueueChanged;
         Sync.DrainCompleted -= OnQueueChanged;
+        Health.Changed      -= OnHealthChanged;
+        Nav.LocationChanged -= OnLocationChanged;
         Connectivity.ConnectivityChanged -= OnConnectivityChanged;
     }
 }

@@ -3,6 +3,7 @@
 @using EquipmentChecklist.Mobile.Services
 @inject ApiClient        Api
 @inject AuthService      Auth
+@inject LocalCache       Cache
 @inject NavigationManager Nav
 
 <div class="page-head">
@@ -117,6 +118,25 @@ else
     protected override async Task OnInitializedAsync()
     {
         if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+
+        // Paint cached fleet first so supervisors + mechanics can still see
+        // what's immobilised when they're underground without signal.
+        try
+        {
+            var email = Auth.CurrentUser?.Email;
+            if (!string.IsNullOrEmpty(email))
+            {
+                var cached = await Cache.GetNoGoMachinesAsync(email);
+                if (cached is { Count: > 0 })
+                {
+                    machines = cached;
+                    busy     = false;
+                    StateHasChanged();
+                }
+            }
+        }
+        catch { /* cache failures are non-fatal */ }
+
         await LoadAsync();
     }
 
@@ -125,11 +145,25 @@ else
         busy = true; error = ""; StateHasChanged();
         try
         {
-            machines = await Api.SupervisorNoGoAsync();
+            var fresh = await Api.SupervisorNoGoAsync();
+            if (fresh != null)
+            {
+                machines = fresh;
+                try
+                {
+                    var email = Auth.CurrentUser?.Email;
+                    if (!string.IsNullOrEmpty(email))
+                        await Cache.SaveNoGoMachinesAsync(email, fresh);
+                }
+                catch { /* cache write failures are non-fatal */ }
+            }
         }
         catch (HttpRequestException)
         {
-            error = "You're offline. Connect to load the NO-GO fleet.";
+            if (machines is null)
+                error = "You're offline and have no cached fleet yet — connect once to populate it.";
+            else
+                error = "You're offline. Showing the most recent NO-GO fleet we cached.";
         }
         catch (Exception ex) { error = ex.Message; }
         finally { busy = false; StateHasChanged(); }

@@ -33,4 +33,13 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      DTOs + enums shared with the MAUI mobile project. Pulled out so the
+      mobile project can target Android without dragging the Web SDK into
+      its build graph.
+    -->
+    <ProjectReference Include="..\EquipmentChecklist.Shared\EquipmentChecklist.Shared.csproj" />
+  </ItemGroup>
+
 </Project>

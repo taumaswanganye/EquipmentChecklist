@@ -1,3 +1,9 @@
+// Moved from EquipmentChecklist/Models/Enums.cs so that both the server
+// (Microsoft.NET.Sdk.Web, net8.0/net9.0) and the MAUI mobile app
+// (net9.0-windows / net9.0-android) can reference exactly the same enum
+// integer values without dragging a Web-SDK reference into the Android
+// build graph. Namespace intentionally unchanged.
+
 namespace EquipmentChecklist.Models;
 
 public enum ChecklistStatus

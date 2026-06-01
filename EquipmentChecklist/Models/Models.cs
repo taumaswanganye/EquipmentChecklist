@@ -202,6 +202,32 @@ public class SubmissionItem
     public ChecklistTemplateItem TemplateItem { get; set; } = null!;
     public ItemStatus Status { get; set; } = ItemStatus.InOrder;
     [MaxLength(500)] public string? Notes { get; set; }
+
+    // ── Defect-photo evidence (optional) ────────────────────────────────────
+    /// <summary>
+    /// Raw image bytes captured at submit time. Persisted inline so a single
+    /// query pulls back the photo with the submission. Typical size: 0.5–3 MB
+    /// per defect. Round 1 stores whatever the camera hands us; a follow-up
+    /// will resize/compress before upload.
+    /// </summary>
+    public byte[]? PhotoData { get; set; }
+
+    /// <summary>MIME type so the client can show it correctly without sniffing
+    /// the bytes. Usually "image/jpeg" from MAUI's MediaPicker.</summary>
+    [MaxLength(50)] public string? PhotoMimeType { get; set; }
+
+    // ── Defect-voice-memo evidence (optional) ───────────────────────────────
+    /// <summary>
+    /// Raw audio bytes captured at submit time. Lets operators who can't
+    /// (or won't) type describe the defect by voice. Typical size: 50–300 KB
+    /// for a 30-second M4A/AAC at default Plugin.Maui.Audio bitrate.
+    /// </summary>
+    public byte[]? AudioData { get; set; }
+
+    /// <summary>MIME type for the audio bytes. Plugin.Maui.Audio outputs
+    /// audio/m4a on iOS/Android by default; audio/wav is also possible
+    /// depending on recorder options.</summary>
+    [MaxLength(50)] public string? AudioMimeType { get; set; }
 }
 
 // ─── Operator → Supervisor Assignment ────────────────────────────────────────

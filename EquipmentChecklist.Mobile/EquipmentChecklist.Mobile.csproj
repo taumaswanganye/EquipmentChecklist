@@ -1,6 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
   <PropertyGroup>
-    <TargetFrameworks>net9.0-windows10.0.19041.0</TargetFrameworks>
+    <TargetFrameworks>net9.0-android;net9.0-windows10.0.19041.0</TargetFrameworks>
     <OutputType>Exe</OutputType>
     <RootNamespace>EquipmentChecklist.Mobile</RootNamespace>
     <UseMaui>true</UseMaui>
@@ -9,19 +9,45 @@
     <EnableDefaultCssItems>false</EnableDefaultCssItems>
     <Nullable>enable</Nullable>
     <MauiXamlInflator>SourceGen</MauiXamlInflator>
-    <ApplicationTitle>EquipmentChecklist.Mobile</ApplicationTitle>
+    <!--
+      ApplicationTitle becomes:
+        - Android: the label under the launcher icon (was ".NET MAUI App")
+        - Windows: the window title bar
+        - iOS:     CFBundleDisplayName
+      Keep it short so it doesn't truncate on the home screen.
+    -->
+    <ApplicationTitle>Pre-Checklist</ApplicationTitle>
+    <!--
+      ApplicationId is the Android package name + iOS bundle id. Lower-case
+      reverse-DNS, no dashes. Don't change it after the first install —
+      Android treats a new id as a brand-new app, losing local data.
+    -->
     <ApplicationId>com.companyname.equipmentchecklist.mobile</ApplicationId>
     <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
     <ApplicationVersion>1</ApplicationVersion>
     <WindowsPackageType>None</WindowsPackageType>
     <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
+ 
     <TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+    <!--
+      Blazor WebView requires Android 6.0 (API 23) at minimum — earlier
+      versions ship a WebView that can't host the Blazor JS shim. Pinning
+      this also silences the CA1416 platform-compat warning on every
+      AddMauiBlazorWebView() call site.
+    -->
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">23.0</SupportedOSPlatformVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- App Icon -->
-    <MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#512BD4" />
-    <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#512BD4" BaseSize="128,128" />
+    <!--
+      App icon + splash. Color is the surround / fill that frames the SVG.
+      Was #512BD4 (default .NET purple); now #0d1729 (the app's dark navy)
+      so the splash matches the in-app theme rather than flashing purple
+      then snapping to dark.
+    -->
+    <MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#0e9488" />
+    <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#0d1729" BaseSize="128,128" />
     <MauiImage Include="Resources\Images\*" />
     <MauiImage Update="Resources\Images\dotnet_bot.svg" BaseSize="168,208" />
     <MauiFont Include="Resources\Fonts\*" />
@@ -32,13 +58,28 @@
     <PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
     <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="$(MauiVersion)" />
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="9.0.0" />
+    <!--
+      Provides AddHttpClient<T> extension + the typed-client pipeline.
+      Not in the MAUI template by default. We need it for ApiClient.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.0" />
     <!-- Phase 2C · local SQLite cache (offline machines + templates) -->
     <PackageReference Include="sqlite-net-pcl" Version="1.9.172" />
     <PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.10" />
+    <!--
+      Cross-platform audio capture + playback for defect voice memos.
+      Used by Checklist.razor to record an M4A clip per defective item
+      when the operator can't (or won't) type the note.
+    -->
+    <PackageReference Include="Plugin.Maui.Audio" Version="4.0.0" />
   </ItemGroup>
 
   <ItemGroup>
-     <ProjectReference Include="..\EquipmentChecklist\EquipmentChecklist.csproj" />
-   
+    <!--
+      Shared DTOs + enums only. We intentionally do NOT reference the
+      EquipmentChecklist server project here — its Web SDK has no
+      Android-compatible TFM and pulling it in breaks `dotnet restore`.
+    -->
+    <ProjectReference Include="..\EquipmentChecklist.Shared\EquipmentChecklist.Shared.csproj" />
   </ItemGroup>
 </Project>

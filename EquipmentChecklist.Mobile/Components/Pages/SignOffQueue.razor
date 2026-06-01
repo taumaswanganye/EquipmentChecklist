@@ -5,6 +5,7 @@
 @inject ApiClient        Api
 @inject AuthService      Auth
 @inject ActionQueue      Actions
+@inject LocalCache       Cache
 @inject NavigationManager Nav
 @inject IJSRuntime       JS
 
@@ -41,7 +42,7 @@ else
     <p class="count-line">@queue.Count submission(s) waiting</p>
 
     <div class="queue-list">
-        @foreach (var q in queue)
+        @foreach (var q in PagedRows)
         {
             <div class="q-card">
                 <div class="q-head">
@@ -87,6 +88,35 @@ else
             </div>
         }
     </div>
+
+    @if (TotalPages > 1)
+    {
+        <div class="pager">
+            <span class="pager-info">
+                Showing @FirstRowIndex–@LastRowIndex of @queue.Count
+            </span>
+            <div class="pager-btns">
+                <button class="pg" disabled="@(currentPage == 1)"
+                        @onclick="@(() => Goto(currentPage - 1))">‹ Prev</button>
+
+                @foreach (var p in VisiblePages)
+                {
+                    if (p == -1)
+                    {
+                        <span class="pg dots">…</span>
+                    }
+                    else
+                    {
+                        <button class="pg @(p == currentPage ? "on" : "")"
+                                @onclick="@(() => Goto(p))">@p</button>
+                    }
+                }
+
+                <button class="pg" disabled="@(currentPage == TotalPages)"
+                        @onclick="@(() => Goto(currentPage + 1))">Next ›</button>
+            </div>
+        </div>
+    }
 }
 
 @* ────────────── QUICK APPROVE MODAL ────────────── *@
@@ -190,14 +220,76 @@ else
     .sig-clear { margin-top:8px; font-size:11px; padding:5px 12px; }
     .modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:12px 18px; border-top:1px solid #1f2a3a; flex-wrap:wrap; }
     .alert { background:#450a0a; border:1px solid #7f1d1d; color:#fecaca; padding:8px 12px; border-radius:6px; font-size:12px; margin-top:10px; }
+
+    /* ── Pager (mirrors Dashboard / MySubmissions) ────────────────────── */
+    .pager       { display:flex; align-items:center; justify-content:space-between;
+                   gap:12px; margin-top:14px; padding:12px 16px;
+                   background:#0d1729; border:1px solid #1f2a3a; border-radius:10px;
+                   flex-wrap:wrap; }
+    .pager-info  { font-size:11px; color:#94a3b8; }
+    .pager-btns  { display:flex; align-items:center; gap:4px; }
+    .pg          { background:transparent; border:1px solid #243246; color:#cbd5e1;
+                   padding:5px 10px; border-radius:6px; font-size:12px; cursor:pointer;
+                   min-width:32px; font-family:inherit; }
+    .pg:hover:not(:disabled):not(.dots) { background:#1a2638; border-color:#0e9488; }
+    .pg.on       { background:#0e9488; color:#0a1726; border-color:#0e9488; font-weight:700; }
+    .pg:disabled { opacity:.35; cursor:not-allowed; }
+    .pg.dots     { border:none; cursor:default; color:#64748b; }
 </style>
 
 @code {
     private const string QA_SIG_ID = "qaSig";
+    private const int    PAGE_SIZE = 3;
 
     private List<SupervisorQueueItemDto>? queue;
-    private bool   busy  = true;
-    private string error = "";
+    private bool   busy        = true;
+    private string error       = "";
+    private int    currentPage = 1;
+
+    // ── Pager plumbing (mirrors Dashboard + MySubmissions) ──────────────────
+    private int TotalPages =>
+        queue is null || queue.Count == 0
+            ? 1
+            : (int)Math.Ceiling(queue.Count / (double)PAGE_SIZE);
+
+    private IEnumerable<SupervisorQueueItemDto> PagedRows =>
+        queue is null
+            ? Enumerable.Empty<SupervisorQueueItemDto>()
+            : queue.Skip((currentPage - 1) * PAGE_SIZE).Take(PAGE_SIZE);
+
+    private int FirstRowIndex =>
+        queue is null || queue.Count == 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+    private int LastRowIndex  =>
+        queue is null ? 0 : Math.Min(currentPage * PAGE_SIZE, queue.Count);
+
+    /// <summary>
+    /// Window-style page list: always show 1 + last + a window of 1 around the
+    /// current page, with -1 sentinels rendered as ellipses. Identical to the
+    /// helper on MySubmissions so the UX feels consistent across pages.
+    /// </summary>
+    private IEnumerable<int> VisiblePages
+    {
+        get
+        {
+            if (queue is null) yield break;
+            var total = TotalPages;
+            const int window = 1;
+            for (int p = 1; p <= total; p++)
+            {
+                if (p == 1 || p == total ||
+                    (p >= currentPage - window && p <= currentPage + window))
+                    yield return p;
+                else if (p == currentPage - window - 1 || p == currentPage + window + 1)
+                    yield return -1;
+            }
+        }
+    }
+
+    private void Goto(int page)
+    {
+        if (queue is null) return;
+        currentPage = Math.Clamp(page, 1, TotalPages);
+    }
 
     // Quick-approve modal state
     private SupervisorQueueItemDto? qa;
@@ -207,6 +299,26 @@ else
     protected override async Task OnInitializedAsync()
     {
         if (!Auth.IsSignedIn) { Nav.NavigateTo("/login", replace:true); return; }
+
+        // Stale-while-revalidate: paint cached rows immediately so the page is
+        // usable offline, then refresh from the API in the background and
+        // overwrite the cache when the response comes back.
+        try
+        {
+            var email = Auth.CurrentUser?.Email;
+            if (!string.IsNullOrEmpty(email))
+            {
+                var cached = await Cache.GetSupervisorQueueAsync(email);
+                if (cached is { Count: > 0 })
+                {
+                    queue = cached;
+                    busy  = false;
+                    StateHasChanged();
+                }
+            }
+        }
+        catch { /* cache failures should never block the page */ }
+
         await LoadAsync();
     }
 
@@ -224,11 +336,29 @@ else
         busy = true; error = ""; StateHasChanged();
         try
         {
-            queue = await Api.SupervisorQueueAsync();
+            var fresh = await Api.SupervisorQueueAsync();
+            if (fresh != null)
+            {
+                queue       = fresh;
+                currentPage = 1;   // jump back to the first page on every refresh
+                // Refresh the cache so the next offline session sees today's queue.
+                try
+                {
+                    var email = Auth.CurrentUser?.Email;
+                    if (!string.IsNullOrEmpty(email))
+                        await Cache.SaveSupervisorQueueAsync(email, fresh);
+                }
+                catch { /* cache write failures are non-fatal */ }
+            }
         }
         catch (HttpRequestException)
         {
-            error = "You're offline. The sign-off queue requires a live server connection.";
+            // Offline — if we managed to render a cached snapshot in
+            // OnInitializedAsync, leave it on screen and just hint at staleness.
+            if (queue is null)
+                error = "You're offline and have no cached queue yet — connect once to populate it.";
+            else
+                error = "You're offline. Showing the most recent sign-off queue we cached.";
         }
         catch (Exception ex) { error = ex.Message; }
         finally { busy = false; StateHasChanged(); }

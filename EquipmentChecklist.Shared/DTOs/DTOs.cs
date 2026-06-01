@@ -26,6 +26,27 @@ public class SubmissionItemDto
     public int TemplateItemId { get; set; }
     public ItemStatus Status { get; set; }
     public string? Notes { get; set; }
+
+    /// <summary>
+    /// Optional defect photo as a base64 string (no <c>data:</c> prefix).
+    /// Mobile clients build this from camera bytes; server decodes back into
+    /// <c>SubmissionItem.PhotoData</c>. Null when the operator didn't attach
+    /// a photo (always null on InOrder items).
+    /// </summary>
+    public string? PhotoBase64   { get; set; }
+    /// <summary>MIME type that pairs with <see cref="PhotoBase64"/>. Defaults
+    /// to image/jpeg on Android; clients should set it explicitly when known.</summary>
+    public string? PhotoMimeType { get; set; }
+
+    /// <summary>
+    /// Optional voice memo as a base64 string (no <c>data:</c> prefix).
+    /// Lets operators who can't type describe the defect by voice. Server
+    /// decodes back into <c>SubmissionItem.AudioData</c>.
+    /// </summary>
+    public string? AudioBase64   { get; set; }
+    /// <summary>MIME for the audio bytes. Plugin.Maui.Audio default on
+    /// Android is audio/m4a; iOS audio/m4a; Windows audio/wav.</summary>
+    public string? AudioMimeType { get; set; }
 }
 
 // ─── Checklist submission (web form) ─────────────────────────────────────────
@@ -241,6 +262,16 @@ public class SupervisorReviewItemDto
     public bool    IsNoGoItem     { get; set; }
     public ItemStatus Status      { get; set; }
     public string? Notes          { get; set; }
+
+    /// <summary>Base64 photo bytes (no <c>data:</c> prefix) — only set on
+    /// defect items where the operator attached a photo.</summary>
+    public string? PhotoBase64   { get; set; }
+    public string? PhotoMimeType { get; set; }
+
+    /// <summary>Base64 audio bytes (no <c>data:</c> prefix) — only set on
+    /// defect items where the operator recorded a voice memo.</summary>
+    public string? AudioBase64   { get; set; }
+    public string? AudioMimeType { get; set; }
 }
 
 public class SupervisorSignOffRequest

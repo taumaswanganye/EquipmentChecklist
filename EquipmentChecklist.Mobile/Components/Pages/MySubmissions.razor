@@ -5,6 +5,7 @@
 @inject ApiClient        Api
 @inject AuthService      Auth
 @inject LocalCache       Cache
+@inject SubmissionQueue  Queue
 @inject NavigationManager Nav
 
 <div class="page-head">
@@ -31,6 +32,13 @@
             @onclick="() => SetFilter(FilterMode.NoGo)">
         <span class="cnt">@noGoCount</span> NO-GO
     </button>
+    @if (queuedCount > 0)
+    {
+        <button class="filter-pill queued @(filter == FilterMode.Queued ? "on" : "")"
+                @onclick="() => SetFilter(FilterMode.Queued)">
+            <span class="cnt">@queuedCount</span> ☁ Queued
+        </button>
+    }
     <button class="filter-pill total @(filter == FilterMode.All ? "on" : "")"
             @onclick="() => SetFilter(FilterMode.All)">
         <span class="cnt">@(all?.Count ?? 0)</span> Total
@@ -140,24 +148,148 @@ else
 @if (viewing is not null)
 {
     <div class="modal-backdrop" @onclick="CloseView">
-        <div class="modal" @onclick:stopPropagation="true">
+        <div class="modal modal-lg" @onclick:stopPropagation="true">
             <div class="modal-head">
                 <div>
                     <div class="modal-num">@viewing.MachineNumber</div>
-                    <div class="modal-sub">@viewing.MachineName</div>
+                    <div class="modal-sub">
+                        @viewing.MachineName
+                        @if (viewing.IsQueued)
+                        {
+                            <span class="queued-chip">☁ QUEUED · pending sync</span>
+                        }
+                    </div>
                 </div>
                 <button class="modal-x" @onclick="CloseView">✕</button>
             </div>
-            <div class="modal-body">
-                <div class="kv"><span class="k">Result</span><span class="v"><span class="badge @StatusBadgeCls(viewing.Status)">@StatusBadgeLabel(viewing.Status)</span></span></div>
-                <div class="kv"><span class="k">Date</span><span class="v mono">@viewing.SubmittedAt.ToString("dddd, dd MMM yyyy")</span></div>
-                <div class="kv"><span class="k">Time</span><span class="v mono">@viewing.SubmittedAt.ToString("HH:mm")</span></div>
-                <div class="kv"><span class="k">Shift</span><span class="v">@ShiftLabel(viewing.Shift)</span></div>
-                <div class="kv"><span class="k">KM / Hours</span><span class="v mono">@(viewing.KmOrHourMeter?.ToString() ?? "—")</span></div>
-                <div class="kv"><span class="k">Items</span><span class="v">@viewing.ItemCount total</span></div>
-                <div class="kv"><span class="k">Defects</span><span class="v" style="@(viewing.DefectCount > 0 ? "color:#fca5a5;font-weight:700" : "")">@viewing.DefectCount</span></div>
-                <div class="kv"><span class="k">Operator</span><span class="v">@viewing.OperatorName</span></div>
+
+            <div class="modal-body view-body">
+
+                @* ─── Header summary grid (always available, even with no details yet) ─── *@
+                <div class="vw-grid">
+                    <div>
+                        <div class="vw-lbl">RESULT</div>
+                        <div class="vw-val"><span class="badge @StatusBadgeCls(viewing.Status)">@StatusBadgeLabel(viewing.Status)</span></div>
+                    </div>
+                    <div>
+                        <div class="vw-lbl">DATE / TIME</div>
+                        <div class="vw-val mono">@viewing.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</div>
+                    </div>
+                    <div>
+                        <div class="vw-lbl">SHIFT</div>
+                        <div class="vw-val">@ShiftLabel(viewing.Shift)</div>
+                    </div>
+                    <div>
+                        <div class="vw-lbl">KM / HOURS</div>
+                        <div class="vw-val mono">@(viewing.KmOrHourMeter?.ToString() ?? "—")</div>
+                    </div>
+                    <div>
+                        <div class="vw-lbl">OPERATOR</div>
+                        <div class="vw-val">@viewing.OperatorName</div>
+                    </div>
+                    <div>
+                        <div class="vw-lbl">ITEMS / DEFECTS</div>
+                        <div class="vw-val">
+                            @viewing.ItemCount total
+                            @if (viewing.DefectCount > 0)
+                            {
+                                <span class="def-count">· @viewing.DefectCount defect@(viewing.DefectCount == 1 ? "" : "s")</span>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                @* ─── Detail panes (loaded async or built from queue payload) ─── *@
+                @if (viewLoading)
+                {
+                    <div class="vw-loading"><div class="spinner"></div><p>Loading checklist details…</p></div>
+                }
+                else if (viewDetails is null)
+                {
+                    <div class="vw-empty">
+                        <p>Couldn't load the items list — likely offline. Tap <strong>📄 PDF</strong> to view the cached receipt instead.</p>
+                    </div>
+                }
+                else
+                {
+                    @if (!string.IsNullOrWhiteSpace(viewDetails.OperatorRemarks))
+                    {
+                        <section class="vw-card">
+                            <h4>OPERATOR REMARKS</h4>
+                            <p class="vw-remarks">“@viewDetails.OperatorRemarks”</p>
+                        </section>
+                    }
+
+                    @if (Defects.Count > 0)
+                    {
+                        <section class="vw-card defects">
+                            <h4>DEFECTS · @Defects.Count</h4>
+                            @foreach (var d in Defects)
+                            {
+                                <div class="def-row @(d.IsNoGoItem ? "critical" : "")">
+                                    <div class="def-letter">@FirstChar(d.ItemName)</div>
+                                    <div class="def-info">
+                                        <div class="def-name">
+                                            @d.ItemName
+                                            @if (d.IsNoGoItem)
+                                            {
+                                                <span class="tag-nogo">NO-GO</span>
+                                            }
+                                            @if (!string.IsNullOrEmpty(d.PhotoBase64))
+                                            {
+                                                <span class="tag-photo">📷 photo</span>
+                                            }
+                                            @if (!string.IsNullOrEmpty(d.AudioBase64))
+                                            {
+                                                <span class="tag-audio">🎤 voice</span>
+                                            }
+                                        </div>
+                                        <div class="def-note">
+                                            @(string.IsNullOrEmpty(d.Notes) ? "(no note recorded)" : d.Notes)
+                                        </div>
+                                        @if (!string.IsNullOrEmpty(d.PhotoBase64))
+                                        {
+                                            <img class="def-photo"
+                                                 src="@($"data:{d.PhotoMimeType ?? "image/jpeg"};base64,{d.PhotoBase64}")"
+                                                 alt="defect photo" />
+                                        }
+                                        @if (!string.IsNullOrEmpty(d.AudioBase64))
+                                        {
+                                            <audio class="def-audio" controls
+                                                   src="@($"data:{d.AudioMimeType ?? "audio/m4a"};base64,{d.AudioBase64}")">
+                                            </audio>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </section>
+                    }
+
+                    <section class="vw-card">
+                        <h4>IN-ORDER · @InOrder.Count</h4>
+                        <div class="ok-pills">
+                            @foreach (var i in InOrder)
+                            {
+                                <span class="ok-pill">✓ @i.ItemName</span>
+                            }
+                        </div>
+                    </section>
+
+                    @if (!string.IsNullOrEmpty(viewDetails.OperatorSignature))
+                    {
+                        <section class="vw-card">
+                            <h4>OPERATOR SIGNATURE</h4>
+                            <img src="@viewDetails.OperatorSignature" alt="operator signature" class="vw-sig" />
+                            <div class="vw-fitness">
+                                @(viewDetails.FitnessDeclarationSigned
+                                    ? "✓ Fitness declaration signed"
+                                    : "✕ Fitness declaration NOT signed")
+                            </div>
+                        </section>
+                    }
+                }
             </div>
+
             <div class="modal-foot">
                 <button class="ghost" @onclick="CloseView">Close</button>
                 <button class="primary" @onclick="() => OpenPdf(viewing)">📄 Open PDF</button>
@@ -190,6 +322,8 @@ else
     .filter-pill.gobut.on  { background:rgba(6,182,212,.12); }
     .filter-pill.nogo.on   { background:rgba(239,68,68,.12); }
     .filter-pill.total.on  { background:rgba(255,255,255,.06); color:#e5e7eb; }
+    .filter-pill.queued    { border-color:#f59e0b; color:#fbbf24; }
+    .filter-pill.queued.on { background:rgba(245,158,11,.14); }
 
     /* States */
     .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:60px 20px; text-align:center; color:#94a3b8; }
@@ -215,6 +349,8 @@ else
     .data-table tbody tr.row-nogo    td:first-child { box-shadow:inset 3px 0 0 #ef4444; }
     .data-table tbody tr.row-gobut   td:first-child { box-shadow:inset 3px 0 0 #06b6d4; }
     .data-table tbody tr.row-rejected td:first-child { box-shadow:inset 3px 0 0 #f97316; }
+    .data-table tbody tr.row-queued  td:first-child { box-shadow:inset 3px 0 0 #f59e0b; }
+    .data-table tbody tr.row-queued  td { background:rgba(245,158,11,.04); }
 
     .m-num  { font-size:13px; font-weight:700; font-family:ui-monospace,monospace; }
     .m-name { font-size:11px; }
@@ -227,6 +363,7 @@ else
     .badge.nogo    { color:#ef4444; border-color:#ef4444; background:rgba(239,68,68,.08); }
     .badge.gobut   { color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,.08); }
     .badge.rejected{ color:#f97316; border-color:#f97316; background:rgba(249,115,22,.08); }
+    .badge.queued  { color:#fbbf24; border-color:#f59e0b; background:rgba(245,158,11,.12); }
 
     .act-btn { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:5px 10px; border-radius:5px; font-size:11px; cursor:pointer; margin-left:4px; font-family:inherit; }
     .act-btn:hover { background:#1a2638; border-color:#0e9488; }
@@ -257,36 +394,99 @@ else
     .kv .k { color:#94a3b8; font-size:11px; text-transform:uppercase; letter-spacing:.4px; padding-top:2px; }
     .modal-foot { display:flex; justify-content:flex-end; gap:8px; padding:12px 18px; border-top:1px solid #1f2a3a; }
     .ghost { background:transparent; border:1px solid #243246; color:#cbd5e1; padding:8px 16px; border-radius:6px; font-family:inherit; font-size:13px; cursor:pointer; }
+
+    /* ── Bigger View modal (full checklist details) ─────────────────────── */
+    .modal.modal-lg { max-width:680px; max-height:88vh; display:flex; flex-direction:column; }
+    .modal-lg .view-body { overflow-y:auto; padding:14px 18px 18px; }
+
+    .queued-chip { display:inline-block; margin-left:8px; padding:2px 8px;
+                   background:rgba(245,158,11,.18); border:1px solid #f59e0b;
+                   color:#fbbf24; font-size:10px; font-weight:700; letter-spacing:.4px;
+                   border-radius:4px; vertical-align:middle; }
+
+    .vw-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px;
+               padding-bottom:14px; border-bottom:1px solid #1f2a3a; margin-bottom:14px; }
+    @@media (max-width:540px) { .vw-grid { grid-template-columns:1fr 1fr; } }
+    .vw-lbl { font-size:10px; color:#94a3b8; letter-spacing:.6px; font-weight:600; }
+    .vw-val { font-size:13px; font-weight:600; margin-top:4px; color:#e5e7eb; }
+    .vw-val .def-count { color:#fca5a5; font-weight:600; font-size:12px; }
+
+    .vw-loading { text-align:center; padding:30px 10px; color:#94a3b8; font-size:12px; }
+    .vw-empty   { text-align:center; padding:18px 10px; color:#94a3b8; font-size:12px; }
+    .vw-empty p { margin:0; line-height:1.55; }
+
+    .vw-card { background:#0d1729; border:1px solid #1f2a3a; border-radius:10px;
+               padding:12px 14px; margin-top:12px; }
+    .vw-card h4 { margin:0 0 10px; font-size:10px; font-weight:700; color:#94a3b8;
+                  letter-spacing:.6px; }
+    .vw-card.defects { border-color:#7f1d1d; background:rgba(127,29,29,.06); }
+    .vw-remarks { font-size:13px; color:#cbd5e1; line-height:1.55; margin:0; font-style:italic; }
+
+    .def-row { display:flex; gap:10px; padding:8px 0; border-top:1px solid #1a2638; }
+    .def-row:first-of-type { border-top:none; padding-top:0; }
+    .def-row.critical { background:rgba(127,29,29,.08); margin:0 -14px;
+                        padding:8px 14px; border-radius:4px; }
+    .def-letter { width:28px; height:28px; border-radius:6px;
+                  background:rgba(239,68,68,.18); color:#fca5a5;
+                  display:flex; align-items:center; justify-content:center;
+                  font-size:12px; font-weight:700; flex-shrink:0; }
+    .def-info { flex:1; min-width:0; }
+    .def-name { font-size:12px; font-weight:700; color:#e5e7eb; }
+    .tag-nogo { display:inline-block; margin-left:6px; font-size:9px; color:#fca5a5;
+                background:rgba(239,68,68,.15); padding:1px 6px; border-radius:3px;
+                font-weight:700; letter-spacing:.4px; }
+    .tag-photo{ display:inline-block; margin-left:6px; font-size:9px; color:#7dd3fc;
+                background:rgba(6,182,212,.12); padding:1px 6px; border-radius:3px;
+                font-weight:700; letter-spacing:.4px; }
+    .tag-audio{ display:inline-block; margin-left:6px; font-size:9px; color:#fbbf24;
+                background:rgba(245,158,11,.14); padding:1px 6px; border-radius:3px;
+                font-weight:700; letter-spacing:.4px; }
+    .def-photo { display:block; margin-top:6px; max-width:200px; max-height:140px;
+                 object-fit:cover; border-radius:6px; border:1px solid #243246;
+                 cursor:zoom-in; }
+    .def-audio { display:block; margin-top:6px; max-width:280px; height:34px; }
+    .def-note { font-size:11px; color:#fca5a5; font-style:italic; margin-top:3px;
+                line-height:1.5; }
+
+    .ok-pills { display:flex; flex-wrap:wrap; gap:6px; }
+    .ok-pill  { font-size:11px; color:#86efac; background:rgba(34,197,94,.08);
+                border:1px solid #166534; padding:3px 9px; border-radius:999px; }
+
+    .vw-sig    { display:block; max-width:240px; max-height:90px; background:#fff;
+                 padding:6px; border-radius:6px; }
+    .vw-fitness{ margin-top:8px; font-size:11px; color:#94a3b8; }
 </style>
 
 @code {
     private const int PAGE_SIZE = 5;
 
-    private List<RecentSubmissionDto>? all;
-    private RecentSubmissionDto?       viewing;
+    private List<SubmissionRow>? all;
+    private SubmissionRow?       viewing;
     private bool   busy        = true;
     private string error       = "";
     private int    currentPage = 1;
     private FilterMode filter  = FilterMode.All;
 
-    private int goCount    => all?.Count(s => s.Status == ChecklistStatus.Go) ?? 0;
-    private int goButCount => all?.Count(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService) ?? 0;
-    private int noGoCount  => all?.Count(s => s.Status == ChecklistStatus.NoGo) ?? 0;
+    private int goCount     => all?.Count(s => s.Status == ChecklistStatus.Go) ?? 0;
+    private int goButCount  => all?.Count(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService) ?? 0;
+    private int noGoCount   => all?.Count(s => s.Status == ChecklistStatus.NoGo) ?? 0;
+    private int queuedCount => all?.Count(s => s.IsQueued) ?? 0;
 
-    private List<RecentSubmissionDto> Filtered =>
-        all is null ? new List<RecentSubmissionDto>()
+    private List<SubmissionRow> Filtered =>
+        all is null ? new List<SubmissionRow>()
         : filter switch
         {
-            FilterMode.Go    => all.Where(s => s.Status == ChecklistStatus.Go).ToList(),
-            FilterMode.GoBut => all.Where(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService).ToList(),
-            FilterMode.NoGo  => all.Where(s => s.Status == ChecklistStatus.NoGo).ToList(),
-            _                => all
+            FilterMode.Go     => all.Where(s => s.Status == ChecklistStatus.Go).ToList(),
+            FilterMode.GoBut  => all.Where(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService).ToList(),
+            FilterMode.NoGo   => all.Where(s => s.Status == ChecklistStatus.NoGo).ToList(),
+            FilterMode.Queued => all.Where(s => s.IsQueued).ToList(),
+            _                 => all
         };
 
     private int TotalPages =>
         Filtered.Count == 0 ? 1 : (int)Math.Ceiling(Filtered.Count / (double)PAGE_SIZE);
 
-    private IEnumerable<RecentSubmissionDto> PagedRows =>
+    private IEnumerable<SubmissionRow> PagedRows =>
         Filtered.Skip((currentPage - 1) * PAGE_SIZE).Take(PAGE_SIZE);
 
     private int FirstRowIndex => Filtered.Count == 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
@@ -336,7 +536,12 @@ else
             try
             {
                 var cached = await Cache.GetRecentSubmissionsAsync(email);
-                if (cached.Count > 0) { all = cached; busy = false; StateHasChanged(); }
+                if (cached.Count > 0)
+                {
+                    all  = cached.Select(SubmissionRow.FromServer).ToList();
+                    await MergeQueuedAsync();
+                    busy = false; StateHasChanged();
+                }
             }
             catch { }
         }
@@ -347,7 +552,7 @@ else
             var fresh = await Api.RecentSubmissionsAsync(200);
             if (fresh != null)
             {
-                all         = fresh;
+                all         = fresh.Select(SubmissionRow.FromServer).ToList();
                 currentPage = 1;
                 if (!string.IsNullOrEmpty(email))
                     try { await Cache.SaveRecentSubmissionsAsync(email, fresh); } catch { }
@@ -361,26 +566,192 @@ else
                 error = "You're offline and we don't have any cached submissions yet.";
         }
         catch (Exception ex) { if (all == null) error = ex.Message; }
-        finally { busy = false; StateHasChanged(); }
+        finally
+        {
+            // Always merge queued rows in so offline-only submissions appear
+            // alongside the server-confirmed ones.
+            await MergeQueuedAsync();
+            busy = false;
+            StateHasChanged();
+        }
     }
 
-    private void View(RecentSubmissionDto s) => viewing = s;
-    private void CloseView() => viewing = null;
+    /// <summary>
+    /// Pull every row in the offline <see cref="SubmissionQueue"/>, convert
+    /// each to a <see cref="SubmissionRow"/> with <c>IsQueued = true</c>, and
+    /// prepend them to <see cref="all"/>. Sorted so newest is at the top.
+    /// </summary>
+    private async Task MergeQueuedAsync()
+    {
+        try
+        {
+            var pendings = await Queue.GetAllAsync();
+            if (pendings.Count == 0) return;
+
+            // Need machine metadata to render queue rows — pull once from cache.
+            var machines = await Cache.GetMachinesAsync();
+            var byId     = machines.ToDictionary(m => m.Id);
+
+            var operatorName = Auth.CurrentUser?.FullName ?? "—";
+
+            var queuedRows = new List<SubmissionRow>();
+            foreach (var p in pendings)
+            {
+                SyncSubmissionRequest? req = null;
+                try { req = System.Text.Json.JsonSerializer.Deserialize<SyncSubmissionRequest>(p.JsonPayload); }
+                catch { /* corrupted row — skip */ }
+                if (req is null) continue;
+
+                byId.TryGetValue(req.MachineId, out var machine);
+                queuedRows.Add(SubmissionRow.FromQueued(req, machine, operatorName));
+            }
+
+            // Newest queue items first; combine with whatever's already loaded.
+            var combined = queuedRows
+                .Concat(all ?? Enumerable.Empty<SubmissionRow>())
+                .OrderByDescending(r => r.SubmittedAt)
+                .ToList();
+            all = combined;
+        }
+        catch { /* queue read failures shouldn't break the page */ }
+    }
+
+    // ── Detail loading for the View modal ──────────────────────────────────
+    private SupervisorReviewDto? viewDetails;
+    private bool                 viewLoading;
+
+    /// <summary>Defective items split out so the markup can render them in a
+    /// red card without needing a nested code block (Razor 8 rejects that).</summary>
+    private IReadOnlyList<SupervisorReviewItemDto> Defects =>
+        viewDetails is null
+            ? Array.Empty<SupervisorReviewItemDto>()
+            : viewDetails.Items.Where(i => i.Status == ItemStatus.Defect).ToList();
+
+    /// <summary>Items the operator passed. Same computed-property trick.</summary>
+    private IReadOnlyList<SupervisorReviewItemDto> InOrder =>
+        viewDetails is null
+            ? Array.Empty<SupervisorReviewItemDto>()
+            : viewDetails.Items.Where(i => i.Status == ItemStatus.InOrder).ToList();
+
+    private async Task View(SubmissionRow s)
+    {
+        viewing     = s;
+        viewDetails = null;
+        viewLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            if (s.IsQueued && s.LocalId.HasValue)
+            {
+                // Build the detail view from the queue payload + cached
+                // template — no server round-trip required.
+                viewDetails = await BuildQueuedDetailAsync(s.LocalId.Value);
+            }
+            else
+            {
+                viewDetails = await Api.GetSubmissionDetailsAsync(s.SubmissionId);
+            }
+        }
+        catch { /* leave viewDetails null — the modal shows a friendly fallback */ }
+        finally
+        {
+            viewLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void CloseView()
+    {
+        viewing     = null;
+        viewDetails = null;
+        viewLoading = false;
+    }
+
+    /// <summary>
+    /// Reconstruct the same view-model the server returns, but purely from
+    /// local state (offline queue + cached template + cached machine).
+    /// </summary>
+    private async Task<SupervisorReviewDto?> BuildQueuedDetailAsync(Guid localId)
+    {
+        var entries = await Queue.GetAllAsync();
+        var entry   = entries.FirstOrDefault(e => e.LocalId == localId);
+        if (entry == null) return null;
+
+        SyncSubmissionRequest? req;
+        try { req = System.Text.Json.JsonSerializer.Deserialize<SyncSubmissionRequest>(entry.JsonPayload); }
+        catch { return null; }
+        if (req == null) return null;
+
+        var machine = (await Cache.GetMachinesAsync()).FirstOrDefault(m => m.Id == req.MachineId);
+        var tpl     = await Cache.GetTemplateAsync(req.MachineId);
+        if (tpl == null) return null;
+
+        // Build a lookup so we can resolve TemplateItemId → name/icon/critical.
+        var tplById = tpl.Items.ToDictionary(i => i.Id);
+        var user    = Auth.CurrentUser;
+
+        return new SupervisorReviewDto
+        {
+            SubmissionId             = 0,
+            Status                   = ChecklistStatus.InProgress,
+            MachineNumber            = machine?.MachineNumber ?? "—",
+            MachineName              = machine?.MachineName   ?? "—",
+            MachineType              = machine?.TypeDisplay   ?? "—",
+            OperatorName             = user?.FullName         ?? "—",
+            OperatorEmployeeNumber   = user?.EmployeeNumber   ?? "",
+            SubmittedAt              = req.SubmittedAt == default ? DateTime.UtcNow : req.SubmittedAt,
+            Shift                    = req.Shift,
+            KmOrHourMeter            = req.KmOrHourMeter,
+            OperatorRemarks          = req.OperatorRemarks,
+            OperatorSignature        = req.OperatorSignature,
+            FitnessDeclarationSigned = req.FitnessDeclarationSigned,
+            Items = req.Items.Select(i =>
+            {
+                tplById.TryGetValue(i.TemplateItemId, out var t);
+                return new SupervisorReviewItemDto
+                {
+                    TemplateItemId = i.TemplateItemId,
+                    ItemName       = t?.ItemName ?? $"Item #{i.TemplateItemId}",
+                    IconPath       = t?.IconPath,
+                    IsNoGoItem     = t?.IsNoGoItem ?? false,
+                    Status         = i.Status,
+                    Notes          = i.Notes
+                };
+            })
+            .OrderBy(i => i.Status == ItemStatus.Defect ? 0 : 1)
+            .ThenBy(i => i.ItemName)
+            .ToList()
+        };
+    }
+
+    private static string FirstChar(string s) =>
+        string.IsNullOrWhiteSpace(s) ? "?" : char.ToUpperInvariant(s.Trim()[0]).ToString();
 
     /// <summary>Reference to the inline PDF viewer so we can call ShowAsync on it.</summary>
     private PdfViewer? pdfView;
 
-    /// <summary>Opens the server's checklist PDF in an in-app popup viewer
-    /// (blob URL + WebView2 native PDF reader). Requires a live connection.</summary>
-    private async Task OpenPdf(RecentSubmissionDto s)
+    /// <summary>
+    /// Open the right PDF for a row:
+    ///   · Server row → live fetch (with byte cache fallback if offline)
+    ///   · Queued row → on-device PDF rendered at submit time, keyed by LocalId
+    /// </summary>
+    private async Task OpenPdf(SubmissionRow s)
     {
         if (pdfView is null) return;
         try
         {
-            await pdfView.ShowAsync(
-                s.SubmissionId,
-                title: $"{s.MachineNumber} · {s.MachineName}",
-                downloadFileName: $"Checklist_{s.MachineNumber}_{s.SubmissionId}.pdf");
+            var title    = $"{s.MachineNumber} · {s.MachineName}";
+            var fileName = $"Checklist_{s.MachineNumber}_{(s.IsQueued ? "queued" : s.SubmissionId.ToString())}.pdf";
+
+            if (s.IsQueued && s.LocalId.HasValue)
+            {
+                await pdfView.ShowLocalAsync(s.LocalId.Value, title, fileName);
+            }
+            else
+            {
+                await pdfView.ShowAsync(s.SubmissionId, title, fileName);
+            }
         }
         catch (Exception ex)
         {
@@ -403,6 +774,7 @@ else
         ChecklistStatus.GoTillNextService => ("gobut",    "GO-BUT 30D"),
         ChecklistStatus.NoGo              => ("nogo",     "NO-GO"),
         ChecklistStatus.Rejected          => ("rejected", "REJECTED"),
+        ChecklistStatus.InProgress        => ("queued",   "☁ QUEUED"),
         _                                 => ("gobut",    "PENDING")
     };
 
@@ -411,5 +783,66 @@ else
     private static string StatusBadgeCls(ChecklistStatus s)   => StatusBadge(s).Cls;
     private static string StatusBadgeLabel(ChecklistStatus s) => StatusBadge(s).Label;
 
-    private enum FilterMode { All, Go, GoBut, NoGo }
+    private enum FilterMode { All, Go, GoBut, NoGo, Queued }
+
+    /// <summary>
+    /// Unified row type that represents either a server-confirmed submission
+    /// (from <c>RecentSubmissionDto</c>) or a queued offline submission (from
+    /// <c>SubmissionQueue</c>). Keeps the markup and pager unaware of where
+    /// the row came from.
+    /// </summary>
+    private class SubmissionRow
+    {
+        public int             SubmissionId  { get; set; }
+        /// <summary>Set ONLY for rows that haven't reached the server. The
+        /// presence of a LocalId is the source of truth for <see cref="IsQueued"/>.</summary>
+        public Guid?           LocalId       { get; set; }
+        public bool            IsQueued      => LocalId.HasValue;
+
+        public string          MachineNumber { get; set; } = "";
+        public string          MachineName   { get; set; } = "";
+        public string          OperatorName  { get; set; } = "";
+        public ChecklistStatus Status        { get; set; }
+        public DateTime        SubmittedAt   { get; set; }
+        public int             ItemCount     { get; set; }
+        public int             DefectCount   { get; set; }
+        public Shift           Shift         { get; set; }
+        public int?            KmOrHourMeter { get; set; }
+
+        public static SubmissionRow FromServer(RecentSubmissionDto s) => new()
+        {
+            SubmissionId  = s.SubmissionId,
+            LocalId       = null,
+            MachineNumber = s.MachineNumber,
+            MachineName   = s.MachineName,
+            OperatorName  = s.OperatorName,
+            Status        = s.Status,
+            SubmittedAt   = s.SubmittedAt,
+            ItemCount     = s.ItemCount,
+            DefectCount   = s.DefectCount,
+            Shift         = s.Shift,
+            KmOrHourMeter = s.KmOrHourMeter,
+        };
+
+        public static SubmissionRow FromQueued(
+            SyncSubmissionRequest req,
+            SyncMachineSummaryDto? machine,
+            string operatorName) => new()
+        {
+            // SubmissionId is 0 — the server hasn't assigned one yet.
+            SubmissionId  = 0,
+            LocalId       = req.LocalId,
+            MachineNumber = machine?.MachineNumber ?? "—",
+            MachineName   = machine?.MachineName   ?? "(machine not in cache)",
+            OperatorName  = operatorName,
+            // We don't compute final status until the server runs the rules.
+            // Show "InProgress" which the badge renders as a yellow QUEUED pill.
+            Status        = ChecklistStatus.InProgress,
+            SubmittedAt   = req.SubmittedAt == default ? DateTime.UtcNow : req.SubmittedAt,
+            ItemCount     = req.Items?.Count ?? 0,
+            DefectCount   = req.Items?.Count(i => i.Status == ItemStatus.Defect) ?? 0,
+            Shift         = req.Shift,
+            KmOrHourMeter = req.KmOrHourMeter,
+        };
+    }
 }

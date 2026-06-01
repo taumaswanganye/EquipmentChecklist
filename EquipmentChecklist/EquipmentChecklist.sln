@@ -7,7 +7,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EquipmentChecklist", "Equip
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "OpenSource", "OpenSource", "{523E29AC-AFDE-40AB-A0C1-562AFFA876F6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EquipmentChecklist.Shared", "..\OpenSource\EquipmentChecklist.Shared\EquipmentChecklist.Shared.csproj", "{4A9D762A-3638-43AC-A638-3FB3CB2F6628}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EquipmentChecklist.Shared", "..\EquipmentChecklist.Shared\EquipmentChecklist.Shared.csproj", "{4A9D762A-3638-43AC-A638-3FB3CB2F6628}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

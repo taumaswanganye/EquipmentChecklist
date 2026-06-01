@@ -54,6 +54,27 @@ public class ApiClient
     /// icons / item images that live in the server's wwwroot.</summary>
     public Uri? BaseAddress => _http.BaseAddress;
 
+    /// <summary>
+    /// Lightweight liveness check used by <see cref="ApiHealth"/>. Anonymous
+    /// (no token applied) and capped at a short timeout so it doesn't stall
+    /// the UI when the server is down or unreachable. Returns <c>true</c> on
+    /// any 2xx, <c>false</c> on anything else (including timeouts and
+    /// connection refusals).
+    /// </summary>
+    public async Task<bool> PingAsync(TimeSpan? timeout = null)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(5));
+            var resp = await _http.GetAsync("api/sync/ping", cts.Token);
+            return resp.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>Attaches the Bearer token (if any) to the next request.</summary>
     private async Task ApplyAuthAsync()
     {
@@ -121,6 +142,26 @@ public class ApiClient
         await ApplyAuthAsync();
         return await _http.GetFromJsonAsync<List<RecentSubmissionDto>>(
             $"api/sync/submissions/recent?take={take}");
+    }
+
+    /// <summary>
+    /// Full details for one submission — items, defect notes, operator
+    /// signature, remarks. Reuses <see cref="SupervisorReviewDto"/> because
+    /// it already has exactly the right shape.
+    /// </summary>
+    public async Task<SupervisorReviewDto?> GetSubmissionDetailsAsync(int submissionId)
+    {
+        await ApplyAuthAsync();
+        try
+        {
+            return await _http.GetFromJsonAsync<SupervisorReviewDto>(
+                $"api/sync/submissions/{submissionId}/details");
+        }
+        catch (HttpRequestException)
+        {
+            // Surfaced to UI as "offline" — caller falls back to row summary.
+            return null;
+        }
     }
 
     /// <summary>

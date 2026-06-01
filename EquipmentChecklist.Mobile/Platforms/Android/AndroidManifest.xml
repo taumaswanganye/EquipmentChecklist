@@ -3,4 +3,20 @@
     <application android:allowBackup="true" android:icon="@mipmap/appicon" android:roundIcon="@mipmap/appicon_round" android:supportsRtl="true"></application>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      Defect photo capture (MediaPicker.CapturePhotoAsync).
+      <uses-feature android:required="false"> means the app still installs on
+      tablets without a rear camera; the photo button just becomes a no-op.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature  android:name="android.hardware.camera" android:required="false" />
+
+    <!--
+      Defect voice-memo capture (Plugin.Maui.Audio AudioRecorder).
+      Android shows a runtime permission prompt on first use; the operator
+      can deny it and just type the defect note instead.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature  android:name="android.hardware.microphone" android:required="false" />
 </manifest>

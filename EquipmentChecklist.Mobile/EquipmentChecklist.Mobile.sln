@@ -5,6 +5,8 @@ VisualStudioVersion = 17.14.37314.3 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EquipmentChecklist.Mobile", "EquipmentChecklist.Mobile.csproj", "{9AA367B2-AB5A-A7B0-6278-BA3E7E52D714}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EquipmentChecklist.Shared", "..\EquipmentChecklist.Shared\EquipmentChecklist.Shared.csproj", "{A7C8E1F2-3D4B-4E55-9061-1B2C3D4E5F60}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -17,6 +19,10 @@ Global
 		{9AA367B2-AB5A-A7B0-6278-BA3E7E52D714}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9AA367B2-AB5A-A7B0-6278-BA3E7E52D714}.Release|Any CPU.Build.0 = Release|Any CPU
 		{9AA367B2-AB5A-A7B0-6278-BA3E7E52D714}.Release|Any CPU.Deploy.0 = Release|Any CPU
+		{A7C8E1F2-3D4B-4E55-9061-1B2C3D4E5F60}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A7C8E1F2-3D4B-4E55-9061-1B2C3D4E5F60}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A7C8E1F2-3D4B-4E55-9061-1B2C3D4E5F60}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A7C8E1F2-3D4B-4E55-9061-1B2C3D4E5F60}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
