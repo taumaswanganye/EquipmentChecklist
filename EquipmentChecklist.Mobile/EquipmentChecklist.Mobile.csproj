@@ -72,6 +72,32 @@
       when the operator can't (or won't) type the note.
     -->
     <PackageReference Include="Plugin.Maui.Audio" Version="4.0.0" />
+    <!--
+      Bitmap library — used to resize defect photos before upload. A 3 MB
+      phone JPEG becomes ~150 KB after a 1280×960 / 80% quality re-encode.
+      Critical for cellular submissions at the mine.
+      We pin the 3.x line because:
+        * 2.88.x predates net9.0 — `dotnet restore` fails on net9.0-android
+          with "Package SkiaSharp.NativeAssets.Android … is not compatible
+          with net9.0".
+        * In 3.x the main `SkiaSharp` package transitively pulls the right
+          NativeAssets.* per RID. No need to reference the platform-specific
+          native packages explicitly.
+    -->
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
+    <!--
+      AndroidX biometric binding for fingerprint / face unlock. Used by
+      BiometricUnlock's #if ANDROID branch. The Xamarin.AndroidX.Biometric
+      package ships the BiometricPrompt + BiometricManager Java bindings —
+      we wrap them in a TaskCompletionSource-based async API ourselves
+      rather than depending on a community plugin that's been stuck in
+      beta. The binding is Android-only — wrap the ItemGroup in a
+      condition so Windows builds don't pull it.
+    -->
+  </ItemGroup>
+
+  <ItemGroup Condition="$(TargetFramework.Contains('-android'))">
+    <PackageReference Include="Xamarin.AndroidX.Biometric" Version="1.1.0.21" />
   </ItemGroup>
 
   <ItemGroup>

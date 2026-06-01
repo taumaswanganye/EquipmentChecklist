@@ -26,6 +26,10 @@ public static class MauiProgram
 		builder.Services.AddSingleton<ActionQueue>();
 		builder.Services.AddSingleton<SyncWorker>();
 		builder.Services.AddSingleton<ApiHealth>();
+		// Tactile feedback — toasts subscribed in MainLayout, haptics
+		// invoked from pages on commit-style actions.
+		builder.Services.AddSingleton<ToastService>();
+		builder.Services.AddSingleton<HapticService>();
 		// Scoped: LocalPdfService captures IJSRuntime which is per-WebView.
 		builder.Services.AddScoped<LocalPdfService>();
 		// Cross-platform recorder/player factory from Plugin.Maui.Audio.

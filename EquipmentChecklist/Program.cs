@@ -384,3 +384,11 @@ static async Task SeedChecklistTemplatesAsync(ApplicationDbContext db)
 		await db.SaveChangesAsync();
 	}
 }
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Make Program reachable from EquipmentChecklist.Tests so WebApplicationFactory
+// can spin up the full pipeline in-process. Top-level Program.cs is implicitly
+// `internal partial class Program` — declaring it `public partial class Program`
+// here flips the visibility without touching the script body above.
+// ───────────────────────────────────────────────────────────────────────────────
+public partial class Program { }

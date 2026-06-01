@@ -5,6 +5,8 @@
 @inject ApiClient        Api
 @inject AuthService      Auth
 @inject ActionQueue      Actions
+@inject ToastService     Toasts
+@inject HapticService    Haptics
 @inject NavigationManager Nav
 @inject IJSRuntime       JS
 
@@ -417,6 +419,7 @@
             return;
         }
 
+        Haptics.Medium();   // confirm the commit action
         busy = true; StateHasChanged();
         try
         {
@@ -425,6 +428,7 @@
             if (Connectivity.NetworkAccess != NetworkAccess.Internet)
             {
                 await Actions.EnqueueSignOffAsync(SubmissionId, resolution, sig);
+                Toasts.Warning("Saved offline — will sync when signal returns.");
                 Nav.NavigateTo("/sign-off");
                 return;
             }
@@ -435,17 +439,27 @@
                 error = string.IsNullOrEmpty(res.Error)
                     ? "Server rejected the sign-off. Try again."
                     : res.Error;
+                Toasts.Error(error);
                 return;
             }
+            Haptics.Success();
+            Toasts.Success(resolution == 3
+                ? "Approved — repair by next service."
+                : "Approved — repair within 24H.");
             Nav.NavigateTo("/sign-off");
         }
         catch (HttpRequestException)
         {
             // Network died mid-call — queue and bail.
             await Actions.EnqueueSignOffAsync(SubmissionId, resolution, sig);
+            Toasts.Warning("Saved offline — will sync when signal returns.");
             Nav.NavigateTo("/sign-off");
         }
-        catch (Exception ex) { error = "Sign-off failed: " + ex.Message; }
+        catch (Exception ex)
+        {
+            error = "Sign-off failed: " + ex.Message;
+            Toasts.Error(error);
+        }
         finally { busy = false; StateHasChanged(); }
     }
 
@@ -521,6 +535,7 @@
             return;
         }
 
+        Haptics.Warning();   // strong cue — rejection is a serious action
         rejecting = true;
         StateHasChanged();
         try
@@ -530,6 +545,7 @@
             {
                 await Actions.EnqueueRejectAsync(SubmissionId, rejectReason.Trim(), rejectMechanicId);
                 showRejectModal = false;
+                Toasts.Warning("Rejection saved offline — will sync when signal returns.");
                 Nav.NavigateTo("/sign-off");
                 return;
             }
@@ -540,10 +556,12 @@
                 rejectError = string.IsNullOrEmpty(res.Error)
                     ? "Server refused the rejection. Try again."
                     : res.Error;
+                Toasts.Error(rejectError);
                 return;
             }
             // Success — close modal and bounce back to the queue.
             showRejectModal = false;
+            Toasts.Success("Submission rejected. Machine immobilised; mechanic notified.");
             Nav.NavigateTo("/sign-off");
         }
         catch (HttpRequestException)
@@ -551,11 +569,13 @@
             // Network died mid-call — queue and bail.
             await Actions.EnqueueRejectAsync(SubmissionId, rejectReason.Trim(), rejectMechanicId);
             showRejectModal = false;
+            Toasts.Warning("Rejection saved offline — will sync when signal returns.");
             Nav.NavigateTo("/sign-off");
         }
         catch (Exception ex)
         {
             rejectError = ex.Message;
+            Toasts.Error(rejectError);
         }
         finally
         {

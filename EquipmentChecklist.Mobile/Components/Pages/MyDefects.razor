@@ -6,7 +6,11 @@
 @inject AuthService      Auth
 @inject ActionQueue      Actions
 @inject LocalCache       Cache
+@inject ToastService     Toasts
+@inject HapticService    Haptics
 @inject NavigationManager Nav
+
+<PullToRefresh OnRefresh="LoadAsync">
 
 <div class="page-head">
     <div>
@@ -142,6 +146,8 @@ else
         </div>
     }
 }
+
+</PullToRefresh>
 
 <style>
     .page-head { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
@@ -314,6 +320,7 @@ else
 
     private async Task ClaimAsync(int id)
     {
+        Haptics.Light();        // confirm the tap even with gloves on
         busyIds.Add(id);
         StateHasChanged();
         try
@@ -324,18 +331,29 @@ else
             if (Connectivity.NetworkAccess != NetworkAccess.Internet)
             {
                 await Actions.EnqueueClaimAsync(id);
+                Toasts.Warning("Saved offline — will sync when signal returns.");
                 return;
             }
 
             try
             {
                 var res = await Api.MechanicClaimAsync(id);
-                if (res.Ok) await LoadAsync();
+                if (res.Ok)
+                {
+                    Haptics.Success();
+                    Toasts.Success("Job claimed.");
+                    await LoadAsync();
+                }
+                else
+                {
+                    Toasts.Error(res.Error ?? "Couldn't claim the job.");
+                }
             }
             catch (HttpRequestException)
             {
                 // Connectivity blip mid-call — queue and bail.
                 await Actions.EnqueueClaimAsync(id);
+                Toasts.Warning("Saved offline — will sync when signal returns.");
             }
         }
         finally

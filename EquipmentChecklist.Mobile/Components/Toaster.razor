@@ -1,0 +1,118 @@
+@using EquipmentChecklist.Mobile.Services
+@inject ToastService Toasts
+@implements IDisposable
+
+@*
+   Visible stack of active toast cards. Sits at the bottom-right on desktop
+   and the bottom-center on mobile via the responsive @@media query below.
+
+   Architecture:
+     - Subscribes to ToastService.OnShow on mount, unsubscribes on dispose.
+     - Each incoming message gets pushed into `active` with a CancellationTokenSource
+       so a manual dismiss can cancel the auto-remove timer.
+     - The auto-remove is just Task.Delay(durationMs); when it elapses the
+       message gets pulled out of the list and StateHasChanged() repaints.
+*@
+
+<div class="toaster">
+    @foreach (var item in active)
+    {
+        <div class="toast toast-@item.Kind.ToString().ToLowerInvariant()"
+             @key="item.Id">
+            <div class="toast-icon">@IconFor(item.Kind)</div>
+            <div class="toast-text">@item.Text</div>
+            <button class="toast-x" @onclick="() => Dismiss(item)" title="Dismiss">✕</button>
+        </div>
+    }
+</div>
+
+<style>
+    .toaster { position:fixed; right:18px; bottom:18px; z-index:200;
+               display:flex; flex-direction:column; gap:10px;
+               max-width:min(420px, 92vw); pointer-events:none; }
+    .toast   { display:flex; align-items:center; gap:12px;
+               padding:12px 14px; border-radius:10px;
+               background:#0d1729; border:1px solid #243246;
+               box-shadow:0 12px 32px rgba(0,0,0,.45);
+               animation:toast-in .22s ease-out;
+               pointer-events:auto;
+               color:#e5e7eb; font-size:13px; line-height:1.45; }
+    .toast-icon { font-size:18px; flex-shrink:0; }
+    .toast-text { flex:1; min-width:0; }
+    .toast-x    { background:transparent; border:none; color:#64748b;
+                  font-size:14px; cursor:pointer; padding:4px 6px;
+                  font-family:inherit; flex-shrink:0; }
+    .toast-x:hover { color:#cbd5e1; }
+
+    .toast-success { border-left:4px solid #22c55e; }
+    .toast-success .toast-icon { color:#86efac; }
+    .toast-error   { border-left:4px solid #ef4444; }
+    .toast-error   .toast-icon { color:#fca5a5; }
+    .toast-warning { border-left:4px solid #f59e0b;
+                     background:#7c5302; color:#fde68a; }
+    .toast-warning .toast-icon { color:#fbbf24; }
+    .toast-info    { border-left:4px solid #06b6d4; }
+    .toast-info    .toast-icon { color:#7dd3fc; }
+
+    @@keyframes toast-in {
+        from { transform:translateY(10px); opacity:0; }
+        to   { transform:translateY(0);    opacity:1; }
+    }
+
+    /* Phone: stack at the bottom center, full-width-ish */
+    @@media (max-width:760px) {
+        .toaster { left:14px; right:14px; bottom:14px; max-width:none;
+                   align-items:stretch; }
+    }
+</style>
+
+@code {
+    private readonly List<ActiveToast> active = new();
+
+    private record ActiveToast(int Id, string Text, ToastKind Kind);
+
+    private int seq;
+
+    protected override void OnInitialized()
+        => Toasts.OnShow += OnToast;
+
+    private void OnToast(ToastMessage msg)
+    {
+        var id = Interlocked.Increment(ref seq);
+        InvokeAsync(() =>
+        {
+            active.Add(new ActiveToast(id, msg.Text, msg.Kind));
+            StateHasChanged();
+
+            // Auto-dismiss after the requested duration. Fire-and-forget;
+            // cancellation isn't needed because Dismiss() also removes the
+            // entry by Id — a double-remove is a no-op on List<T>.
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(Math.Max(500, msg.DurationMs));
+                await InvokeAsync(() =>
+                {
+                    active.RemoveAll(t => t.Id == id);
+                    StateHasChanged();
+                });
+            });
+        });
+    }
+
+    private void Dismiss(ActiveToast item)
+    {
+        active.Remove(item);
+        StateHasChanged();
+    }
+
+    private static string IconFor(ToastKind kind) => kind switch
+    {
+        ToastKind.Success => "✓",
+        ToastKind.Error   => "⚠",
+        ToastKind.Warning => "⚠",
+        ToastKind.Info    => "ℹ",
+        _                 => "•"
+    };
+
+    public void Dispose() => Toasts.OnShow -= OnToast;
+}

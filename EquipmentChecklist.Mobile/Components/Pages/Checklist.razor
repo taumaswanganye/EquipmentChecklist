@@ -3,6 +3,7 @@
 @using EquipmentChecklist.Models
 @using EquipmentChecklist.Mobile.Services
 @using Plugin.Maui.Audio
+@using SkiaSharp
 @inject ApiClient        Api
 @inject AuthService      Auth
 @inject LocalCache       Cache
@@ -11,6 +12,8 @@
 @inject ApiHealth        Health
 @inject LocalPdfService  LocalPdf
 @inject IAudioManager    AudioMgr
+@inject ToastService     Toasts
+@inject HapticService    Haptics
 @inject NavigationManager Nav
 @inject IJSRuntime       JS
 
@@ -635,17 +638,24 @@
             var photo = await MediaPicker.Default.CapturePhotoAsync();
             if (photo is null) return;  // user cancelled
 
-            // Read the bytes once into memory. Phone cameras default to
-            // 2–4 MB JPEGs — fine for now, will add a resize pass when we
-            // see network pain in the field.
+            // Read the raw camera output once into memory.
             using var src = await photo.OpenReadAsync();
             using var ms  = new MemoryStream();
             await src.CopyToAsync(ms);
             var bytes = ms.ToArray();
             if (bytes.Length == 0) return;
 
+            // Compress before base64 + upload. Phone cameras default to
+            // 2–4 MB JPEGs; that's painful over mine cellular. Re-encoding
+            // to 1280×960 max at 80% quality gets us to ~150 KB while still
+            // being clearly readable on the supervisor / mechanic side.
+            //
+            // Falls back to the original bytes if SkiaSharp can't decode
+            // the input (rare — HEIC on some iOS configs).
+            bytes = ResizeJpeg(bytes, maxDim: 1280, quality: 80);
+
             item.PhotoBase64   = Convert.ToBase64String(bytes);
-            item.PhotoMimeType = photo.ContentType ?? "image/jpeg";
+            item.PhotoMimeType = "image/jpeg";   // always JPEG after the recode
             StateHasChanged();
         }
         catch (FeatureNotSupportedException)
@@ -772,6 +782,57 @@
         item.AudioMimeType = null;
     }
 
+    /// <summary>
+    /// Resize and re-encode a JPEG/PNG to a smaller JPEG using SkiaSharp.
+    /// The mine's cellular link is slow — a 3 MB phone JPEG can take minutes
+    /// to upload, three photos × that = a missed shift handover.
+    ///
+    /// <para>Behaviour:</para>
+    /// <list type="bullet">
+    ///   <item><description>Preserves aspect ratio; only shrinks (never enlarges).</description></item>
+    ///   <item><description>Uses a Mitchell-Netravali cubic resampler — roughly equivalent to the old <c>SKFilterQuality.High</c>, good for readability of plate numbers / labels.</description></item>
+    ///   <item><description>On any decode/encode failure returns the original bytes unchanged so the operator still gets <em>something</em> on the submission.</description></item>
+    /// </list>
+    /// </summary>
+    private static byte[] ResizeJpeg(byte[] input, int maxDim = 1280, int quality = 80)
+    {
+        if (input is null || input.Length == 0) return input ?? Array.Empty<byte>();
+        try
+        {
+            using var inStream = new SKMemoryStream(input);
+            using var bitmap   = SKBitmap.Decode(inStream);
+            if (bitmap is null) return input;
+
+            // Compute target dimensions preserving aspect ratio. No upscaling.
+            var scale = Math.Min(
+                1f,
+                (float)maxDim / Math.Max(bitmap.Width, bitmap.Height));
+            var w = Math.Max(1, (int)(bitmap.Width  * scale));
+            var h = Math.Max(1, (int)(bitmap.Height * scale));
+
+            // Skip the resize step entirely if the image is already small.
+            // SkiaSharp 3.x uses SKSamplingOptions instead of the deprecated
+            // SKFilterQuality enum. Mitchell-Netravali (cubic, B=1/3, C=1/3)
+            // is a well-known "high quality" preset.
+            var sampling = new SKSamplingOptions(new SKCubicResampler(1f / 3f, 1f / 3f));
+            using var resized = (w == bitmap.Width && h == bitmap.Height)
+                ? bitmap.Copy()
+                : bitmap.Resize(new SKImageInfo(w, h), sampling);
+            if (resized is null) return input;
+
+            using var image = SKImage.FromBitmap(resized);
+            using var data  = image.Encode(SKEncodedImageFormat.Jpeg, quality);
+            return data?.ToArray() ?? input;
+        }
+        catch
+        {
+            // SkiaSharp can throw OutOfMemoryException on huge inputs or
+            // InvalidOperationException on weird codecs. Either way the
+            // submission shouldn't fail — fall back to the original bytes.
+            return input;
+        }
+    }
+
     private async Task ClearSig() => await JS.InvokeVoidAsync("SigPad.clear", SIG_ID);
 
     private void Back() => Nav.NavigateTo("/machines");
@@ -792,6 +853,10 @@
 
         if (items.Any(i => i.Status == ItemStatus.Defect && string.IsNullOrWhiteSpace(i.Notes)))
         { error = "Describe every defect before submitting."; return; }
+
+        // Tactile commit cue — the operator just hit Submit, give them the
+        // "received" buzz before any I/O.
+        Haptics.Medium();
 
         // ── Show the overlay and start the staged flow ──
         //
@@ -926,6 +991,14 @@
         await Task.Delay(400);
 
         submitting = false;
+        // Final outcome cue + toast — the operator's now on the dashboard
+        // and the overlay is gone; this is their last signal.
+        Haptics.Success();
+        if (serverAccepted)
+            Toasts.Success("Submission accepted by server.");
+        else
+            Toasts.Warning("Saved offline — will sync when signal returns.");
+
         // Reflect what actually happened, not what we expected. A
         // submission can start "going online" but end up queued if the
         // server flaked mid-call — the URL hint should be honest.

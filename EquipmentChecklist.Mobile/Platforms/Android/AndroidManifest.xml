@@ -19,4 +19,16 @@
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature  android:name="android.hardware.microphone" android:required="false" />
+
+    <!--
+      Biometric unlock for sign-in (AndroidX BiometricPrompt).
+      USE_BIOMETRIC is the modern (API 28+) permission. We don't add the
+      older USE_FINGERPRINT (API 23–28) because we pin SupportedOSPlatformVersion
+      to Android 23 — devices below that don't even run the app.
+      <uses-feature> is required=false so the app installs on tablets
+      without a fingerprint reader; the login screen just stays on
+      password-only there.
+    -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-feature  android:name="android.hardware.fingerprint" android:required="false" />
 </manifest>

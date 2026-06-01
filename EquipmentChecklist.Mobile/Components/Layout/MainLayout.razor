@@ -166,6 +166,10 @@
     </div>
 </div>
 
+@* Global toast stack — one instance owns the queue for the entire app.
+   Pages just inject ToastService and call Success/Error/Info/Warning. *@
+<Toaster />
+
 <style>
     .app { display:flex; min-height:100vh; background:#0b1726; color:#e5e7eb;
            font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }

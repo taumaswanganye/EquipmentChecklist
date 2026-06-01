@@ -9,6 +9,8 @@
 @inject NavigationManager Nav
 @inject IJSRuntime       JS
 
+<PullToRefresh OnRefresh="LoadAsync">
+
 <div class="page-head">
     <div>
         <h1>SIGN-OFF QUEUE</h1>
@@ -163,6 +165,8 @@ else
 
 @* Inline PDF viewer — opens via @ref so OpenPdf can call ShowAsync(...) *@
 <PdfViewer @ref="pdfView" />
+
+</PullToRefresh>
 
 <style>
     .page-head { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; gap:14px; flex-wrap:wrap; }

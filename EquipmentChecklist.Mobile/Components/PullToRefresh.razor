@@ -1,0 +1,131 @@
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@*
+   Wrap any list page in <PullToRefresh OnRefresh="LoadAsync"> to get a
+   native-feeling drag-from-top to reload. Renders a thin indicator above
+   the child content; while idle, it's hidden.
+
+   The OnRefresh callback receives no arguments and is awaited before the
+   indicator goes back to idle — so spinners on the page can show during
+   the actual fetch.
+
+   This component is mobile-only by design. The JS only attaches if the
+   viewport reports touch capability; desktop users won't see anything.
+*@
+
+<div class="ptr-wrap" @ref="hostEl">
+    <div class="ptr-indicator @stateCls" style="height:@($"{Math.Min(60, progress * 0.6)}px")">
+        @if (state == State.Refreshing)
+        {
+            <span class="ptr-spinner"></span><span>Refreshing…</span>
+        }
+        else if (state == State.Armed)
+        {
+            <span>↑ Release to refresh</span>
+        }
+        else if (state == State.Pulling)
+        {
+            <span>↓ Pull to refresh</span>
+        }
+    </div>
+    @ChildContent
+</div>
+
+<style>
+    .ptr-wrap { position:relative; }
+    .ptr-indicator { display:flex; align-items:center; justify-content:center;
+                     gap:8px; overflow:hidden;
+                     color:#94a3b8; font-size:12px;
+                     transition:height .15s ease-out; }
+    .ptr-indicator.armed { color:#7dd3fc; font-weight:600; }
+    .ptr-indicator.refreshing { color:#0e9488; font-weight:600; height:36px !important; }
+    .ptr-spinner { width:14px; height:14px; border:2px solid #1f2a3a;
+                   border-top-color:#0e9488; border-radius:50%;
+                   animation:ptr-spin .7s linear infinite; }
+    @@keyframes ptr-spin { to { transform:rotate(360deg); } }
+</style>
+
+@code {
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    /// <summary>Awaited callback fired when the user releases past the threshold.</summary>
+    [Parameter] public EventCallback OnRefresh { get; set; }
+    /// <summary>Drag distance (px) required to trigger. Defaults to 65.</summary>
+    [Parameter] public int Threshold { get; set; } = 65;
+
+    private enum State { Idle, Pulling, Armed, Refreshing }
+    private State state    = State.Idle;
+    private int   progress;
+    private string stateCls => state.ToString().ToLowerInvariant();
+
+    private ElementReference hostEl;
+    private DotNetObjectReference<PullToRefresh>? selfRef;
+    private bool attached;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || attached) return;
+
+        try
+        {
+            selfRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("PullToRefresh.attach", hostEl, selfRef,
+                new { threshold = Threshold });
+            attached = true;
+        }
+        catch
+        {
+            // JS file might not be loaded yet (rare during boot). Silent
+            // failure leaves the component as a no-op wrapper.
+        }
+    }
+
+    [JSInvokable]
+    public void OnProgress(int percent)
+    {
+        progress = Math.Clamp(percent, 0, 100);
+        var nextState = progress >= 100 ? State.Armed
+                      : progress > 0    ? State.Pulling
+                      : state == State.Refreshing ? State.Refreshing
+                      : State.Idle;
+        if (nextState != state || state != State.Refreshing)
+        {
+            state = nextState;
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnTrigger()
+    {
+        state    = State.Refreshing;
+        progress = 100;
+        await InvokeAsync(StateHasChanged);
+
+        try { await OnRefresh.InvokeAsync(); }
+        catch { /* page's load handler should surface its own errors */ }
+
+        state    = State.Idle;
+        progress = 0;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public void OnReset()
+    {
+        if (state == State.Refreshing) return;
+        state    = State.Idle;
+        progress = 0;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (attached)
+        {
+            try { await JS.InvokeVoidAsync("PullToRefresh.detach", hostEl); }
+            catch { /* WebView may already be tearing down */ }
+        }
+        selfRef?.Dispose();
+    }
+}

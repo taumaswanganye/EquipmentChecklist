@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Server-side unit + light-integration tests.
+
+    Targets net8.0 to match the EquipmentChecklist server project — keeping
+    them aligned means we test against the same runtime+libs the server runs.
+
+    Why EF Core InMemory and not SQLite-in-memory?
+      * Fast (~ms per test).
+      * Adequate for testing ChecklistService logic (status calc, immobilise,
+        defect orders) which doesn't hit Postgres-specific behaviour.
+      * SQLite would be needed if/when we test JSON columns or
+        Postgres-specific SQL — easy upgrade later.
+
+    Test stack:
+      * xUnit                          — discovery + runner
+      * Microsoft.NET.Test.Sdk        — VS Test integration
+      * coverlet.collector             — code coverage when wired into CI
+      * Microsoft.EntityFrameworkCore.InMemory — fake DB
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>EquipmentChecklist.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
+    <PackageReference Include="FluentAssertions" Version="6.12.1" />
+    <!--
+      Round 2: in-process integration tests via WebApplicationFactory.
+      Lets us hit /api/sync/* with real auth + the full middleware pipeline
+      instead of stubbing the HTTP layer.
+    -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The server project pulls Shared in transitively. Referencing both
+      keeps refactoring symmetric — if the test project ever ends up
+      referencing a Shared-only type, it doesn't have to round-trip
+      through the server's csproj.
+    -->
+    <ProjectReference Include="..\EquipmentChecklist\EquipmentChecklist.csproj" />
+    <ProjectReference Include="..\EquipmentChecklist.Shared\EquipmentChecklist.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

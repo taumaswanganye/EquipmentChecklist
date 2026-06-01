@@ -8,6 +8,8 @@
 @inject SubmissionQueue  Queue
 @inject NavigationManager Nav
 
+<PullToRefresh OnRefresh="LoadAsync">
+
 <div class="page-head">
     <div>
         <h1>MY SUBMISSIONS</h1>
@@ -300,6 +302,8 @@ else
 
 @* Inline PDF popup — opened via OpenPdf → pdfView.ShowAsync(...) *@
 <PdfViewer @ref="pdfView" />
+
+</PullToRefresh>
 
 <style>
     /* Page head */
