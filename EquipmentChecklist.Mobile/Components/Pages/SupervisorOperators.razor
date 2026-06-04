@@ -51,11 +51,12 @@ else
             <tbody>
                 @foreach (var o in ops)
                 {
+                    @* data-label powers the mobile.css card layout. *@
                     <tr>
-                        <td><strong>@o.FullName</strong></td>
-                        <td class="mono muted">@o.EmployeeNumber</td>
-                        <td class="num-col">@o.Submissions30d</td>
-                        <td class="num-col">
+                        <td data-label="Operator"><strong>@o.FullName</strong></td>
+                        <td class="mono muted" data-label="Employee #">@o.EmployeeNumber</td>
+                        <td class="num-col" data-label="30-day submissions">@o.Submissions30d</td>
+                        <td class="num-col" data-label="Awaiting sign-off">
                             @if (o.PendingSignOff > 0)
                             {
                                 <a href="/sign-off" class="badge gobut" style="text-decoration:none">@o.PendingSignOff pending</a>
@@ -65,7 +66,7 @@ else
                                 <span class="muted">—</span>
                             }
                         </td>
-                        <td class="num-col">
+                        <td class="num-col" data-label="NO-GO (30d)">
                             @if (o.NoGoCount30d > 0)
                             {
                                 <span class="badge nogo">@o.NoGoCount30d</span>
@@ -75,7 +76,7 @@ else
                                 <span class="muted">—</span>
                             }
                         </td>
-                        <td class="muted mono">
+                        <td class="muted mono" data-label="Last submission">
                             @(o.LastSubmissionAt?.ToString("yyyy-MM-dd HH:mm") ?? "— never —")
                         </td>
                     </tr>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DISABLED — original Auto Backup rules removed.
+
+  This file was part of the persistent-cache-backup feature that caused the
+  app to crash on launch. It is no longer referenced from AndroidManifest.xml
+  (the android:fullBackupContent attribute was removed), but the file is
+  kept as an empty stub so the Resources/xml folder stays in source control
+  and the reintroduction path is obvious.
+
+  To re-enable: restore the original include rules from git history and
+  re-add android:fullBackupContent="@xml/backup_rules" to the <application>
+  element in AndroidManifest.xml.
+-->
+<full-backup-content>
+</full-backup-content>

@@ -142,14 +142,16 @@ else
                 @foreach (var s in PagedRows)
                 {
                     var (cls, label) = StatusBadge(s.Status);
+                    @* data-label powers the mobile.css card layout — see
+                       wwwroot/css/mobile.css under "DATA-TABLE → CARDS". *@
                     <tr>
-                        <td>
+                        <td data-label="Machine">
                             <strong>@s.MachineNumber</strong>
                             <span class="muted"> @s.MachineName</span>
                         </td>
-                        <td>@s.OperatorName</td>
-                        <td><span class="badge @cls">@label</span></td>
-                        <td class="muted mono">@s.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td data-label="Operator">@s.OperatorName</td>
+                        <td data-label="Status"><span class="badge @cls">@label</span></td>
+                        <td class="muted mono" data-label="Time">@s.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</td>
                     </tr>
                 }
             </tbody>
@@ -342,12 +344,11 @@ else
 
         try
         {
+            // Email may be null mid-restore; LocalCache falls back to the
+            // most-recently-signed-in CachedUser, so we still get data.
             var email = Auth.CurrentUser?.Email;
-            if (!string.IsNullOrEmpty(email))
-            {
-                var cached = await Cache.GetRecentSubmissionsAsync(email);
-                if (cached.Count > 0) { recent = cached; StateHasChanged(); }
-            }
+            var cached = await Cache.GetRecentSubmissionsAsync(email);
+            if (cached.Count > 0) { recent = cached; StateHasChanged(); }
         } catch { }
 
         // Stats fallback from cached machine list so the cards aren't all zeros offline.

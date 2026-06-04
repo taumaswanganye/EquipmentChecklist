@@ -21,6 +21,11 @@ public static class MauiProgram
 		// ── App services ────────────────────────────────────────────
 		builder.Services.AddSingleton<BiometricUnlock>();
 		builder.Services.AddSingleton<AuthService>();
+		// NOTE: PersistentBackup (cache mirror to public Documents) is
+		// temporarily NOT registered — its constructor was suspected of
+		// causing a silent startup crash on this Android target. To
+		// re-enable: AddSingleton<PersistentBackup>() here and add the
+		// TryEager<PersistentBackup>(app) call below.
 		builder.Services.AddSingleton<LocalCache>();
 		builder.Services.AddSingleton<SubmissionQueue>();
 		builder.Services.AddSingleton<ActionQueue>();
@@ -53,32 +58,40 @@ public static class MauiProgram
 		// AudioManager.Current accessor doesn't. Pages then inject
 		// IAudioManager via constructor / [Inject] and call CreateRecorder().
 		builder.AddAudio();
-		// ── HTTP client (platform-aware base URL) ────────────────────
+		// ════════════════════════════════════════════════════════════════
+		//  HTTP CLIENT — API base URL
 		//
-		// localhost means "this device" on every platform:
-		//   • Windows desktop  → loopback hits the dev Kestrel directly.
-		//   • Android emulator → loopback is the emulator itself, NOT the
-		//                        host machine. Google reserves 10.0.2.2 as
-		//                        the alias for the host loopback, so that's
-		//                        what we hand to the emulator. Physical
-		//                        Android devices need the host's LAN IP
-		//                        instead — change this string when you test
-		//                        on a phone over Wi-Fi.
+		//  The mobile app talks to the dev Kestrel via this base URL. The
+		//  right value depends on WHICH device + WHICH network you're on:
 		//
-		// Port stays at the dev Kestrel port from launchSettings.json (55025).
-		// Make sure Kestrel binds to 0.0.0.0:55025 (not just localhost) so the
-		// emulator's 10.0.2.2 hop can actually reach it — easiest is to add
-		// `--urls https://0.0.0.0:55025` to `dotnet run` on the server.
+		//    Target               URL to use                         Why
+		//    ─────────────────    ────────────────────────────────    ─────────────────────────
+		//    Windows desktop      https://localhost:55025/           loopback hits dev Kestrel
+		//    Android emulator     https://10.0.2.2:55025/            Google's host-loopback alias
+		//    Physical Android     https://<DEV_PC_LAN_IP>:55025/     phone reaches the PC via Wi-Fi
+		//
+		//  To switch from the emulator to a physical phone:
+		//    1. On the PC, run `ipconfig` and copy the Wi-Fi adapter's IPv4
+		//       (something like 192.168.1.42).
+		//    2. Replace DevHostIp below with that string.
+		//    3. Launch the API with the "EquipmentChecklist (LAN)" profile so
+		//       Kestrel binds to 0.0.0.0 instead of localhost.
+		//    4. Allow inbound TCP port 55025 in Windows Firewall (see runbook).
+		//    5. Put the phone on the same Wi-Fi network.
+		//
+		//  Both devices must be on the same subnet; mobile data won't work.
+		//  The DEBUG cert override below means you don't have to install the
+		//  ASP.NET dev cert on the phone — DEBUG builds accept anything.
+		// ════════════════════════════════════════════════════════════════
+
+		// ┌──────────────────────────────────────────────────────────────┐
+		// │  CHANGE THIS to your dev PC's LAN IP when testing on a        │
+		// │  physical phone. Leave as "10.0.2.2" for the Android emulator.│
+		// └──────────────────────────────────────────────────────────────┘
+		const string DevHostIp = "192.168.8.179";//"10.0.2.2";   // ← e.g. "192.168.1.42" for physical phone
+
 #if ANDROID
-		// 10.0.2.2 = the Android emulator's alias for the host's loopback.
-		// On a PHYSICAL phone over Wi-Fi, change this to your dev machine's
-		// LAN IP (run `ipconfig` on Windows, look at the Wi-Fi adapter's
-		// IPv4 line — usually 192.168.x.x). Both devices must be on the
-		// same Wi-Fi network and your firewall must allow port 55025.
-		//
-		// Example for a physical phone:
-		//     const string ApiBaseUrl = "https://192.168.1.42:55025/";
-		const string ApiBaseUrl = "https://10.0.2.2:55025/";
+		const string ApiBaseUrl = "https://" + DevHostIp + ":55025/";
 #else
 		const string ApiBaseUrl = "https://localhost:55025/";
 #endif
@@ -108,36 +121,39 @@ public static class MauiProgram
 
 		var app = builder.Build();
 
-		// Force-instantiate SyncWorker so its connectivity listener is alive
-		// from app start — without this the worker only wakes up the first time
-		// some page injects it.
-		_ = app.Services.GetRequiredService<SyncWorker>();
-
-		// Same trick for ApiHealth — start polling the server immediately so
-		// the status pill becomes accurate within seconds of app launch
-		// instead of waiting for the first page that injects it.
-		_ = app.Services.GetRequiredService<ApiHealth>();
-
-		// Force-resolve Audit so its AuthService.SignedIn / SignedOut subscriber
-		// is wired up BEFORE the first sign-in attempt — otherwise the very
-		// first sign-in event fires into a service that DI hasn't constructed
-		// yet and the audit row is silently dropped.
-		_ = app.Services.GetRequiredService<Audit>();
-
-		// Same trick: subscribe to SyncWorker.PrunedStale at boot so the
-		// first prune pass (which fires near-immediately on the startup
-		// drain) doesn't miss its chance to toast.
-		_ = app.Services.GetRequiredService<StalePruneNotifier>();
-
-		// Force-resolve NotificationService so it can wire its
-		// AuthService.SignedIn handler before the first page renders.
-		_ = app.Services.GetRequiredService<NotificationService>();
-
-		// Same trick for MineConfigService — hydrates from SQLite + kicks
-		// the /mine refresh in the background so labels are populated by
-		// the time the first page asks.
-		_ = app.Services.GetRequiredService<MineConfigService>();
+		// ── Force-resolve singletons so their event subscribers / connectivity
+		//    listeners are alive from app boot, not from "first page that
+		//    happens to inject them".
+		//
+		//    EVERY resolve is wrapped in TryEager so a single misbehaving
+		//    service can't kill startup. Previously an exception here would
+		//    propagate, take down MainActivity, and the user would see the
+		//    splash screen vanish with no error message.
+		//
+		TryEager<SyncWorker>(app);
+		TryEager<ApiHealth>(app);
+		TryEager<Audit>(app);
+		TryEager<StalePruneNotifier>(app);
+		TryEager<NotificationService>(app);
+		TryEager<MineConfigService>(app);
 
 		return app;
+	}
+
+	/// <summary>
+	/// Force-resolve a registered singleton, swallowing any constructor
+	/// exception. Used at startup so the failure of one eager service
+	/// doesn't take down the whole app. The service will still try to
+	/// construct again on first lazy injection — at which point a real
+	/// page will surface the error to the user.
+	/// </summary>
+	private static void TryEager<T>(MauiApp app) where T : notnull
+	{
+		try { _ = app.Services.GetRequiredService<T>(); }
+		catch (Exception ex)
+		{
+			System.Diagnostics.Debug.WriteLine(
+				$"[TryEager] Could not pre-construct {typeof(T).Name}: {ex.Message}");
+		}
 	}
 }

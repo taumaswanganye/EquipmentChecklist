@@ -146,7 +146,16 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-app.UseHttpsRedirection();
+// HTTPS redirect is skipped in Development so a phone on the LAN can
+// hit the API over plain HTTP for smoke-testing (the dev self-signed
+// cert isn't trusted by Android). The MAUI app already overrides cert
+// validation in DEBUG builds, so DEBUG mobile clients can use HTTPS
+// just fine — this only opens the door for browser-based "is the API
+// reachable?" tests from a phone over the LAN.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 app.UseStaticFiles();
 app.UseRouting();
 app.UseSession();          // ← must be AFTER UseRouting, BEFORE UseAuthorization

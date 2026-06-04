@@ -2,10 +2,11 @@
 @using EquipmentChecklist.DTOs
 @using EquipmentChecklist.Models
 @using EquipmentChecklist.Mobile.Services
-@inject ApiClient        Api
-@inject AuthService      Auth
-@inject LocalCache       Cache
-@inject SubmissionQueue  Queue
+@inject ApiClient         Api
+@inject AuthService       Auth
+@inject LocalCache        Cache
+@inject SubmissionQueue   Queue
+@inject MineConfigService Mine
 @inject NavigationManager Nav
 
 <PullToRefresh OnRefresh="LoadAsync">
@@ -91,25 +92,39 @@ else
                 @foreach (var s in PagedRows)
                 {
                     var (cls, label) = StatusBadge(s.Status);
-                    <tr class="row-@cls">
-                        <td>
+                    @* data-label on each <td> is what powers the phone card
+                       layout in wwwroot/css/mobile.css — at narrow widths the
+                       table cells become block-level and each one renders its
+                       column header above the value. *@
+                    @* Queued rows get an EXTRA "pending-sync" class so the
+                       row picks up the orange left-border indicator in
+                       addition to whatever colour its real status (GO /
+                       GO-BUT / NO-GO) drives. *@
+                    <tr class="row-@cls @(s.IsQueued ? "pending-sync" : "")">
+                        <td data-label="Machine">
                             <div class="m-num">@s.MachineNumber</div>
                             <div class="m-name muted">@s.MachineName</div>
                         </td>
-                        <td>
+                        <td data-label="Date &amp; Time">
                             <div class="mono">@s.SubmittedAt.ToString("yyyy-MM-dd")</div>
                             <div class="mono muted">@s.SubmittedAt.ToString("HH:mm")</div>
                         </td>
-                        <td>@ShiftLabel(s.Shift)</td>
-                        <td class="num-col mono">@(s.KmOrHourMeter?.ToString() ?? "—")</td>
-                        <td>
+                        <td data-label="Shift">@ShiftLabel(s.Shift)</td>
+                        <td class="num-col mono" data-label="KM / Hours">@(s.KmOrHourMeter?.ToString() ?? "—")</td>
+                        <td data-label="Items">
                             @s.ItemCount total
                             @if (s.DefectCount > 0)
                             {
                                 <span class="def-count">(@s.DefectCount @(s.DefectCount == 1 ? "defect" : "defects"))</span>
                             }
                         </td>
-                        <td><span class="badge @cls">@label</span></td>
+                        <td data-label="Result">
+                            <span class="badge @cls">@label</span>
+                            @if (s.IsQueued)
+                            {
+                                <span class="sync-chip" title="Submitted offline — waiting to sync">☁ pending sync</span>
+                            }
+                        </td>
                         <td class="actions-col">
                             <button class="act-btn"  @onclick="() => View(s)">👁 View</button>
                             <button class="act-btn"  @onclick="() => OpenPdf(s)">📄 PDF</button>
@@ -155,150 +170,235 @@ else
 
 @if (viewing is not null)
 {
-    <div class="modal-backdrop" @onclick="CloseView">
-        <div class="modal modal-lg" @onclick:stopPropagation="true">
-            <div class="modal-head">
-                <div>
-                    <div class="modal-num">@viewing.MachineNumber</div>
-                    <div class="modal-sub">
-                        @viewing.MachineName
-                        @if (viewing.IsQueued)
-                        {
-                            <span class="queued-chip">☁ QUEUED · pending sync</span>
-                        }
-                    </div>
-                </div>
-                <button class="modal-x" @onclick="CloseView">✕</button>
+    @* ────────────────────────────────────────────────────────────────────
+       PAPER-STYLE VIEW MODAL
+       Renders the submission as a look-alike of the official PSIC PDF
+       receipt — same header band, title row, info row, two-column items
+       grid (red rows for critical defects), signature block. Works fully
+       offline because it's just HTML/CSS over data that's already cached
+       in SQLite. The "📄 Open PDF" button at the bottom still triggers
+       the real PDF when one's available (server-rendered or jsPDF).
+       ──────────────────────────────────────────────────────────────────── *@
+    var mineName    = Mine.Current?.Name      ?? "MINE";
+    var subtitle    = string.IsNullOrEmpty(Mine.Current?.Tagline)
+                        ? "Pre-Shift Inspection Checklist"
+                        : Mine.Current!.Tagline;
+    var compliance  = Mine.Current?.ComplianceText ?? "";
+
+    <div class="rcpt-backdrop" @onclick="CloseView">
+        <div class="rcpt-wrap" @onclick:stopPropagation="true">
+            @* ─── Top bar OUTSIDE the paper so close stays accessible ─── *@
+            <div class="rcpt-topbar">
+                @if (viewing.IsQueued)
+                {
+                    <span class="rcpt-queued-chip">☁ QUEUED · pending sync</span>
+                }
+                <button class="rcpt-x" @onclick="CloseView" title="Close">✕</button>
             </div>
 
-            <div class="modal-body view-body">
+            @* ─── The paper sheet ─── *@
+            <div class="rcpt-paper">
 
-                @* ─── Header summary grid (always available, even with no details yet) ─── *@
-                <div class="vw-grid">
+                @* 1 · Dark header band ─────────────────────────────── *@
+                <div class="rcpt-header">
                     <div>
-                        <div class="vw-lbl">RESULT</div>
-                        <div class="vw-val"><span class="badge @StatusBadgeCls(viewing.Status)">@StatusBadgeLabel(viewing.Status)</span></div>
+                        <div class="rcpt-mine">@mineName.ToUpperInvariant()</div>
+                        <div class="rcpt-sub">@subtitle</div>
                     </div>
-                    <div>
-                        <div class="vw-lbl">DATE / TIME</div>
-                        <div class="vw-val mono">@viewing.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</div>
+                    <div class="rcpt-mine-echo">@mineName.ToUpperInvariant()</div>
+                </div>
+
+                @* 2 · Title row ──────────────────────────────────── *@
+                <div class="rcpt-title">
+                    PRE-SHIFT INSPECTION CHECKLIST:
+                    @((viewDetails?.MachineType ?? "").ToUpperInvariant())
+                </div>
+
+                @* 3 · Info row — date | time | shift | km | legend ─ *@
+                <div class="rcpt-info">
+                    <div class="rcpt-info-cell">
+                        <div class="rcpt-info-l">DATE</div>
+                        <div class="rcpt-info-v">@viewing.SubmittedAt.ToString("dd MMM yyyy")</div>
                     </div>
-                    <div>
-                        <div class="vw-lbl">SHIFT</div>
-                        <div class="vw-val">@ShiftLabel(viewing.Shift)</div>
+                    <div class="rcpt-info-cell">
+                        <div class="rcpt-info-l">TIME</div>
+                        <div class="rcpt-info-v">@viewing.SubmittedAt.ToString("HH:mm")</div>
                     </div>
-                    <div>
-                        <div class="vw-lbl">KM / HOURS</div>
-                        <div class="vw-val mono">@(viewing.KmOrHourMeter?.ToString() ?? "—")</div>
+                    <div class="rcpt-info-cell">
+                        <div class="rcpt-info-l">SHIFT</div>
+                        <div class="rcpt-info-v">@ShiftLabel(viewing.Shift)</div>
                     </div>
-                    <div>
-                        <div class="vw-lbl">OPERATOR</div>
-                        <div class="vw-val">@viewing.OperatorName</div>
+                    <div class="rcpt-info-cell">
+                        <div class="rcpt-info-l">KM / HOURS</div>
+                        <div class="rcpt-info-v">@(viewing.KmOrHourMeter?.ToString() ?? "—")</div>
                     </div>
-                    <div>
-                        <div class="vw-lbl">ITEMS / DEFECTS</div>
-                        <div class="vw-val">
-                            @viewing.ItemCount total
-                            @if (viewing.DefectCount > 0)
-                            {
-                                <span class="def-count">· @viewing.DefectCount defect@(viewing.DefectCount == 1 ? "" : "s")</span>
-                            }
-                        </div>
+                    <div class="rcpt-info-cell rcpt-legend">
+                        <div class="rcpt-info-l">LEGEND</div>
+                        <div class="rcpt-legend-row"><span class="rcpt-leg-sw nogo"></span> NO-GO item</div>
+                        <div class="rcpt-legend-row"><span class="rcpt-leg-sw warn"></span> Warning</div>
+                        <div class="rcpt-legend-row"><span class="rcpt-leg-sw ok"></span> In order</div>
                     </div>
                 </div>
 
-                @* ─── Detail panes (loaded async or built from queue payload) ─── *@
+                @* 4 · Machine identity strip ─────────────────────── *@
+                <div class="rcpt-machine">
+                    <div>
+                        <span class="rcpt-machine-l">VEHICLE / MACHINE NR:</span>
+                        <span class="rcpt-machine-v mono">@viewing.MachineNumber</span>
+                    </div>
+                    <div>
+                        <span class="rcpt-machine-l">NAME:</span>
+                        <span class="rcpt-machine-v">@viewing.MachineName</span>
+                    </div>
+                    <div>
+                        <span class="rcpt-machine-l">RESULT:</span>
+                        <span class="rcpt-result @StatusBadgeCls(viewing.Status)">
+                            @StatusBadgeLabel(viewing.Status)
+                        </span>
+                    </div>
+                </div>
+
+                @* 5 · Items grid (or loading / fallback) ─────────── *@
                 @if (viewLoading)
                 {
-                    <div class="vw-loading"><div class="spinner"></div><p>Loading checklist details…</p></div>
+                    <div class="rcpt-loading"><div class="rcpt-spinner"></div>Loading checklist items…</div>
                 }
                 else if (viewDetails is null)
                 {
-                    <div class="vw-empty">
-                        <p>Couldn't load the items list — likely offline. Tap <strong>📄 PDF</strong> to view the cached receipt instead.</p>
+                    <div class="rcpt-fallback">
+                        Couldn't load the items list (likely offline and not cached).
+                        The summary above is still accurate.
                     </div>
                 }
                 else
                 {
+                    @* Order: defects first (in red), then in-order items.
+                       Renders a two-column grid like the printed PSIC sheet. *@
+                    <div class="rcpt-items-h">INSPECTION ITEMS · @viewDetails.Items.Count</div>
+                    <div class="rcpt-items">
+                        @foreach (var i in viewDetails.Items.OrderBy(x => x.Status == ItemStatus.Defect ? 0 : 1).ThenBy(x => x.ItemName))
+                        {
+                            var rowCls = i.Status == ItemStatus.Defect
+                                        ? (i.IsNoGoItem ? "rcpt-row nogo" : "rcpt-row warn")
+                                        : "rcpt-row";
+                            <div class="@rowCls">
+                                <div class="rcpt-item-name">
+                                    @i.ItemName
+                                    @if (i.IsNoGoItem)
+                                    {
+                                        <span class="rcpt-crit-tag">NO-GO</span>
+                                    }
+                                </div>
+                                <div class="rcpt-item-status">
+                                    @if (i.Status == ItemStatus.Defect)
+                                    {
+                                        <span class="rcpt-st-o">O</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="rcpt-st-p">P</span>
+                                    }
+                                </div>
+                                @if (i.Status == ItemStatus.Defect && !string.IsNullOrEmpty(i.Notes))
+                                {
+                                    <div class="rcpt-item-note">
+                                        ↳ @i.Notes
+                                    </div>
+                                }
+                                @if (i.Status == ItemStatus.Defect && !string.IsNullOrEmpty(i.PhotoBase64))
+                                {
+                                    <div class="rcpt-item-photo">
+                                        <img src="@($"data:{i.PhotoMimeType ?? "image/jpeg"};base64,{i.PhotoBase64}")"
+                                             alt="defect photo" />
+                                    </div>
+                                }
+                                @if (i.Status == ItemStatus.Defect && !string.IsNullOrEmpty(i.AudioBase64))
+                                {
+                                    <div class="rcpt-item-audio">
+                                        <audio controls
+                                               src="@($"data:{i.AudioMimeType ?? "audio/m4a"};base64,{i.AudioBase64}")">
+                                        </audio>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
                     @if (!string.IsNullOrWhiteSpace(viewDetails.OperatorRemarks))
                     {
-                        <section class="vw-card">
-                            <h4>OPERATOR REMARKS</h4>
-                            <p class="vw-remarks">“@viewDetails.OperatorRemarks”</p>
-                        </section>
-                    }
-
-                    @if (Defects.Count > 0)
-                    {
-                        <section class="vw-card defects">
-                            <h4>DEFECTS · @Defects.Count</h4>
-                            @foreach (var d in Defects)
-                            {
-                                <div class="def-row @(d.IsNoGoItem ? "critical" : "")">
-                                    <div class="def-letter">@FirstChar(d.ItemName)</div>
-                                    <div class="def-info">
-                                        <div class="def-name">
-                                            @d.ItemName
-                                            @if (d.IsNoGoItem)
-                                            {
-                                                <span class="tag-nogo">NO-GO</span>
-                                            }
-                                            @if (!string.IsNullOrEmpty(d.PhotoBase64))
-                                            {
-                                                <span class="tag-photo">📷 photo</span>
-                                            }
-                                            @if (!string.IsNullOrEmpty(d.AudioBase64))
-                                            {
-                                                <span class="tag-audio">🎤 voice</span>
-                                            }
-                                        </div>
-                                        <div class="def-note">
-                                            @(string.IsNullOrEmpty(d.Notes) ? "(no note recorded)" : d.Notes)
-                                        </div>
-                                        @if (!string.IsNullOrEmpty(d.PhotoBase64))
-                                        {
-                                            <img class="def-photo"
-                                                 src="@($"data:{d.PhotoMimeType ?? "image/jpeg"};base64,{d.PhotoBase64}")"
-                                                 alt="defect photo" />
-                                        }
-                                        @if (!string.IsNullOrEmpty(d.AudioBase64))
-                                        {
-                                            <audio class="def-audio" controls
-                                                   src="@($"data:{d.AudioMimeType ?? "audio/m4a"};base64,{d.AudioBase64}")">
-                                            </audio>
-                                        }
-                                    </div>
-                                </div>
-                            }
-                        </section>
-                    }
-
-                    <section class="vw-card">
-                        <h4>IN-ORDER · @InOrder.Count</h4>
-                        <div class="ok-pills">
-                            @foreach (var i in InOrder)
-                            {
-                                <span class="ok-pill">✓ @i.ItemName</span>
-                            }
+                        <div class="rcpt-remarks">
+                            <div class="rcpt-remarks-l">OPERATOR REMARKS</div>
+                            <div class="rcpt-remarks-v">"@viewDetails.OperatorRemarks"</div>
                         </div>
-                    </section>
+                    }
 
-                    @if (!string.IsNullOrEmpty(viewDetails.OperatorSignature))
-                    {
-                        <section class="vw-card">
-                            <h4>OPERATOR SIGNATURE</h4>
-                            <img src="@viewDetails.OperatorSignature" alt="operator signature" class="vw-sig" />
-                            <div class="vw-fitness">
+                    @* 6 · Signature block ─────────────────────────── *@
+                    <div class="rcpt-sigs">
+                        <div class="rcpt-sig">
+                            <div class="rcpt-sig-pad">
+                                @if (!string.IsNullOrEmpty(viewDetails.OperatorSignature))
+                                {
+                                    <img src="@viewDetails.OperatorSignature" alt="operator signature" />
+                                }
+                            </div>
+                            <div class="rcpt-sig-l">OPERATOR</div>
+                            <div class="rcpt-sig-v">
+                                @viewDetails.OperatorName
+                                @if (!string.IsNullOrEmpty(viewDetails.OperatorEmployeeNumber))
+                                {
+                                    <span class="rcpt-sig-emp">#@viewDetails.OperatorEmployeeNumber</span>
+                                }
+                            </div>
+                            <div class="rcpt-sig-fitness">
                                 @(viewDetails.FitnessDeclarationSigned
                                     ? "✓ Fitness declaration signed"
                                     : "✕ Fitness declaration NOT signed")
                             </div>
-                        </section>
-                    }
+                        </div>
+                        <div class="rcpt-sig">
+                            <div class="rcpt-sig-pad">
+                                @* Supervisor signature only when the server has captured one *@
+                                @if (viewing.SubmissionId > 0 && viewDetails.Status != ChecklistStatus.InProgress)
+                                {
+                                    @* Placeholder — current SupervisorReviewDto doesn't carry signature
+                                       bytes, but the PDF prints the area regardless. *@
+                                    <div class="rcpt-sig-empty">— awaiting sign-off —</div>
+                                }
+                                else
+                                {
+                                    <div class="rcpt-sig-empty">— awaiting sign-off —</div>
+                                }
+                            </div>
+                            <div class="rcpt-sig-l">SUPERVISOR</div>
+                            <div class="rcpt-sig-v">
+                                @(viewDetails.Status == ChecklistStatus.GoButRepair24H
+                                    ? "Pending review"
+                                    : viewDetails.Status == ChecklistStatus.GoTillNextService
+                                    ? "Approved · next-service"
+                                    : "—")
+                            </div>
+                        </div>
+                    </div>
                 }
+
+                @* 7 · Footer with compliance line ─────────────────── *@
+                <div class="rcpt-footer">
+                    @if (!string.IsNullOrEmpty(compliance))
+                    {
+                        <span>@compliance</span>
+                    }
+                    <span class="rcpt-footer-gen">
+                        Generated @DateTime.Now.ToString("yyyy-MM-dd HH:mm")
+                        @if (viewing.IsQueued)
+                        {
+                            <span>· offline copy</span>
+                        }
+                    </span>
+                </div>
             </div>
 
-            <div class="modal-foot">
+            @* ─── Action footer ─────────────────────────────────── *@
+            <div class="rcpt-foot">
                 <button class="ghost" @onclick="CloseView">Close</button>
                 <button class="primary" @onclick="() => OpenPdf(viewing)">📄 Open PDF</button>
             </div>
@@ -361,6 +461,21 @@ else
     .data-table tbody tr.row-rejected td:first-child { box-shadow:inset 3px 0 0 #f97316; }
     .data-table tbody tr.row-queued  td:first-child { box-shadow:inset 3px 0 0 #f59e0b; }
     .data-table tbody tr.row-queued  td { background:rgba(245,158,11,.04); }
+
+    /* ── Pending-sync overlay ────────────────────────────────────────────
+       Applied on top of whatever colour the real status (row-go / row-gobut
+       / row-nogo) painted. We deliberately DON'T override the left-edge
+       box-shadow here — the row keeps its real status colour (red NO-GO,
+       green GO, etc.) so the operator sees the result at a glance. The
+       pending-sync state is communicated by the faint amber background
+       wash on the row PLUS the "☁ pending sync" chip next to the badge. */
+    .data-table tbody tr.pending-sync td { background:rgba(245,158,11,.05); }
+
+    .sync-chip { display:inline-block; margin-left:6px; padding:2px 7px;
+                 background:rgba(245,158,11,.14); border:1px solid #f59e0b;
+                 color:#fbbf24; font-size:9.5px; font-weight:600;
+                 letter-spacing:.4px; border-radius:4px;
+                 vertical-align:middle; white-space:nowrap; }
 
     .m-num  { font-size:13px; font-weight:700; font-family:ui-monospace,monospace; }
     .m-name { font-size:11px; }
@@ -465,6 +580,289 @@ else
     .vw-sig    { display:block; max-width:240px; max-height:90px; background:#fff;
                  padding:6px; border-radius:6px; }
     .vw-fitness{ margin-top:8px; font-size:11px; color:#94a3b8; }
+
+    /* ────────────────────────────────────────────────────────────────
+       Paper-style receipt (replaces the old dark vw-* layout for the
+       View modal). Mirrors the PSIC PDF: dark navy header band, pale
+       title row, info row with legend, two-column items grid (red
+       background for critical, yellow for warnings), signature block,
+       footer with mine compliance line.
+
+       Why HTML instead of an iframe pointing at the PDF: the PDF is
+       only available when the API is reachable (server render) or
+       jsPDF actually loaded successfully. This view works fully offline
+       from data already cached in SQLite — operators ALWAYS see their
+       receipt, even underground.
+       ──────────────────────────────────────────────────────────────── */
+
+    .rcpt-backdrop {
+        position: fixed; inset: 0; background: rgba(0,0,0,.78);
+        z-index: 60; display: flex; align-items: center; justify-content: center;
+        padding: 16px; overflow-y: auto;
+    }
+    .rcpt-wrap {
+        width: 100%; max-width: 740px; max-height: 94vh;
+        display: flex; flex-direction: column;
+        font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    }
+    .rcpt-topbar {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 6px; gap: 10px;
+    }
+    .rcpt-queued-chip {
+        background: rgba(245,158,11,.22); color: #fbbf24;
+        border: 1px solid #f59e0b; padding: 4px 10px; border-radius: 4px;
+        font-size: 10px; font-weight: 700; letter-spacing: .5px;
+    }
+    .rcpt-x {
+        background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.15);
+        color: #fff; width: 32px; height: 32px; border-radius: 50%;
+        cursor: pointer; font-size: 14px; font-family: inherit;
+        margin-left: auto;
+    }
+    .rcpt-x:hover { background: rgba(255,255,255,.20); }
+
+    /* The "paper" itself — white background, structured like A4 */
+    .rcpt-paper {
+        background: #ffffff; color: #1f2937;
+        border-radius: 6px; overflow-y: auto; overflow-x: hidden;
+        flex: 1; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+        padding: 14px;
+    }
+
+    /* 1 · Dark header band */
+    .rcpt-header {
+        background: #0d1729; color: #ffffff;
+        padding: 10px 14px;
+        display: flex; justify-content: space-between; align-items: center;
+        border-radius: 4px;
+        gap: 12px;
+    }
+    .rcpt-mine     { font-size: 14px; font-weight: 800; letter-spacing: .5px; }
+    .rcpt-sub      { font-size: 10px; color: #b4c7e0; margin-top: 2px; }
+    .rcpt-mine-echo{ font-size: 11px; font-weight: 700; opacity: .85;
+                     white-space: nowrap; }
+
+    /* 2 · Title row — pale blue band, navy text */
+    .rcpt-title {
+        background: #e8f0f8; color: #1e3a5f;
+        border: 1px solid #b4c7e0; border-top: none;
+        padding: 7px 12px; text-align: center;
+        font-weight: 800; font-size: 12px;
+        letter-spacing: .4px;
+    }
+
+    /* 3 · Info row — 5 columns on desktop, wraps on phones */
+    .rcpt-info {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 0;
+        border: 1px solid #c8d2de;
+        border-top: none;
+    }
+    @@media (max-width: 560px) {
+        .rcpt-info { grid-template-columns: repeat(2, 1fr); }
+        .rcpt-info-cell { border-right: 1px solid #c8d2de; }
+        .rcpt-legend    { grid-column: 1 / -1; }
+    }
+    .rcpt-info-cell {
+        padding: 7px 10px;
+        border-right: 1px solid #c8d2de;
+        font-size: 10px;
+    }
+    .rcpt-info-cell:last-child { border-right: none; }
+    .rcpt-info-l {
+        font-size: 8px; font-weight: 700; color: #6b7280;
+        letter-spacing: .5px; text-transform: uppercase;
+    }
+    .rcpt-info-v {
+        margin-top: 2px; font-size: 12px; font-weight: 700; color: #111827;
+    }
+    .rcpt-legend { font-size: 9px; color: #4b5563; }
+    .rcpt-legend-row {
+        display: flex; align-items: center; gap: 5px; margin-top: 2px;
+    }
+    .rcpt-leg-sw {
+        width: 10px; height: 10px; border: 1px solid #6b7280; border-radius: 1px;
+    }
+    .rcpt-leg-sw.nogo { background: #fecaca; border-color: #ef4444; }
+    .rcpt-leg-sw.warn { background: #fde68a; border-color: #f59e0b; }
+    .rcpt-leg-sw.ok   { background: #ffffff; }
+
+    /* 4 · Machine identity strip */
+    .rcpt-machine {
+        display: flex; flex-wrap: wrap; gap: 10px 16px;
+        background: #f9fafb;
+        padding: 8px 12px;
+        border: 1px solid #c8d2de; border-top: none;
+        font-size: 11px;
+    }
+    .rcpt-machine-l { color: #6b7280; font-weight: 600; margin-right: 4px; }
+    .rcpt-machine-v { color: #111827; font-weight: 700; font-size: 12px; }
+    .rcpt-result    { padding: 2px 8px; border-radius: 3px; font-weight: 700;
+                      font-size: 10px; letter-spacing: .5px; border: 1px solid; }
+    .rcpt-result.go      { color: #166534; border-color: #16a34a; background: #dcfce7; }
+    .rcpt-result.gobut   { color: #075985; border-color: #0284c7; background: #e0f2fe; }
+    .rcpt-result.nogo    { color: #991b1b; border-color: #dc2626; background: #fee2e2; }
+    .rcpt-result.rejected{ color: #9a3412; border-color: #ea580c; background: #ffedd5; }
+    .rcpt-result.queued  { color: #92400e; border-color: #f59e0b; background: #fef3c7; }
+
+    /* 5 · Items grid */
+    .rcpt-items-h {
+        background: #1e3a5f; color: #ffffff;
+        font-size: 10px; font-weight: 700; letter-spacing: .5px;
+        padding: 6px 12px;
+        border: 1px solid #1e3a5f; border-top: none;
+    }
+    .rcpt-items {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        border: 1px solid #c8d2de; border-top: none;
+    }
+    @@media (max-width: 540px) {
+        .rcpt-items { grid-template-columns: 1fr; }
+    }
+    .rcpt-row {
+        padding: 6px 10px;
+        border-right: 1px solid #e5e7eb;
+        border-bottom: 1px solid #e5e7eb;
+        font-size: 11px; color: #1f2937;
+        background: #ffffff;
+        display: grid; grid-template-columns: 1fr auto; gap: 4px 8px;
+        align-items: center;
+    }
+    /* Critical (NO-GO item) — pale red, like the PDF */
+    .rcpt-row.nogo {
+        background: #fee2e2; border-bottom-color: #fca5a5;
+    }
+    /* Warning category — pale amber */
+    .rcpt-row.warn {
+        background: #fef3c7; border-bottom-color: #fcd34d;
+    }
+    .rcpt-item-name {
+        font-weight: 600; line-height: 1.35;
+    }
+    .rcpt-crit-tag {
+        display: inline-block; margin-left: 6px;
+        font-size: 8px; font-weight: 800; color: #fff; background: #dc2626;
+        padding: 1px 5px; border-radius: 2px; letter-spacing: .4px;
+    }
+    .rcpt-item-status {
+        width: 22px; height: 22px; border-radius: 3px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-weight: 800; font-size: 12px;
+    }
+    .rcpt-st-p { color: #166534; }      /* Pass — In Order */
+    .rcpt-st-o { color: #991b1b; }      /* O — Not in Order */
+    .rcpt-item-note {
+        grid-column: 1 / -1; font-style: italic; color: #6b7280;
+        font-size: 10px; padding: 2px 0 0 12px;
+    }
+    .rcpt-item-photo { grid-column: 1 / -1; padding-top: 4px; }
+    .rcpt-item-photo img {
+        max-width: 100%; max-height: 140px; object-fit: contain;
+        border: 1px solid #d1d5db; border-radius: 3px;
+    }
+    .rcpt-item-audio { grid-column: 1 / -1; padding-top: 4px; }
+    .rcpt-item-audio audio { width: 100%; max-width: 320px; height: 32px; }
+
+    /* Remarks block */
+    .rcpt-remarks {
+        background: #fffbeb; border: 1px solid #fcd34d; border-top: none;
+        padding: 8px 12px;
+    }
+    .rcpt-remarks-l {
+        font-size: 9px; font-weight: 700; color: #92400e;
+        letter-spacing: .5px; text-transform: uppercase;
+    }
+    .rcpt-remarks-v {
+        font-size: 11px; font-style: italic; color: #1f2937;
+        margin-top: 3px; line-height: 1.5;
+    }
+
+    /* 6 · Signature block */
+    .rcpt-sigs {
+        display: grid; grid-template-columns: 1fr 1fr;
+        border: 1px solid #c8d2de; border-top: none;
+    }
+    @@media (max-width: 540px) {
+        .rcpt-sigs { grid-template-columns: 1fr; }
+    }
+    .rcpt-sig {
+        padding: 10px 12px;
+        border-right: 1px solid #c8d2de;
+    }
+    .rcpt-sig:last-child { border-right: none; }
+    .rcpt-sig-pad {
+        height: 70px; background: #fafbfc;
+        border: 1px dashed #c8d2de; border-radius: 3px;
+        display: flex; align-items: center; justify-content: center;
+        margin-bottom: 6px;
+    }
+    .rcpt-sig-pad img {
+        max-width: 100%; max-height: 100%; object-fit: contain;
+    }
+    .rcpt-sig-empty {
+        font-size: 10px; color: #9ca3af; font-style: italic;
+    }
+    .rcpt-sig-l {
+        font-size: 9px; font-weight: 700; color: #6b7280;
+        letter-spacing: .5px; text-transform: uppercase;
+    }
+    .rcpt-sig-v { font-size: 11px; color: #111827; margin-top: 2px;
+                  font-weight: 600; }
+    .rcpt-sig-emp { color: #6b7280; font-weight: 500; margin-left: 4px;
+                    font-family: ui-monospace, monospace; font-size: 10px; }
+    .rcpt-sig-fitness { font-size: 10px; color: #4b5563; margin-top: 4px; }
+
+    /* 7 · Footer */
+    .rcpt-footer {
+        background: #1e3a5f; color: #cbd5e1;
+        font-size: 9px;
+        padding: 6px 12px;
+        display: flex; justify-content: space-between; align-items: center;
+        flex-wrap: wrap; gap: 6px;
+        border: 1px solid #1e3a5f; border-top: none;
+        border-radius: 0 0 4px 4px;
+    }
+    .rcpt-footer-gen { font-family: ui-monospace, monospace; }
+
+    /* Loading / fallback inside paper */
+    .rcpt-loading, .rcpt-fallback {
+        padding: 30px 16px; text-align: center;
+        font-size: 12px; color: #6b7280;
+        background: #ffffff;
+        border: 1px solid #c8d2de; border-top: none;
+    }
+    .rcpt-spinner {
+        width: 22px; height: 22px;
+        border: 3px solid #e5e7eb; border-top-color: #1e3a5f;
+        border-radius: 50%; display: inline-block;
+        margin: 0 auto 8px;
+        animation: rcpt-spin .8s linear infinite;
+    }
+    @@keyframes rcpt-spin { to { transform: rotate(360deg); } }
+
+    /* Action footer (OUTSIDE the paper — dark, matches the rest of the app) */
+    .rcpt-foot {
+        display: flex; justify-content: flex-end; gap: 8px;
+        margin-top: 10px;
+    }
+    .rcpt-foot .ghost {
+        background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.20);
+        color: #e5e7eb; padding: 9px 16px; border-radius: 6px;
+        font-family: inherit; font-size: 13px; cursor: pointer;
+    }
+    .rcpt-foot .ghost:hover { background: rgba(255,255,255,.18); }
+    .rcpt-foot .primary {
+        background: #0e9488; color: #0a1726; border: none;
+        padding: 9px 18px; border-radius: 6px;
+        font-family: inherit; font-size: 13px; font-weight: 700;
+        cursor: pointer;
+    }
+    .rcpt-foot .primary:hover { filter: brightness(1.1); }
+
+    .mono { font-family: ui-monospace, monospace; }
 </style>
 
 @code {
@@ -592,23 +990,43 @@ else
 
         var email = Auth.CurrentUser?.Email;
 
-        // 1. Cache first.
-        if (!string.IsNullOrEmpty(email))
+        // ── 1. Cache first ──────────────────────────────────────────────
+        // Always read SQLite first so the table paints instantly without
+        // waiting on the network. Pass the email even if null — LocalCache
+        // now falls back to the most-recently-signed-in CachedUser, so an
+        // operator who has ever signed in on this device sees their data
+        // even if the auth context hasn't fully restored yet.
+        try
         {
-            try
+            var cached = await Cache.GetRecentSubmissionsAsync(email);
+            if (cached.Count > 0)
             {
-                var cached = await Cache.GetRecentSubmissionsAsync(email);
-                if (cached.Count > 0)
-                {
-                    all  = cached.Select(SubmissionRow.FromServer).ToList();
-                    await MergeQueuedAsync();
-                    busy = false; StateHasChanged();
-                }
+                all = cached.Select(SubmissionRow.FromServer).ToList();
             }
-            catch { }
+        }
+        catch { }
+
+        // ── 2. Merge queue IMMEDIATELY ──────────────────────────────────
+        // This is the critical fix: previously the queue merge ran in the
+        // finally block AFTER the error string had already been set, which
+        // is why operators with a freshly-submitted offline pre-checklist
+        // were still seeing "no cached submissions" — the queued row hadn't
+        // been added to `all` yet at the point the empty-state error fired.
+        //
+        // Now the queue is merged BEFORE the server attempt, so the page
+        // already has everything the device knows about (server cache +
+        // local queue) before we even try the network.
+        await MergeQueuedAsync();
+
+        // Paint whatever we have right now so the user sees their data
+        // without waiting for the server round-trip.
+        if (all is { Count: > 0 })
+        {
+            busy = false;
+            StateHasChanged();
         }
 
-        // 2. Refresh from server.
+        // ── 3. Refresh from server ──────────────────────────────────────
         try
         {
             var fresh = await Api.RecentSubmissionsAsync(200);
@@ -618,21 +1036,34 @@ else
                 currentPage = 1;
                 if (!string.IsNullOrEmpty(email))
                     try { await Cache.SaveRecentSubmissionsAsync(email, fresh); } catch { }
+
+                // Re-overlay the queued offline rows on top of the fresh
+                // server list — without this, a successful sync would make
+                // the queued rows briefly disappear.
+                await MergeQueuedAsync();
             }
-            else if (all == null)
+            else if (all is null || all.Count == 0)
+            {
+                // Server returned null AND we have no cache/queue rows —
+                // most likely an expired JWT.
                 error = "Your session has expired. Please sign in again.";
+            }
         }
         catch (HttpRequestException)
         {
-            if (all == null || all.Count == 0)
-                error = "You're offline and we don't have any cached submissions yet.";
+            // Offline. If we have ANYTHING to show (cached server rows OR
+            // queued offline rows), say nothing — the page is offline-first
+            // and the data we've already painted is the right answer.
+            // Only surface the empty-state hint when we truly have no rows.
+            // The empty-state UI ("No submissions yet") then renders, which
+            // is friendlier than an error pane.
         }
-        catch (Exception ex) { if (all == null) error = ex.Message; }
+        catch (Exception ex)
+        {
+            if (all is null || all.Count == 0) error = ex.Message;
+        }
         finally
         {
-            // Always merge queued rows in so offline-only submissions appear
-            // alongside the server-confirmed ones.
-            await MergeQueuedAsync();
             busy = false;
             StateHasChanged();
         }
@@ -656,6 +1087,11 @@ else
 
             var operatorName = Auth.CurrentUser?.FullName ?? "—";
 
+            // Template cache lookup per machine. We only pull templates we
+            // actually need (one cache hit per distinct MachineId in the
+            // queue) so a busy queue doesn't fan out into N SQLite reads.
+            var templateCache = new Dictionary<int, SyncTemplateDto?>();
+
             var queuedRows = new List<SubmissionRow>();
             foreach (var p in pendings)
             {
@@ -665,7 +1101,22 @@ else
                 if (req is null) continue;
 
                 byId.TryGetValue(req.MachineId, out var machine);
-                queuedRows.Add(SubmissionRow.FromQueued(req, machine, operatorName));
+
+                // Fetch the cached template once per machine so we can
+                // mirror the server's status rule offline: any defect on a
+                // template item flagged IsNoGoItem → NO-GO; any other
+                // defect → GO-BUT 24H; clean run → GO. Without this the
+                // row would just show as "QUEUED" until the network came
+                // back — operators had no way to know they'd actually
+                // submitted a NO-GO before they were back on Wi-Fi.
+                if (!templateCache.TryGetValue(req.MachineId, out var tpl))
+                {
+                    try { tpl = await Cache.GetTemplateAsync(req.MachineId); }
+                    catch { tpl = null; }
+                    templateCache[req.MachineId] = tpl;
+                }
+
+                queuedRows.Add(SubmissionRow.FromQueued(req, machine, operatorName, tpl));
             }
 
             // Newest queue items first; combine with whatever's already loaded.
@@ -676,6 +1127,36 @@ else
             all = combined;
         }
         catch { /* queue read failures shouldn't break the page */ }
+    }
+
+    /// <summary>
+    /// Client-side mirror of the server's status computation
+    /// (ChecklistService.CompileStatus): no defects → GO, any defect on a
+    /// NO-GO template item → NO-GO, any other defect → GO-BUT 24H. If the
+    /// template hasn't been cached (rare — fresh install, never online for
+    /// this machine), we fall back to InProgress so the row still shows as
+    /// QUEUED rather than misclassifying the submission.
+    /// </summary>
+    private static ChecklistStatus ComputeQueuedStatus(
+        SyncSubmissionRequest req, SyncTemplateDto? template)
+    {
+        if (req.Items is null || req.Items.Count == 0)
+            return ChecklistStatus.Go;
+
+        var defects = req.Items.Where(i => i.Status == ItemStatus.Defect).ToList();
+        if (defects.Count == 0) return ChecklistStatus.Go;
+
+        if (template is null) return ChecklistStatus.InProgress;
+
+        var noGoTemplateItemIds = template.Items
+            .Where(t => t.IsNoGoItem)
+            .Select(t => t.Id)
+            .ToHashSet();
+
+        if (defects.Any(d => noGoTemplateItemIds.Contains(d.TemplateItemId)))
+            return ChecklistStatus.NoGo;
+
+        return ChecklistStatus.GoButRepair24H;
     }
 
     // ── Detail loading for the View modal ──────────────────────────────────
@@ -712,7 +1193,42 @@ else
             }
             else
             {
-                viewDetails = await Api.GetSubmissionDetailsAsync(s.SubmissionId);
+                // ── Cache-first lookup ────────────────────────────────────
+                // Show the cached copy immediately if we have one — that way
+                // the operator sees the receipt instantly even on a flaky
+                // connection. The live fetch below will overwrite it with a
+                // fresher version if the server is reachable.
+                try
+                {
+                    var cached = await Cache.GetSubmissionDetailsAsync(s.SubmissionId);
+                    if (cached is not null)
+                    {
+                        viewDetails = cached;
+                        viewLoading = false;
+                        StateHasChanged();
+                    }
+                }
+                catch { /* cache miss is fine, fall through to live */ }
+
+                // ── Live fetch ────────────────────────────────────────────
+                // On success, save a copy to the blob cache so the operator
+                // can re-open this same pre-checklist later, fully offline.
+                try
+                {
+                    var fresh = await Api.GetSubmissionDetailsAsync(s.SubmissionId);
+                    if (fresh is not null)
+                    {
+                        viewDetails = fresh;
+                        try { await Cache.SaveSubmissionDetailsAsync(s.SubmissionId, fresh); }
+                        catch { /* cache write failures are non-fatal */ }
+                    }
+                }
+                catch
+                {
+                    // Live fetch failed — if we already painted from cache
+                    // above, leave that on screen. Only fall through to the
+                    // "couldn't load" fallback when we have NOTHING.
+                }
             }
         }
         catch { /* leave viewDetails null — the modal shows a friendly fallback */ }
@@ -756,7 +1272,10 @@ else
         return new SupervisorReviewDto
         {
             SubmissionId             = 0,
-            Status                   = ChecklistStatus.InProgress,
+            // Same offline status compute as the table row — the receipt
+            // modal now shows the real GO / GO-BUT / NO-GO outcome instead
+            // of "In progress" for an offline-queued submission.
+            Status                   = ComputeQueuedStatus(req, tpl),
             MachineNumber            = machine?.MachineNumber ?? "—",
             MachineName              = machine?.MachineName   ?? "—",
             MachineType              = machine?.TypeDisplay   ?? "—",
@@ -889,7 +1408,8 @@ else
         public static SubmissionRow FromQueued(
             SyncSubmissionRequest req,
             SyncMachineSummaryDto? machine,
-            string operatorName) => new()
+            string operatorName,
+            SyncTemplateDto? template = null) => new()
         {
             // SubmissionId is 0 — the server hasn't assigned one yet.
             SubmissionId  = 0,
@@ -897,9 +1417,11 @@ else
             MachineNumber = machine?.MachineNumber ?? "—",
             MachineName   = machine?.MachineName   ?? "(machine not in cache)",
             OperatorName  = operatorName,
-            // We don't compute final status until the server runs the rules.
-            // Show "InProgress" which the badge renders as a yellow QUEUED pill.
-            Status        = ChecklistStatus.InProgress,
+            // Pre-compute the status using the same rule the server uses,
+            // so an operator who submitted a NO-GO offline sees "NO-GO"
+            // immediately instead of waiting for the sync to come back.
+            // Falls back to InProgress only when no template is cached.
+            Status        = ComputeQueuedStatus(req, template),
             SubmittedAt   = req.SubmittedAt == default ? DateTime.UtcNow : req.SubmittedAt,
             ItemCount     = req.Items?.Count ?? 0,
             DefectCount   = req.Items?.Count(i => i.Status == ItemStatus.Defect) ?? 0,

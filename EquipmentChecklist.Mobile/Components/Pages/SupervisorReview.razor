@@ -4,6 +4,7 @@
 @using EquipmentChecklist.Mobile.Services
 @inject ApiClient        Api
 @inject AuthService      Auth
+@inject LocalCache       Cache
 @inject ActionQueue      Actions
 @inject ToastService     Toasts
 @inject HapticService    Haptics
@@ -391,16 +392,48 @@
     private async Task LoadAsync()
     {
         busy = true; error = ""; StateHasChanged();
+
+        // ── Offline-first: paint from cache if we have it, then refresh ──
+        // Even though the supervisor can't actually APPROVE without internet
+        // (the approve flow queues via ActionQueue when offline), being able
+        // to OPEN and review a past pre-checklist is useful when out of
+        // signal. Cache-first means the screen is never empty just because
+        // we can't reach the server right this second.
         try
         {
-            review = await Api.SupervisorReviewAsync(SubmissionId);
-            if (review == null) error = "Submission not found.";
+            var cached = await Cache.GetSubmissionDetailsAsync(SubmissionId);
+            if (cached is not null)
+            {
+                review = cached;
+                busy   = false;
+                StateHasChanged();
+            }
+        }
+        catch { /* cache miss is fine */ }
+
+        try
+        {
+            var fresh = await Api.SupervisorReviewAsync(SubmissionId);
+            if (fresh != null)
+            {
+                review = fresh;
+                // Cache for future offline replays.
+                try { await Cache.SaveSubmissionDetailsAsync(SubmissionId, fresh); } catch { }
+            }
+            else if (review is null)
+            {
+                error = "Submission not found.";
+            }
         }
         catch (HttpRequestException)
         {
-            error = "You're offline. The review pipeline needs a live server connection.";
+            // Only show the offline error when we have NOTHING — if the cache
+            // already painted, leave it on screen and let the operator review
+            // what we have.
+            if (review is null)
+                error = "You're offline and this submission isn't cached yet. Open it once online and it'll be available offline next time.";
         }
-        catch (Exception ex) { error = ex.Message; }
+        catch (Exception ex) { if (review is null) error = ex.Message; }
         finally { busy = false; StateHasChanged(); }
     }
 

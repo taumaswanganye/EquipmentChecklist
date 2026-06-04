@@ -1014,13 +1014,54 @@
         await Task.Delay(400);
 
         submitting = false;
-        // Final outcome cue + toast — the operator's now on the dashboard
-        // and the overlay is gone; this is their last signal.
-        Haptics.Success();
-        if (serverAccepted)
-            Toasts.Success("Submission accepted by server.");
+
+        // ── Compute outcome client-side ──────────────────────────────────
+        // We need to know whether this was GO / GO-BUT / NO-GO BEFORE we
+        // pick the haptic + sound + toast wording, and we can't trust the
+        // server response for it (the submission may have been queued
+        // offline). The same rule the server uses:
+        //   • any defect on a NO-GO template item → NO-GO
+        //   • any other defect                    → GO-BUT 24H
+        //   • no defects                          → GO
+        var defectItems   = items.Where(i => i.Status == ItemStatus.Defect).ToList();
+        var hasCriticalDefect = defectItems.Any(i => i.Template.IsNoGoItem);
+        var hasAnyDefect      = defectItems.Count > 0;
+
+        if (hasCriticalDefect)
+        {
+            // ── NO-GO: alarm + warning haptic + red toast ────────────────
+            // The audible alarm is what the operator HEARS through the
+            // cab — they may not be looking at the screen when the result
+            // lands, especially if a colleague is shouting over them. The
+            // sound is shaped to read as "danger", not "notification".
+            // See wwwroot/js/alerts.js for the 4-tone pattern.
+            try { await JS.InvokeVoidAsync("MineAlerts.playNoGo"); }
+            catch { /* audio context unavailable — toast + haptics still fire */ }
+
+            Haptics.Warning();
+            Toasts.Error(serverAccepted
+                ? "NO-GO submitted — machine is immobilised."
+                : "NO-GO saved offline — machine immobilised. Will sync.");
+        }
+        else if (hasAnyDefect)
+        {
+            // ── GO-BUT: two-tone chime + medium haptic + amber toast ─────
+            try { await JS.InvokeVoidAsync("MineAlerts.playGoBut"); }
+            catch { /* same fallback */ }
+
+            Haptics.Medium();
+            Toasts.Warning(serverAccepted
+                ? "GO-BUT submitted — waiting for supervisor sign-off."
+                : "GO-BUT saved offline — sign-off pending sync.");
+        }
         else
-            Toasts.Warning("Saved offline — will sync when signal returns.");
+        {
+            // ── GO: success cue, no sound (sound is reserved for hazards) ─
+            Haptics.Success();
+            Toasts.Success(serverAccepted
+                ? "Submission accepted by server."
+                : "Saved offline — will sync when signal returns.");
+        }
 
         // Reflect what actually happened, not what we expected. A
         // submission can start "going online" but end up queued if the

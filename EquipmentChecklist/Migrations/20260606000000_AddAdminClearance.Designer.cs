@@ -15,7 +15,6 @@ namespace EquipmentChecklist.Migrations
     [Migration("20260606000000_AddAdminClearance")]
     partial class AddAdminClearance
     {
-        /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
@@ -988,4 +987,141 @@ namespace EquipmentChecklist.Migrations
                 {
                     b.HasOne("EquipmentChecklist.Models.ApplicationUser", "User")
                         .WithMany()
-           
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("EquipmentChecklist.Models.OperatorSupervisorAssignment", b =>
+                {
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", "Operator")
+                        .WithMany()
+                        .HasForeignKey("OperatorId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", "Supervisor")
+                        .WithMany()
+                        .HasForeignKey("SupervisorId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Operator");
+
+                    b.Navigation("Supervisor");
+                });
+
+            modelBuilder.Entity("EquipmentChecklist.Models.SubmissionItem", b =>
+                {
+                    b.HasOne("EquipmentChecklist.Models.ChecklistSubmission", "Submission")
+                        .WithMany("Items")
+                        .HasForeignKey("SubmissionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("EquipmentChecklist.Models.ChecklistTemplateItem", "TemplateItem")
+                        .WithMany()
+                        .HasForeignKey("TemplateItemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Submission");
+
+                    b.Navigation("TemplateItem");
+                });
+
+            modelBuilder.Entity("EquipmentChecklist.Models.UserCredential", b =>
+                {
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
+                {
+                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<string>", b =>
+                {
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<string>", b =>
+                {
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<string>", b =>
+                {
+                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<string>", b =>
+                {
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("EquipmentChecklist.Models.ApplicationUser", b =>
+                {
+                    b.Navigation("Assignments");
+
+                    b.Navigation("Submissions");
+                });
+
+            modelBuilder.Entity("EquipmentChecklist.Models.ChecklistSubmission", b =>
+                {
+                    b.Navigation("DefectOrders");
+
+                    b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("EquipmentChecklist.Models.ChecklistTemplate", b =>
+                {
+                    b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("EquipmentChecklist.Models.Machine", b =>
+                {
+                    b.Navigation("Assignments");
+
+                    b.Navigation("Submissions");
+
+                    b.Navigation("Template");
+                });
+#pragma warning restore 612, 618
+        }
+    }
+}

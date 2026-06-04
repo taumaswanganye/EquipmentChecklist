@@ -139,14 +139,15 @@ else
                 @foreach (var s in PagedRows)
                 {
                     var (cls, label) = StatusBadge(s.Status);
+                    @* data-label powers the mobile.css card layout. *@
                     <tr>
-                        <td>
+                        <td data-label="Machine">
                             <strong>@s.MachineNumber</strong>
                             <span class="muted"> @s.MachineName</span>
                         </td>
-                        <td>@s.OperatorName</td>
-                        <td><span class="badge @cls">@label</span></td>
-                        <td class="muted mono">@s.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td data-label="Operator">@s.OperatorName</td>
+                        <td data-label="Status"><span class="badge @cls">@label</span></td>
+                        <td class="muted mono" data-label="Time">@s.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</td>
                     </tr>
                 }
             </tbody>
@@ -321,37 +322,64 @@ else
         var token = await Auth.GetTokenAsync();
         if (string.IsNullOrEmpty(token)) { Nav.NavigateTo("/login", replace:true); return; }
 
-        // Show cached machines as a stats fallback so the cards aren't zero on offline boot.
-        try
+        var email = Auth.CurrentUser?.Email;
+
+        // ── Offline-first stats hydration ────────────────────────────────
+        // Prefer the FULL cached stats DTO from the last online visit (real
+        // OpenDefects + TodaysChecks numbers, not zeros). Fall back to a
+        // synthetic DTO derived from the cached machine list if the operator
+        // has never been online or the blob hasn't been written yet.
+        if (!string.IsNullOrEmpty(email))
         {
-            var cachedMachines = await Cache.GetMachinesAsync();
-            if (cachedMachines.Count > 0)
+            try
             {
-                stats = new SyncOperatorStatsDto
-                {
-                    TotalMachines = cachedMachines.Count,
-                    Operational   = cachedMachines.Count(m => !m.IsImmobilised),
-                    Immobilised   = cachedMachines.Count(m =>  m.IsImmobilised),
-                    OpenDefects   = 0,
-                    TodaysChecks  = 0
-                };
+                var cachedStats = await Cache.GetOperatorStatsAsync(email);
+                if (cachedStats is not null) stats = cachedStats;
             }
+            catch { }
+
+            try
+            {
+                var cachedMech = await Cache.GetMechanicStatsAsync(email);
+                if (cachedMech is not null) mechStats = cachedMech;
+            }
+            catch { }
         }
-        catch { }
+
+        // Synthetic-from-machines fallback for the operator stats — used when
+        // we have NO cached stats DTO yet but DO have a machine list.
+        if (stats is null)
+        {
+            try
+            {
+                var cachedMachines = await Cache.GetMachinesAsync();
+                if (cachedMachines.Count > 0)
+                {
+                    stats = new SyncOperatorStatsDto
+                    {
+                        TotalMachines = cachedMachines.Count,
+                        Operational   = cachedMachines.Count(m => !m.IsImmobilised),
+                        Immobilised   = cachedMachines.Count(m =>  m.IsImmobilised),
+                        OpenDefects   = 0,
+                        TodaysChecks  = 0
+                    };
+                }
+            }
+            catch { }
+        }
 
         // And the cached recent submissions so the table isn't empty on offline boot.
+        // Email may be null mid-restore — LocalCache.GetRecentSubmissionsAsync now
+        // falls back to the most-recently-signed-in CachedUser so we still get
+        // data on a single-user device.
         try
         {
-            var email = Auth.CurrentUser?.Email;
-            if (!string.IsNullOrEmpty(email))
+            var cachedRecent = await Cache.GetRecentSubmissionsAsync(email);
+            if (cachedRecent.Count > 0)
             {
-                var cachedRecent = await Cache.GetRecentSubmissionsAsync(email);
-                if (cachedRecent.Count > 0)
-                {
-                    recent = cachedRecent;
-                    busy   = false;
-                    StateHasChanged();
-                }
+                recent = cachedRecent;
+                busy   = false;
+                StateHasChanged();
             }
         }
         catch { }
@@ -367,11 +395,19 @@ else
 
         try
         {
+            var email = Auth.CurrentUser?.Email;
+
             if (IsMechanicOnly)
             {
                 // Mechanic-only dashboard — no machine fleet stats, no submissions table.
                 var ms = await Api.MechanicStatsAsync();
-                if (ms != null) mechStats = ms;
+                if (ms != null)
+                {
+                    mechStats = ms;
+                    // Cache so the mechanic tiles still have numbers on offline boot.
+                    if (!string.IsNullOrEmpty(email))
+                        try { await Cache.SaveMechanicStatsAsync(email, ms); } catch { }
+                }
             }
             else
             {
@@ -379,7 +415,15 @@ else
                 var recentTask = Api.RecentSubmissionsAsync(20);
                 await Task.WhenAll(statsTask, recentTask);
 
-                if (statsTask.Result != null)  stats  = statsTask.Result;
+                if (statsTask.Result != null)
+                {
+                    stats = statsTask.Result;
+                    // Cache the full stats DTO (OpenDefects + TodaysChecks
+                    // included) so an offline reopen shows the real numbers
+                    // the operator saw last time, not zeros.
+                    if (!string.IsNullOrEmpty(email))
+                        try { await Cache.SaveOperatorStatsAsync(email, stats); } catch { }
+                }
                 if (recentTask.Result != null)
                 {
                     recent      = recentTask.Result;
@@ -388,7 +432,6 @@ else
                     // Cache for offline reads — keyed by operator's email.
                     try
                     {
-                        var email = Auth.CurrentUser?.Email;
                         if (!string.IsNullOrEmpty(email))
                             await Cache.SaveRecentSubmissionsAsync(email, recent);
                     }
@@ -401,7 +444,10 @@ else
         }
         catch (HttpRequestException)
         {
-            error = "You're offline — showing cached numbers where we have them.";
+            // We've already painted from cache above (stats + recent
+            // submissions + machine list), so this is just a hint, not an
+            // error state. The page is fully usable while offline.
+            error = "You're offline — showing cached data from your last successful sync.";
         }
         catch (Exception ex)
         {

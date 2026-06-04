@@ -3,149 +3,574 @@
 @{
     ViewData["Title"] = "Supervisor – Sign-Off Queue";
     Layout = "~/Views/Shared/_Layout.cshtml";
+
     var mechanics       = ViewBag.Mechanics as IList<ApplicationUser> ?? new List<ApplicationUser>();
     var filter          = (ListFilter)(ViewBag.Filter ?? new ListFilter());
     var totalUnfiltered = (int)(ViewBag.TotalUnfiltered ?? Model.Count);
+    var totalFiltered   = (int)(ViewBag.TotalFiltered   ?? Model.Count);
+    var pageNum         = (int)(ViewBag.Page            ?? 1);
+    var totalPages      = (int)(ViewBag.TotalPages      ?? 1);
+    var pageSize        = (int)(ViewBag.PageSize        ?? 4);
+
+    // Sort + age helpers — used to colour-code the "how long has this been
+    // waiting?" pill on each card so the oldest jumps out first.
+    string AgeLabel(DateTime t)
+    {
+        var hours = (DateTime.UtcNow - t).TotalHours;
+        if (hours < 1)  return "just now";
+        if (hours < 24) return $"{(int)hours}h ago";
+        var days = (int)(hours / 24);
+        return days == 1 ? "1 day ago" : $"{days} days ago";
+    }
+    string AgeCls(DateTime t)
+    {
+        var hours = (DateTime.UtcNow - t).TotalHours;
+        if (hours >= 24) return "age-overdue";   // > 24h
+        if (hours >= 6)  return "age-warn";       // 6-24h
+        return "age-ok";                          // < 6h
+    }
+
+    // Pager URL helper — preserves filter in querystring.
+    string PageUrl(int p)
+    {
+        var qs = filter.ToQueryString();
+        var sep = string.IsNullOrEmpty(qs) ? "?" : "&";
+        return $"/Supervisor{qs}{sep}page={p}";
+    }
+
+    // Initials for the operator avatar chip — cheap, no images required.
+    string Initials(string fullName) =>
+        string.IsNullOrWhiteSpace(fullName)
+            ? "?"
+            : string.Concat(fullName.Split(' ')
+                .Where(w => w.Length > 0)
+                .Take(2)
+                .Select(w => char.ToUpperInvariant(w[0])));
 }
 
-@* ───────────── SEARCH + DATE-RANGE BAR ───────────── *@
+@* ───────────── PAGE HEAD ───────────── *@
+<div class="sq-head">
+    <div>
+        <h2 class="page-title">✍️ Sign-Off Queue</h2>
+        <p class="page-subtitle">
+            GO-BUT submissions from your operators awaiting your approval.
+        </p>
+    </div>
+    @if (totalUnfiltered > 0)
+    {
+        var defectTotal  = Model.Sum(s => s.Items.Count(i => i.Status == ItemStatus.Defect));
+        var oldest = Model.Any() ? Model.Min(s => s.SubmittedAt) : DateTime.UtcNow;
+        var oldestHours  = (int)(DateTime.UtcNow - oldest).TotalHours;
+        <div class="sq-kpis">
+            <div class="sq-kpi">
+                <div class="sq-kpi-n">@totalUnfiltered</div>
+                <div class="sq-kpi-l">awaiting</div>
+            </div>
+            @if (defectTotal > 0)
+            {
+                <div class="sq-kpi">
+                    <div class="sq-kpi-n">@defectTotal</div>
+                    <div class="sq-kpi-l">defects total</div>
+                </div>
+            }
+            @if (Model.Any() && oldestHours >= 6)
+            {
+                <div class="sq-kpi @(oldestHours >= 24 ? "warn-strong" : "warn")">
+                    <div class="sq-kpi-n">@oldestHours<span class="sq-kpi-u">h</span></div>
+                    <div class="sq-kpi-l">oldest waiting</div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@* ───────────── FILTER BAR ───────────── *@
 @await Html.PartialAsync("_ListFilterBar", filter,
     new ViewDataDictionary(ViewData) {
-        { "Placeholder", "Search operator name, employee #, or machine…" },
+        { "Placeholder", "Search operator, employee #, or machine…" },
         { "Action",      "/Supervisor" }
     })
 
 @if (!Model.Any() && filter.IsActive)
 {
-    <div style="text-align:center;padding:60px;color:var(--text-muted)">
-        <div style="font-size:56px;margin-bottom:12px">🔍</div>
-        <h2 style="font-size:24px">No matches</h2>
-        <p style="margin-top:8px">No submissions match your search. Try clearing the filters or widening the date range.</p>
+    <div class="sq-empty">
+        <div class="sq-empty-icon">🔍</div>
+        <h3>No matches</h3>
+        <p>No submissions match your search. Try clearing the filters or widening the date range.</p>
     </div>
 }
 else if (!Model.Any())
 {
-    <div style="text-align:center;padding:60px;color:var(--text-muted)">
-        <div style="font-size:56px;margin-bottom:12px">✅</div>
-        <h2 style="font-size:24px">All clear!</h2>
-        <p style="margin-top:8px">No submissions awaiting your sign-off.</p>
+    <div class="sq-empty">
+        <div class="sq-empty-icon">✅</div>
+        <h3>All clear</h3>
+        <p>No submissions are awaiting your sign-off. Have a good shift.</p>
     </div>
 }
 else
 {
-    <div class="alert alert-warning" style="margin-bottom:20px">
+    @* Status line shows page scope + filter delta *@
+    <p class="sq-status">
         @if (filter.IsActive)
         {
-            <text><strong>@Model.Count of @totalUnfiltered submission(s)</strong> match the current scope.</text>
+            <text>
+                Showing <strong>@Model.Count</strong> of <strong>@totalFiltered</strong> in the current scope
+                (filtered from @totalUnfiltered total).
+            </text>
         }
         else
         {
-            <text><strong>@Model.Count submission(s)</strong> require your supervisor sign-off.</text>
+            <text>
+                Showing <strong>@Model.Count</strong> of <strong>@totalFiltered</strong> awaiting sign-off.
+            </text>
         }
-    </div>
+    </p>
 
     @foreach (var s in Model)
     {
-        var defects = s.Items.Where(i => i.Status == ItemStatus.Defect).ToList();
+        var defects   = s.Items.Where(i => i.Status == ItemStatus.Defect).ToList();
+        var critical  = defects.Count(i => i.TemplateItem.IsNoGoItem);
+        var hasPhoto  = defects.Any(i => i.PhotoData != null && i.PhotoData.Length > 0);
+        var hasAudio  = defects.Any(i => i.AudioData != null && i.AudioData.Length > 0);
+        var ageCls    = AgeCls(s.SubmittedAt);
+        var ageLbl    = AgeLabel(s.SubmittedAt);
 
-        <div style="background:var(--steel-mid);border:1px solid var(--amber);border-radius:8px;padding:20px;margin-bottom:16px">
-            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px">
-                <div>
-                    <h3 style="font-size:18px">@s.Machine.MachineName – #@s.Machine.MachineNumber</h3>
-                    <p style="color:var(--text-muted);font-size:13px">
-                        Operator: <strong>@s.Operator.FullName</strong> (@s.Operator.EmployeeNumber) ·
-                        @s.SubmittedAt.ToString("yyyy-MM-dd HH:mm") · Shift: @s.Shift
-                    </p>
+        <article class="sq-card @(critical > 0 ? "sq-card-crit" : "")">
+
+            @* ── Card top: machine + operator + age ───────────────────── *@
+            <header class="sq-top">
+                <div class="sq-machine">
+                    <div class="sq-mnum">@s.Machine.MachineNumber</div>
+                    <div class="sq-mname">
+                        @s.Machine.MachineName
+                        @if (!string.IsNullOrEmpty(s.Machine.TypeName))
+                        {
+                            <span class="sq-mtype"> · @s.Machine.TypeName</span>
+                        }
+                    </div>
                 </div>
-                <span class="badge badge-gobut">⚠ GO-BUT</span>
+                <div class="sq-top-right">
+                    <span class="sq-age @ageCls">⏱ @ageLbl</span>
+                    <span class="sq-badge">⚠ GO-BUT</span>
+                </div>
+            </header>
+
+            @* ── Operator chip strip + meta ───────────────────────────── *@
+            <div class="sq-meta">
+                <div class="sq-operator">
+                    <div class="sq-avatar">@Initials(s.Operator.FullName)</div>
+                    <div>
+                        <div class="sq-op-name">@s.Operator.FullName</div>
+                        <div class="sq-op-emp">#@s.Operator.EmployeeNumber</div>
+                    </div>
+                </div>
+                <div class="sq-meta-chips">
+                    <span class="sq-chip">📅 @s.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                    <span class="sq-chip">🕒 @s.Shift</span>
+                    @if (s.KmOrHourMeter.HasValue)
+                    {
+                        <span class="sq-chip">⏲ @s.KmOrHourMeter km/hrs</span>
+                    }
+                    <span class="sq-chip danger">🔧 @defects.Count defect@(defects.Count == 1 ? "" : "s")</span>
+                    @if (critical > 0)
+                    {
+                        <span class="sq-chip critical">⚠ @critical critical</span>
+                    }
+                    @if (hasPhoto)
+                    {
+                        <span class="sq-chip">📷 photo</span>
+                    }
+                    @if (hasAudio)
+                    {
+                        <span class="sq-chip">🎤 voice</span>
+                    }
+                </div>
             </div>
 
+            @* ── Defects list ───────────────────────────────────────── *@
             @if (defects.Any())
             {
-                <div style="margin-bottom:14px">
-                    <p style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:8px">
-                        Defects Reported (@defects.Count)
-                    </p>
+                <div class="sq-defects">
+                    <div class="sq-defects-h">DEFECTS REPORTED</div>
                     @foreach (var item in defects)
                     {
-                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
-                            <span class="badge badge-gobut" style="font-size:10px">⚠</span>
-                            <span style="font-size:14px">@item.TemplateItem.ItemName</span>
-                            @if (item.Notes != null)
-                            {
-                                <span style="color:var(--text-muted);font-size:12px">– @item.Notes</span>
-                            }
+                        var isCrit = item.TemplateItem.IsNoGoItem;
+                        <div class="sq-defect @(isCrit ? "critical" : "")">
+                            <div class="sq-defect-marker">@(isCrit ? "⚠" : "•")</div>
+                            <div class="sq-defect-body">
+                                <div class="sq-defect-name">
+                                    @item.TemplateItem.ItemName
+                                    @if (isCrit)
+                                    {
+                                        <span class="sq-defect-tag">CRITICAL</span>
+                                    }
+                                </div>
+                                @if (!string.IsNullOrEmpty(item.Notes))
+                                {
+                                    <div class="sq-defect-note">"@item.Notes"</div>
+                                }
+                            </div>
                         </div>
                     }
                 </div>
             }
 
-            @if (s.OperatorRemarks != null)
+            @if (!string.IsNullOrEmpty(s.OperatorRemarks))
             {
-                <div style="background:var(--steel-light);border-radius:6px;padding:10px;margin-bottom:14px;font-size:13px">
-                    <strong>Operator remarks:</strong>
-                    <span style="color:var(--text-muted)">@s.OperatorRemarks</span>
+                <div class="sq-remarks">
+                    <div class="sq-remarks-l">OPERATOR REMARKS</div>
+                    <div class="sq-remarks-v">"@s.OperatorRemarks"</div>
                 </div>
             }
 
-            <!-- Approve Buttons -->
-            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
-                <form method="post" action="/Supervisor/SignOff" style="display:contents">
+            @* ── Action row ───────────────────────────────────────── *@
+            <div class="sq-actions">
+                <form method="post" action="/Supervisor/SignOff" class="sq-action-form">
                     @Html.AntiForgeryToken()
                     <input type="hidden" name="id" value="@s.Id" />
-                    <button name="resolution" value="2" type="submit" class="btn btn-warning">
-                        ✍ Approve – Repair Within 24H
+                    <button name="resolution" value="2" type="submit" class="sq-btn approve">
+                        ✓ Approve · 24H
                     </button>
-                    <button name="resolution" value="3" type="submit" class="btn btn-ghost">
-                        ✍ Approve – Repair By Next Service
+                    <button name="resolution" value="3" type="submit" class="sq-btn approve-30d">
+                        ✓ Approve · 30 days
                     </button>
                 </form>
-                <a href="/Supervisor/Review/@s.Id" class="btn btn-ghost">View Full Checklist</a>
+                <a href="/Supervisor/Review/@s.Id" class="sq-btn ghost">
+                    🔍 Review full checklist
+                </a>
             </div>
 
-            <!-- Reject Panel -->
-            <details style="border:1px solid #7f1d1d;border-radius:6px;overflow:hidden">
-                <summary style="background:rgba(220,38,38,0.12);padding:10px 14px;cursor:pointer;font-size:13px;font-weight:600;color:#ef4444;list-style:none;display:flex;align-items:center;gap:6px">
-                    ✕ Reject Submission
-                    <span style="font-size:11px;font-weight:400;color:var(--text-muted)">— immobilise machine and send defects to mechanic</span>
+            @* ── Reject panel ──────────────────────────────────────── *@
+            <details class="sq-reject">
+                <summary class="sq-reject-sum">
+                    <span class="sq-reject-icon">✕</span>
+                    Reject submission
+                    <span class="sq-reject-hint">— immobilises machine + sends defects to mechanic</span>
                 </summary>
-
-                <div style="padding:14px 16px;background:var(--steel-dark)">
+                <div class="sq-reject-body">
                     <form method="post" action="/Supervisor/Reject">
                         @Html.AntiForgeryToken()
                         <input type="hidden" name="id" value="@s.Id" />
-
-                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-                            <div class="form-group" style="margin:0">
-                                <label class="form-label" style="color:#ef4444">
-                                    Rejection Reason <span>*</span>
-                                </label>
-                                <input type="text" name="rejectionReason" class="form-control"
+                        <div class="sq-reject-grid">
+                            <div class="sq-form-group">
+                                <label class="sq-form-l">Rejection reason <span class="sq-req">*</span></label>
+                                <input type="text" name="rejectionReason" required
                                        placeholder="e.g. Critical safety defect – machine unfit to operate"
-                                       required style="border-color:#7f1d1d" />
+                                       class="sq-input danger" />
                             </div>
-
-                            <div class="form-group" style="margin:0">
-                                <label class="form-label" style="color:#ef4444">
-                                    Assign Mechanic <span>*</span>
-                                </label>
-                                <select name="mechanicId" class="form-control" required style="border-color:#7f1d1d">
-                                    <option value="">-- Select Mechanic --</option>
+                            <div class="sq-form-group">
+                                <label class="sq-form-l">Assign mechanic <span class="sq-req">*</span></label>
+                                <select name="mechanicId" required class="sq-input danger">
+                                    <option value="">— Select mechanic —</option>
                                     @foreach (var mec in mechanics)
                                     {
-                                        <option value="@mec.Id">@mec.FullName (@mec.EmployeeNumber)</option>
+                                        <option value="@mec.Id">@mec.FullName (#@mec.EmployeeNumber)</option>
                                     }
                                 </select>
                             </div>
                         </div>
-
-                        <button type="submit" class="btn btn-nogo"
+                        <button type="submit" class="sq-btn reject"
                                 onclick="return confirm('Reject this submission? The machine will be immobilised and all defects sent to the selected mechanic.')">
-                            🚫 Confirm Rejection &amp; Assign to Mechanic
+                            🚫 Confirm rejection
                         </button>
                     </form>
                 </div>
             </details>
+
+        </article>
+    }
+
+    @* ── Pager ───────────────────────────────────────────────── *@
+    @if (totalPages > 1)
+    {
+        var window = 1;
+        var visible = new List<int>();
+        for (int p = 1; p <= totalPages; p++)
+        {
+            if (p == 1 || p == totalPages ||
+                (p >= pageNum - window && p <= pageNum + window))
+                visible.Add(p);
+            else if (p == pageNum - window - 1 || p == pageNum + window + 1)
+                visible.Add(-1);
+        }
+        int firstRow = (pageNum - 1) * pageSize + 1;
+        int lastRow  = Math.Min(pageNum * pageSize, totalFiltered);
+
+        <div class="sq-pager">
+            <span class="sq-pager-info">
+                Page @pageNum of @totalPages
+                <span class="sq-dot-sep">·</span>
+                @firstRow–@lastRow of @totalFiltered
+            </span>
+            <div class="sq-pager-btns">
+                <a href="@PageUrl(Math.Max(1, pageNum - 1))"
+                   class="sq-pg @(pageNum == 1 ? "disabled" : "")"
+                   title="Previous">‹ Prev</a>
+
+                @foreach (var p in visible)
+                {
+                    if (p == -1)
+                    {
+                        <span class="sq-pg dots">…</span>
+                    }
+                    else
+                    {
+                        <a href="@PageUrl(p)"
+                           class="sq-pg @(p == pageNum ? "on" : "")">@p</a>
+                    }
+                }
+
+                <a href="@PageUrl(Math.Min(totalPages, pageNum + 1))"
+                   class="sq-pg @(pageNum == totalPages ? "disabled" : "")"
+                   title="Next">Next ›</a>
+            </div>
         </div>
     }
 }
+
+<style>
+    /* ── Page head ────────────────────────────────────────────── */
+    .sq-head {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        margin-bottom:18px; flex-wrap:wrap; gap:14px;
+    }
+    .sq-kpis { display:flex; gap:10px; flex-wrap:wrap; }
+    .sq-kpi {
+        background:var(--steel-mid); border:1px solid var(--steel-border);
+        border-radius:10px; padding:10px 16px; min-width:100px; text-align:center;
+    }
+    .sq-kpi-n { font-size:24px; font-weight:800; line-height:1;
+                color:var(--text-primary); }
+    .sq-kpi-u { font-size:14px; color:var(--text-muted); margin-left:2px; }
+    .sq-kpi-l { font-size:10px; color:var(--text-muted); letter-spacing:.5px;
+                margin-top:4px; text-transform:uppercase; }
+    .sq-kpi.warn   { border-color:#f59e0b; }
+    .sq-kpi.warn .sq-kpi-n { color:#fbbf24; }
+    .sq-kpi.warn-strong { border-color:#dc2626; }
+    .sq-kpi.warn-strong .sq-kpi-n { color:#ef4444; }
+
+    /* ── Empty + status ───────────────────────────────────────── */
+    .sq-empty {
+        background:var(--steel-mid); border:1px solid var(--steel-border);
+        border-radius:12px; padding:60px 20px; text-align:center;
+        color:var(--text-muted);
+    }
+    .sq-empty-icon { font-size:56px; margin-bottom:12px; }
+    .sq-empty h3 { color:var(--text-primary); font-size:22px; margin:0 0 6px; }
+    .sq-empty p { font-size:13px; margin:0; }
+
+    .sq-status { font-size:12px; color:var(--text-muted); margin:0 0 16px; }
+    .sq-status strong { color:var(--text-primary); }
+
+    /* ── Card ─────────────────────────────────────────────────── */
+    .sq-card {
+        background:var(--steel-mid);
+        border:1px solid var(--steel-border);
+        border-left:4px solid var(--amber);
+        border-radius:10px;
+        margin-bottom:14px;
+        display:flex; flex-direction:column;
+        overflow:hidden;
+        transition:border-color .15s, transform .15s;
+    }
+    .sq-card:hover { transform:translateY(-1px); }
+    .sq-card-crit { border-left-color:var(--red-nogo); }
+
+    .sq-top {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        gap:14px; padding:14px 18px;
+        background:rgba(245,158,11,.06);
+        border-bottom:1px solid var(--steel-border);
+        flex-wrap:wrap;
+    }
+    .sq-card-crit .sq-top { background:rgba(239,68,68,.07); }
+
+    .sq-machine { min-width:0; }
+    .sq-mnum    { font-size:20px; font-weight:800; font-family:var(--font-mono);
+                  color:var(--text-primary); }
+    .sq-mname   { font-size:13px; color:var(--text-muted); margin-top:2px; }
+    .sq-mtype   { font-style:italic; }
+
+    .sq-top-right { display:flex; gap:8px; align-items:center; flex-wrap:wrap; flex-shrink:0; }
+    .sq-age {
+        font-size:11px; font-weight:600; padding:3px 10px; border-radius:5px;
+        border:1px solid; white-space:nowrap;
+    }
+    .sq-age.age-ok       { color:#cbd5e1; border-color:#475569;
+                           background:rgba(71,85,105,.10); }
+    .sq-age.age-warn     { color:#fbbf24; border-color:#92400e;
+                           background:rgba(245,158,11,.12); }
+    .sq-age.age-overdue  { color:#fca5a5; border-color:#7f1d1d;
+                           background:rgba(239,68,68,.12); }
+    .sq-badge {
+        background:rgba(6,182,212,.14); color:#7dd3fc;
+        border:1px solid #0ea5e9; padding:3px 10px; border-radius:5px;
+        font-size:11px; font-weight:700; letter-spacing:.4px;
+    }
+
+    /* ── Meta strip ───────────────────────────────────────────── */
+    .sq-meta {
+        padding:12px 18px;
+        display:flex; justify-content:space-between; gap:14px;
+        flex-wrap:wrap; align-items:center;
+        border-bottom:1px solid var(--steel-border);
+    }
+    .sq-operator { display:flex; align-items:center; gap:10px; min-width:0; }
+    .sq-avatar {
+        width:36px; height:36px; border-radius:50%;
+        background:linear-gradient(135deg, #1e3a5f, #0e9488);
+        color:#fff; display:flex; align-items:center; justify-content:center;
+        font-weight:800; font-size:13px; flex-shrink:0;
+    }
+    .sq-op-name { font-size:13px; font-weight:600; color:var(--text-primary); }
+    .sq-op-emp  { font-size:11px; color:var(--text-muted); font-family:var(--font-mono); }
+
+    .sq-meta-chips { display:flex; gap:6px; flex-wrap:wrap; }
+    .sq-chip {
+        font-size:11px; padding:3px 8px; border-radius:4px;
+        background:#0d1729; border:1px solid var(--steel-border);
+        color:var(--text-primary);
+    }
+    .sq-chip.danger   { color:#fca5a5; border-color:#7f1d1d;
+                        background:rgba(239,68,68,.10); }
+    .sq-chip.critical { color:#fff; background:#dc2626; border-color:#dc2626;
+                        font-weight:700; }
+
+    /* ── Defects list ─────────────────────────────────────────── */
+    .sq-defects {
+        padding:12px 18px; background:rgba(0,0,0,.08);
+        border-bottom:1px solid var(--steel-border);
+    }
+    .sq-defects-h {
+        font-size:10px; font-weight:700; color:var(--text-muted);
+        letter-spacing:.5px; margin-bottom:8px;
+    }
+    .sq-defect {
+        display:flex; gap:10px; padding:6px 10px;
+        background:var(--steel-mid); border:1px solid #1a2638;
+        border-radius:6px; margin-bottom:6px;
+    }
+    .sq-defect:last-child { margin-bottom:0; }
+    .sq-defect.critical { border-color:#7f1d1d;
+                          background:rgba(239,68,68,.06); }
+    .sq-defect-marker {
+        font-size:14px; color:#fbbf24; line-height:1.3; flex-shrink:0;
+    }
+    .sq-defect.critical .sq-defect-marker { color:#fca5a5; }
+    .sq-defect-body { flex:1; min-width:0; }
+    .sq-defect-name { font-size:13px; font-weight:600;
+                      color:var(--text-primary); }
+    .sq-defect-tag {
+        margin-left:8px; font-size:9px; font-weight:800;
+        color:#fff; background:#dc2626; padding:1px 6px; border-radius:3px;
+        letter-spacing:.4px;
+    }
+    .sq-defect-note { font-size:12px; color:#cbd5e1; font-style:italic;
+                      margin-top:3px; line-height:1.5; }
+
+    /* ── Remarks ──────────────────────────────────────────────── */
+    .sq-remarks {
+        padding:12px 18px;
+        background:#0d1729; border-bottom:1px solid var(--steel-border);
+    }
+    .sq-remarks-l {
+        font-size:10px; font-weight:700; color:var(--text-muted);
+        letter-spacing:.5px; margin-bottom:4px;
+    }
+    .sq-remarks-v { font-size:13px; color:#cbd5e1; font-style:italic;
+                    line-height:1.55; }
+
+    /* ── Action row ───────────────────────────────────────────── */
+    .sq-actions {
+        padding:14px 18px;
+        display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+    }
+    .sq-action-form { display:flex; gap:8px; flex-wrap:wrap; }
+    .sq-btn {
+        background:transparent; border:1px solid var(--steel-border);
+        color:var(--text-primary); padding:8px 14px; border-radius:6px;
+        font-size:13px; font-weight:600; font-family:inherit;
+        cursor:pointer; text-decoration:none; display:inline-flex;
+        align-items:center; gap:6px;
+    }
+    .sq-btn.approve {
+        background:#16a34a; color:#fff; border-color:#16a34a;
+    }
+    .sq-btn.approve:hover { background:#15803d; }
+    .sq-btn.approve-30d {
+        background:rgba(34,197,94,.14); color:#86efac;
+        border-color:#166534;
+    }
+    .sq-btn.approve-30d:hover { background:rgba(34,197,94,.22); }
+    .sq-btn.ghost:hover { background:#1a2638; border-color:var(--amber); }
+    .sq-btn.reject {
+        background:#dc2626; color:#fff; border-color:#dc2626;
+    }
+    .sq-btn.reject:hover { background:#b91c1c; }
+
+    /* ── Reject panel ─────────────────────────────────────────── */
+    .sq-reject {
+        margin:0 18px 14px;
+        border:1px solid #7f1d1d; border-radius:6px;
+        overflow:hidden;
+    }
+    .sq-reject-sum {
+        background:rgba(220,38,38,.10); padding:9px 14px;
+        cursor:pointer; font-size:13px; font-weight:600; color:#fca5a5;
+        list-style:none; display:flex; align-items:center; gap:6px;
+    }
+    .sq-reject-sum::-webkit-details-marker { display:none; }
+    .sq-reject-icon { font-weight:800; }
+    .sq-reject-hint { font-weight:400; color:var(--text-muted); font-size:11px; }
+
+    .sq-reject-body { padding:14px; background:rgba(127,29,29,.06);
+                      border-top:1px solid #7f1d1d; }
+    .sq-reject-grid {
+        display:grid; grid-template-columns:1fr 1fr; gap:12px;
+        margin-bottom:12px;
+    }
+    @@media (max-width:640px) {
+        .sq-reject-grid { grid-template-columns:1fr; }
+    }
+    .sq-form-group { display:flex; flex-direction:column; gap:5px; }
+    .sq-form-l {
+        font-size:10px; font-weight:700; color:#fca5a5;
+        letter-spacing:.5px; text-transform:uppercase;
+    }
+    .sq-req { color:#dc2626; }
+    .sq-input {
+        background:#111c2e; border:1px solid var(--steel-border);
+        color:var(--text-primary); padding:8px 10px; border-radius:6px;
+        font-size:13px; font-family:inherit; outline:none;
+        color-scheme:dark;
+    }
+    .sq-input.danger { border-color:#7f1d1d; }
+    .sq-input:focus  { border-color:var(--amber); }
+
+    /* ── Pager ────────────────────────────────────────────────── */
+    .sq-pager {
+        margin-top:18px; padding:12px 16px;
+        background:var(--steel-mid); border:1px solid var(--steel-border);
+        border-radius:10px;
+        display:flex; justify-content:space-between; align-items:center;
+        flex-wrap:wrap; gap:10px;
+    }
+    .sq-pager-info { font-size:11px; color:var(--text-muted); }
+    .sq-dot-sep    { color:#475569; margin:0 4px; }
+    .sq-pager-btns { display:flex; align-items:center; gap:4px;
+                     flex-wrap:wrap; }
+    .sq-pg {
+        display:inline-flex; align-items:center; justify-content:center;
+        min-width:32px; padding:5px 10px;
+        border:1px solid var(--steel-border);
+        color:var(--text-primary); background:transparent;
+        border-radius:6px; font-size:12px; text-decoration:none;
+    }
+    .sq-pg:hover:not(.disabled):not(.dots):not(.on)
+                    { background:#1a2638; border-color:var(--amber); }
+    .sq-pg.on       { background:var(--amber); color:#0a1726;
+                      border-color:var(--amber); font-weight:700; }
+    .sq-pg.disabled { opacity:.35; pointer-events:none; }
+    .sq-pg.dots     { border:none; cursor:default; color:#64748b;
+                      padding:5px 4px; min-width:auto; }
+</style>

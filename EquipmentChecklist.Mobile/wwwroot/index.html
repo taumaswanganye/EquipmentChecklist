@@ -8,6 +8,12 @@
     <link rel="stylesheet" href="lib/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="app.css" />
     <link rel="stylesheet" href="EquipmentChecklist.Mobile.styles.css" />
+    <!--
+      Phone-form-factor overrides. Loaded LAST so the @media (max-width:640px)
+      rules win against page-scoped <style> blocks inside the .razor files.
+      See wwwroot/css/mobile.css for the per-pattern rationale.
+    -->
+    <link rel="stylesheet" href="css/mobile.css" />
     <link rel="icon" href="data:,">
 </head>
 
@@ -26,6 +32,12 @@
     <script src="js/sigpad.js"></script>
     <script src="js/pdfviewer.js"></script>
     <script src="js/pulltorefresh.js"></script>
+    <!--
+      Synthesised safety alerts (Web Audio API). Exposes
+      window.MineAlerts.playNoGo() and .playGoBut() for use from Blazor
+      via IJSRuntime. See wwwroot/js/alerts.js for the tone shaping.
+    -->
+    <script src="js/alerts.js"></script>
     <!-- jsPDF + autotable: vendored so on-device PDF generation works offline.
          Download once with the PowerShell snippet in the runbook — do NOT
          switch to a CDN, the whole point is offline-first. -->

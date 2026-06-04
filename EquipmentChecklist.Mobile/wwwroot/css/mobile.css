@@ -1,0 +1,307 @@
+/* ════════════════════════════════════════════════════════════════════════════
+   mobile.css — phone-form-factor overrides for the MAUI Blazor Hybrid UI.
+
+   The pages were designed desktop-first (operator on a 10" tablet, supervisor
+   on a laptop). When the same Blazor pages are rendered inside the Android
+   WebView on a 5–6" phone, several patterns break:
+
+     • Wide `.data-table` rows overflow horizontally → the right-most "ACTIONS"
+       column with View / PDF buttons disappears off-screen.
+     • Tight `.act-btn` padding is hard to tap.
+     • Modals (especially the PDF-receipt) push their action footer below the
+       viewport because the paper content fills the height.
+     • Filter pill rows can wrap into 3 rows and crowd the page head.
+     • Stat cards become illegibly small.
+
+   This stylesheet wraps every fix in a single `@media (max-width:640px)` block
+   so it only activates on phones — tablets and the Windows WebView keep their
+   existing layout. Every rule is scoped to a class that already exists across
+   multiple pages, so changes are picked up app-wide without per-page edits.
+
+   Load order: app.css → mobile.css → component-scoped CSS bundles. mobile.css
+   intentionally uses higher specificity (compound selectors) so it overrides
+   the page-scoped <style> blocks inside each .razor.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Universal box-sizing on phone, so 100% widths don't blow the page ─── */
+@media (max-width: 640px) {
+
+    html, body { -webkit-text-size-adjust: 100%; }
+
+    /* Stop the WebView from inflating fonts when it thinks the page is
+       desktop-sized but the viewport is narrow. */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    /* ── Main column tightening ──────────────────────────────────────────
+       MainLayout already drops .content padding to 14px on mobile, but we
+       want the actual horizontal padding even smaller so cards have room. */
+    .main > .content { padding: 12px 10px 28px; }
+
+    /* ── Topbar: the topbar-right cluster can overflow when the user-chip
+       and the queue/notification pills crowd a small screen. Let it wrap
+       under the date row instead of getting cut off. ─────────────────── */
+    .topbar       { flex-wrap: wrap; row-gap: 6px; }
+    .topbar-right { gap: 6px; margin-left: auto; }
+    .user-chip    { padding: 4px 8px 4px 4px; }
+    .avatar       { width: 26px; height: 26px; font-size: 10px; }
+
+    /* ── Page head — title + "New Checklist" button row ────────────────── */
+    .page-head { margin-bottom: 12px; gap: 8px; }
+    .page-head h1 { font-size: 18px; line-height: 1.2; }
+    .page-head p  { font-size: 11px; }
+    .new-btn      { padding: 8px 12px; font-size: 12px; }
+
+    /* ── Filter pills row — let pills wrap onto multiple lines but stay
+       readable. Already had flex-wrap; we just shrink them. ───────────── */
+    .filter-row     { gap: 6px; margin-bottom: 10px; }
+    .filter-pill    { padding: 6px 9px; font-size: 11px; gap: 5px; }
+    .filter-pill .cnt { padding: 1px 5px; font-size: 10px; min-width: 16px; }
+
+    /* ──────────────────────────────────────────────────────────────────
+       DATA-TABLE → CARDS
+       This is the big one. On wide screens .data-table is a 6-7 column
+       table; on phone it can't fit. Instead of horizontal scroll (which
+       hides the Actions column behind a swipe), we re-flow each row as
+       a stacked card. Each <td> becomes its own block with the column
+       header rendered as a small label via CSS `data-label` attribute,
+       which the Razor template already exposes through `<th>` text.
+
+       Because the actions cell has its own class (.actions-col), we
+       can override layout for just that row to make View / PDF buttons
+       wrap onto their own line and stay full-width — never hidden.
+       ─────────────────────────────────────────────────────────────── */
+    .table-card { border-radius: 8px; }
+
+    .data-table,
+    .data-table thead,
+    .data-table tbody,
+    .data-table tr,
+    .data-table th,
+    .data-table td { display: block; width: 100%; }
+
+    /* Hide the column header row — we surface labels per-cell below. */
+    .data-table thead { display: none; }
+
+    /* Each row becomes a card */
+    .data-table tbody tr {
+        padding: 12px 12px 10px;
+        border-bottom: 1px solid #1f2a3a;
+        position: relative;
+    }
+    .data-table tbody tr:last-child { border-bottom: none; }
+
+    /* Reset the inset coloured strip — apply it to the whole row instead
+       of the first cell, since cells are now block-level. */
+    .data-table tbody tr.row-go,
+    .data-table tbody tr.row-nogo,
+    .data-table tbody tr.row-gobut,
+    .data-table tbody tr.row-rejected,
+    .data-table tbody tr.row-queued {
+        border-left: 3px solid transparent;
+    }
+    .data-table tbody tr.row-go      { border-left-color: #22c55e; }
+    .data-table tbody tr.row-nogo    { border-left-color: #ef4444; }
+    .data-table tbody tr.row-gobut   { border-left-color: #06b6d4; }
+    .data-table tbody tr.row-rejected{ border-left-color: #f97316; }
+    .data-table tbody tr.row-queued  { border-left-color: #f59e0b; }
+
+    /* Reset the inset shadow that drew that strip on the first cell. */
+    .data-table tbody tr.row-go      td:first-child,
+    .data-table tbody tr.row-nogo    td:first-child,
+    .data-table tbody tr.row-gobut   td:first-child,
+    .data-table tbody tr.row-rejected td:first-child,
+    .data-table tbody tr.row-queued  td:first-child { box-shadow: none; }
+
+    .data-table td {
+        padding: 5px 0;
+        border-bottom: none;
+        font-size: 13px;
+        text-align: left !important;       /* override .num-col right-align */
+    }
+
+    /* Surface the column heading as a small label before each value,
+       using the `data-label` attribute the Razor template can set. If
+       a cell has no data-label (legacy rows), we just render the value
+       so nothing breaks. */
+    .data-table td[data-label]::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 9.5px;
+        font-weight: 700;
+        color: #64748b;
+        letter-spacing: .5px;
+        text-transform: uppercase;
+        margin-bottom: 2px;
+    }
+
+    /* The first cell (machine number + name) gets bigger emphasis. */
+    .data-table td:first-child { padding-top: 0; }
+    .m-num  { font-size: 16px; }
+    .m-name { font-size: 12px; }
+
+    /* The actions cell becomes a flex row that wraps so all buttons stay
+       visible. View / PDF always tappable. */
+    .data-table td.actions-col {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px dashed #1f2a3a;
+    }
+    .data-table td.actions-col::before { display: none; }   /* no label */
+    .data-table td.actions-col .act-btn {
+        flex: 1 1 auto;
+        min-width: 88px;
+        margin: 0;
+        padding: 9px 10px;
+        font-size: 12px;
+        text-align: center;
+    }
+    .data-table td.actions-col .act-btn.icon {
+        flex: 0 0 auto;
+        min-width: 36px;
+    }
+
+    /* ── Pager — make buttons bigger and the layout vertical so they
+       don't crowd into one ugly row. ─────────────────────────────── */
+    .pager       { flex-direction: column; align-items: stretch; gap: 8px;
+                   padding: 10px 12px; }
+    .pager-info  { text-align: center; }
+    .pager-btns  { justify-content: center; flex-wrap: wrap; gap: 4px; }
+    .pg          { padding: 7px 12px; font-size: 13px; }
+
+    /* ── Stat cards on Dashboard, MyMachines, MyDefects ──────────────── */
+    .stats, .stat-row, .stats-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 8px !important;
+    }
+
+    /* ──────────────────────────────────────────────────────────────────
+       PDF-RECEIPT MODAL
+       The .rcpt-wrap is max-height:94vh and the .rcpt-foot lives OUTSIDE
+       the scrolling .rcpt-paper. On phones with a small viewport (and an
+       on-screen keyboard, which steals viewport height), the action
+       footer was getting pushed below the visible area — so "Open PDF"
+       was invisible.
+
+       Fix: make .rcpt-foot sticky inside the wrap, and reduce the paper's
+       max-height so there's always room for the footer underneath.
+       ─────────────────────────────────────────────────────────────── */
+    .rcpt-backdrop { padding: 8px; }
+    .rcpt-wrap     { max-height: 96vh; gap: 6px; }
+
+    .rcpt-paper {
+        padding: 8px;
+        /* Cap the paper so the action footer always has room below. */
+        max-height: calc(96vh - 70px);
+    }
+
+    .rcpt-header  { padding: 8px 10px; gap: 8px; }
+    .rcpt-mine    { font-size: 13px; }
+    .rcpt-sub     { font-size: 9px; }
+    .rcpt-mine-echo { display: none; }     /* drop the right-side echo on phone */
+    .rcpt-title   { padding: 6px 10px; font-size: 11px; }
+
+    .rcpt-info     { grid-template-columns: repeat(2, 1fr); }
+    .rcpt-legend   { grid-column: 1 / -1; }
+    .rcpt-machine  { padding: 7px 10px; gap: 6px 12px; font-size: 11px; }
+    .rcpt-items    { grid-template-columns: 1fr; }
+    .rcpt-sigs     { grid-template-columns: 1fr; }
+    .rcpt-sig-pad  { height: 56px; }
+
+    /* The action footer — sticky to the bottom of the modal wrap. */
+    .rcpt-foot {
+        position: sticky;
+        bottom: 0;
+        background: rgba(11, 23, 38, .92);
+        backdrop-filter: blur(4px);
+        margin-top: 6px;
+        padding: 10px 8px;
+        border-top: 1px solid rgba(255, 255, 255, .08);
+        border-radius: 0 0 6px 6px;
+        z-index: 2;
+    }
+    .rcpt-foot .ghost,
+    .rcpt-foot .primary {
+        flex: 1 1 auto;
+        padding: 11px 12px;
+        font-size: 14px;
+        text-align: center;
+    }
+
+    /* ──────────────────────────────────────────────────────────────────
+       INLINE PDF VIEWER
+       Use almost the full viewport on phones so the PDF actually fits,
+       and let the title truncate harder so the close button stays
+       visible.
+       ─────────────────────────────────────────────────────────────── */
+    .pdfv-card  { top: .5vh; left: .5vw; right: .5vw; bottom: .5vh;
+                  border-radius: 6px; }
+    .pdfv-head  { padding: 8px 10px; gap: 6px; }
+    .pdfv-name  { font-size: 12px; max-width: 40vw; }
+    .pdfv-sub   { font-size: 10px; }
+    .pdfv-icon  { font-size: 18px; }
+    .pdfv-btn   { padding: 5px 10px; font-size: 11px; }
+    .pdfv-x     { width: 28px; height: 28px; }
+
+    /* ──────────────────────────────────────────────────────────────────
+       CARDS WITH ACTION ROWS
+       The supervisor Sign-Off Queue (.q-card / .q-actions), the mechanic
+       defect cards (.card / .card-actions), and a few other places all
+       use a horizontal flex row of action buttons. On phone we stack
+       them so each button is full-width and big enough to tap.
+       ─────────────────────────────────────────────────────────────── */
+    .q-card, .card { padding: 12px; }
+    .q-head, .card-top {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .q-actions, .card-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+    }
+    .q-actions > button,
+    .q-actions > a,
+    .card-actions > button,
+    .card-actions > a {
+        width: 100%;
+        padding: 11px 12px;
+        font-size: 14px;
+        text-align: center;
+    }
+
+    /* ── Modal footers (Quick Approve, etc.) — stack their buttons so
+       a 3-button row doesn't overflow horizontally on a small screen. ── */
+    .modal-foot {
+        flex-direction: column;
+        gap: 8px;
+    }
+    .modal-foot > button {
+        width: 100%;
+        padding: 11px 14px;
+        font-size: 14px;
+    }
+    .modal-body { padding: 12px 14px; }
+    .modal-head { padding: 12px 14px; }
+    .modal      { max-width: none; margin: 0 4px; }
+
+    /* ── Login screen — give the form some breathing room and stop the
+       brand block from eating the whole screen. ──────────────────────── */
+    .login-card, .auth-card {
+        margin: 16px 8px;
+        padding: 18px 16px;
+        max-width: 100%;
+    }
+}
+
+/* ── Very small phones (≤ 360px) — final shrink pass ─────────────────── */
+@media (max-width: 360px) {
+    .page-head h1 { font-size: 16px; }
+    .filter-pill  { padding: 5px 7px; font-size: 10px; }
+    .data-table td { font-size: 12px; }
+    .m-num { font-size: 15px; }
+    .rcpt-paper { padding: 6px; }
+}

@@ -34,7 +34,8 @@ public class SupervisorController : Controller
     }
 
     // ── Sign-Off Queue ────────────────────────────────────────────────────────
-    public async Task<IActionResult> Index([FromQuery] ListFilter filter)
+    public async Task<IActionResult> Index([FromQuery] ListFilter filter,
+                                           [FromQuery] int page = 1)
     {
         FilterPresets.Apply(filter);
 
@@ -75,12 +76,29 @@ public class SupervisorController : Controller
             s => s.Operator.FullName,
             s => s.Operator.EmployeeNumber);
 
+        // ── Paging ────────────────────────────────────────────────────────
+        // Sign-off cards are visually dense (defects + reject panel), so a
+        // small page size of 4 keeps the page scannable while letting busy
+        // supervisors burn through a deep queue.
+        const int PAGE_SIZE = 4;
+        if (page < 1) page = 1;
+        var totalPages = Math.Max(1, (int)Math.Ceiling(pending.Count / (double)PAGE_SIZE));
+        if (page > totalPages) page = totalPages;
+        var pageSlice = pending
+            .Skip((page - 1) * PAGE_SIZE)
+            .Take(PAGE_SIZE)
+            .ToList();
+
         // Pass available mechanics so supervisor can pick who to assign on reject
         ViewBag.Mechanics       = await _users.GetUsersInRoleAsync("Mechanic");
         ViewBag.Filter          = filter;
         ViewBag.TotalUnfiltered = loaded.Count;
+        ViewBag.TotalFiltered   = pending.Count;
+        ViewBag.Page            = page;
+        ViewBag.TotalPages      = totalPages;
+        ViewBag.PageSize        = PAGE_SIZE;
 
-        return View(pending);
+        return View(pageSlice);
     }
 
     // ── Review Specific Submission ────────────────────────────────────────────

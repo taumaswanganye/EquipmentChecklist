@@ -114,6 +114,29 @@
                   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
     .bell-time  { font-size:10px; color:#64748b; margin-top:4px;
                   font-family:ui-monospace,monospace; }
+
+    /* ── Phone overrides ─────────────────────────────────────────────────
+       On narrow screens the topbar wraps and .bell-wrap can end up on the
+       LEFT of its row. The default `position:absolute; right:0;` then
+       anchors the popup to the right edge of .bell-wrap (which is
+       mid-screen) and the 360px-wide panel overflows OFF-SCREEN to the
+       LEFT — exactly the symptom users reported.
+
+       Fix: pin the popup to the viewport with `position:fixed` so it
+       always sits in the top-right corner regardless of where the bell
+       button lands after topbar wrap. The scrim already covers the whole
+       viewport, so tap-outside-to-close still works. */
+    @@media (max-width: 640px) {
+        .bell-pop {
+            position: fixed;
+            top: 58px;          /* clears the topbar (handles wrap too) */
+            right: 8px;
+            left: auto;
+            width: calc(100vw - 16px);
+            max-width: 380px;
+            max-height: 70vh;
+        }
+    }
 </style>
 
 @code {

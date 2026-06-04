@@ -11,6 +11,7 @@ using UglyToad.PdfPig.Content;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
+using EquipmentChecklist.DTOs;
 
 namespace EquipmentChecklist.Controllers;
 
