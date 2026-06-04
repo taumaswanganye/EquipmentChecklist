@@ -5,12 +5,13 @@
 @inject ApiClient        Api
 @inject AuthService      Auth
 @inject LocalCache       Cache
+@inject MineConfigService Mine
 @inject NavigationManager Nav
 
 <div class="page-head">
     <div>
         <h1>DASHBOARD</h1>
-        <p>Belfast Coal Mine — Equipment Checklist System</p>
+        <p>@Mine.Current.Name — Equipment Checklist System</p>
     </div>
     @if (IsMechanicOnly)
     {

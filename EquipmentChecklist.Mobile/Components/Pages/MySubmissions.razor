@@ -47,6 +47,12 @@
     </button>
 </div>
 
+@* ───────────── SEARCH + DATE-RANGE BAR ─────────────
+   Filters across machine number / machine name / operator name; date range
+   uses SubmittedAt. Both apply ON TOP of the pill filter above. *@
+<FilterBar Placeholder="Search machine number, name, or operator…"
+           OnChange="OnFilterChanged" />
+
 @if (busy && all is null)
 {
     <div class="state"><div class="spinner"></div><p>Loading your submissions…</p></div>
@@ -63,7 +69,7 @@ else if (Filtered.Count == 0)
 {
     <div class="state">
         <div class="big">📋</div>
-        <p>@(filter == FilterMode.All ? "No submissions yet." : "No submissions match this filter.")</p>
+        <p>@EmptyMessage</p>
     </div>
 }
 else
@@ -144,7 +150,7 @@ else
         }
     </div>
 
-    <p class="foot-note">Showing @Filtered.Count most recent submissions.</p>
+    <p class="foot-note">@FootNote</p>
 }
 
 @if (viewing is not null)
@@ -471,21 +477,73 @@ else
     private int    currentPage = 1;
     private FilterMode filter  = FilterMode.All;
 
+    /// <summary>Search + date-range state owned by the <see cref="FilterBar"/>.
+    /// Default = empty/null window means "no filter applied here".</summary>
+    private FilterBar.State _bar = new(Search: "", From: null, To: null);
+
+    /// <summary>Resets the pager and re-renders when the FilterBar fires.</summary>
+    private void OnFilterChanged(FilterBar.State s)
+    {
+        _bar         = s;
+        currentPage  = 1;
+        StateHasChanged();
+    }
+
     private int goCount     => all?.Count(s => s.Status == ChecklistStatus.Go) ?? 0;
     private int goButCount  => all?.Count(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService) ?? 0;
     private int noGoCount   => all?.Count(s => s.Status == ChecklistStatus.NoGo) ?? 0;
     private int queuedCount => all?.Count(s => s.IsQueued) ?? 0;
 
-    private List<SubmissionRow> Filtered =>
-        all is null ? new List<SubmissionRow>()
-        : filter switch
+    private List<SubmissionRow> Filtered
+    {
+        get
         {
-            FilterMode.Go     => all.Where(s => s.Status == ChecklistStatus.Go).ToList(),
-            FilterMode.GoBut  => all.Where(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService).ToList(),
-            FilterMode.NoGo   => all.Where(s => s.Status == ChecklistStatus.NoGo).ToList(),
-            FilterMode.Queued => all.Where(s => s.IsQueued).ToList(),
-            _                 => all
-        };
+            if (all is null) return new();
+
+            // Layer 1: status pill.
+            IEnumerable<SubmissionRow> rows = filter switch
+            {
+                FilterMode.Go     => all.Where(s => s.Status == ChecklistStatus.Go),
+                FilterMode.GoBut  => all.Where(s => s.Status == ChecklistStatus.GoButRepair24H ||
+                                                    s.Status == ChecklistStatus.GoTillNextService),
+                FilterMode.NoGo   => all.Where(s => s.Status == ChecklistStatus.NoGo),
+                FilterMode.Queued => all.Where(s => s.IsQueued),
+                _                 => all
+            };
+
+            // Layer 2: FilterBar search + date range.
+            if (_bar.IsActive)
+            {
+                rows = rows.Where(s =>
+                    _bar.Includes(s.SubmittedAt) &&
+                    _bar.Matches(s.MachineNumber, s.MachineName, s.OperatorName));
+            }
+
+            return rows.ToList();
+        }
+    }
+
+    /// <summary>Empty-state copy that reflects WHICH filter killed the
+    /// result list — pill, search, both, or none.</summary>
+    private string EmptyMessage =>
+        _bar.IsActive
+            ? "No submissions match your search."
+            : filter == FilterMode.All
+                ? "No submissions yet."
+                : "No submissions match this filter.";
+
+    /// <summary>Foot-note that swaps between "showing N" vs "filtered from M"
+    /// so the user can tell when filters are in effect.</summary>
+    private string FootNote
+    {
+        get
+        {
+            var total = all?.Count ?? 0;
+            return _bar.IsActive || filter != FilterMode.All
+                ? $"Showing {Filtered.Count} of {total} submissions."
+                : $"Showing {Filtered.Count} most recent submissions.";
+        }
+    }
 
     private int TotalPages =>
         Filtered.Count == 0 ? 1 : (int)Math.Ceiling(Filtered.Count / (double)PAGE_SIZE);

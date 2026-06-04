@@ -1,0 +1,57 @@
+@model List<EquipmentChecklist.Models.ApplicationUser>
+@using EquipmentChecklist.Models
+
+@*
+    Single-role employee table. Rendered once per tab in Employees.cshtml.
+    Lifted out as a partial so each tab's markup is identical and we only
+    edit the row structure in one place.
+
+    The `data-search` attribute on each <tr> is consumed by the page-level
+    JS to do client-side filtering across name, employee #, and email
+    without round-tripping to the server.
+*@
+
+@if (!Model.Any())
+{
+    <div class="emp-empty">
+        <div class="emp-empty-icon">👤</div>
+        <p>No users in this role yet.</p>
+    </div>
+}
+else
+{
+    <table class="data-table" data-paginate="10">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Employee #</th>
+                <th>Email</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var user in Model)
+            {
+                // Compose the searchable text once on the server so the JS
+                // filter is a cheap substring match instead of pulling text
+                // out of each cell on every keystroke.
+                var search = $"{user.FullName} {user.EmployeeNumber} {user.Email}".ToLowerInvariant();
+                <tr data-search="@search">
+                    <td><strong>@user.FullName</strong></td>
+                    <td style="color:var(--text-muted)">@user.EmployeeNumber</td>
+                    <td style="color:var(--text-muted)">@user.Email</td>
+                    <td>
+                        @if (user.IsActive)
+                        {
+                            <span class="badge badge-go">Active</span>
+                        }
+                        else
+                        {
+                            <span class="badge badge-pending">Inactive</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}

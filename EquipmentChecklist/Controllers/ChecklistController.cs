@@ -105,9 +105,25 @@ public class ChecklistController : Controller
         }
         catch (Exception ex)
         {
-            TempData["Error"] = ex.Message;
+            // EF Core's DbUpdateException always wraps the actual SQL error
+            // (column missing, FK violation, NOT NULL, etc.) one or two levels
+            // deep. Surface the leaf message so the operator — and the
+            // diagnostic banner on the Start page — see what actually failed,
+            // not just the framework's generic "An error occurred while
+            // saving the entity changes."
+            TempData["Error"] = RootCauseOf(ex);
             return RedirectToAction("Start", new { machineId = dto.MachineId });
         }
+    }
+
+    /// <summary>Walk the InnerException chain and return the deepest
+    /// non-null message. EF wraps Postgres errors twice (DbUpdateException
+    /// → PostgresException); the inner one is the useful one.</summary>
+    private static string RootCauseOf(Exception ex)
+    {
+        var cur = ex;
+        while (cur.InnerException is not null) cur = cur.InnerException;
+        return cur.Message;
     }
 
     // Result page
@@ -162,18 +178,46 @@ public class ChecklistController : Controller
 
     // History
     [HttpGet]
-    public async Task<IActionResult> History()
+    public async Task<IActionResult> History([FromQuery] ListFilter filter)
     {
+        // Resolve preset → from/to so a chip click is enough on its own.
+        FilterPresets.Apply(filter);
+
         var userId = _users.GetUserId(User)!;
         var query  = _db.ChecklistSubmissions
             .Include(s => s.Machine)
+            .Include(s => s.Operator)
             .Include(s => s.Items)
             .AsQueryable();
 
         if (!User.IsInRole("Admin") && !User.IsInRole("Supervisor"))
             query = query.Where(s => s.OperatorId == userId);
 
-        var submissions = await query.OrderByDescending(s => s.SubmittedAt).Take(100).ToListAsync();
+        // Date-range filter pushed down to SQL — much cheaper than pulling
+        // the full 100-row window and slicing in memory.
+        query = query.ApplyDateRange(filter, s => s.SubmittedAt);
+
+        // Cap at 500 so a wide date range doesn't OOM the server. The
+        // existing client-side `data-paginate` then pages 5 rows at a time.
+        var page = await query
+            .OrderByDescending(s => s.SubmittedAt)
+            .Take(500)
+            .ToListAsync();
+
+        // Search happens in memory so we can hit navigation properties
+        // (Machine.MachineNumber, Operator.FullName) without fighting the
+        // EF expression translator. With the 500-row ceiling above, this is
+        // a no-op cost.
+        var submissions = page.ApplySearchInMemory(
+            filter,
+            s => s.Machine.MachineNumber,
+            s => s.Machine.MachineName,
+            s => s.Operator.FullName,
+            s => s.Operator.EmployeeNumber);
+
+        ViewBag.Filter        = filter;
+        ViewBag.TotalUnfiltered = page.Count;
         return View(submissions);
     }
 }
+

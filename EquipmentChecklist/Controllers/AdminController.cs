@@ -1,5 +1,6 @@
 using EquipmentChecklist.Data;
 using EquipmentChecklist.Models;
+using EquipmentChecklist.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -19,14 +20,23 @@ public class AdminController : Controller
     private readonly ApplicationDbContext         _db;
     private readonly UserManager<ApplicationUser> _users;
     private readonly IWebHostEnvironment          _env;
+    private readonly ReportsService               _reports;
+    private readonly NotificationService          _notifications;
+    private readonly AuditService                 _audit;
 
     public AdminController(ApplicationDbContext db,
                            UserManager<ApplicationUser> users,
-                           IWebHostEnvironment env)
+                           IWebHostEnvironment env,
+                           ReportsService reports,
+                           NotificationService notifications,
+                           AuditService audit)
     {
-        _db    = db;
-        _users = users;
-        _env   = env;
+        _db            = db;
+        _users         = users;
+        _env           = env;
+        _reports       = reports;
+        _notifications = notifications;
+        _audit         = audit;
     }
 
     // ── Image upload helper ───────────────────────────────────────────────────
@@ -565,23 +575,219 @@ public class AdminController : Controller
         return RedirectToAction("Assignments");
     }
 
+    // ── Pending admin clearances ──────────────────────────────────────────────
+    //
+    // A machine lands here when a mechanic completes the LAST open defect on it.
+    // Until an admin clicks Clear, IsImmobilised stays true and operators can't
+    // start a checklist on it. Tiny working set (rarely more than 5-10 at once)
+    // so we don't paginate — render every card on one page.
+    [HttpGet]
+    public async Task<IActionResult> PendingClearances()
+    {
+        var machines = await _db.Machines
+            .Include(m => m.Submissions)
+                .ThenInclude(s => s.Operator)
+            .Include(m => m.Submissions)
+                .ThenInclude(s => s.DefectOrders)
+                    .ThenInclude(d => d.AssignedMechanic)
+            .Include(m => m.Submissions)
+                .ThenInclude(s => s.DefectOrders)
+                    .ThenInclude(d => d.SubmissionItem)
+                        .ThenInclude(i => i.TemplateItem)
+            .Where(m => m.AwaitingAdminClearance)
+            // Oldest first — the machine that's been waiting longest gets cleared first.
+            .OrderBy(m => m.Submissions
+                .SelectMany(s => s.DefectOrders)
+                .Max(d => (DateTime?)d.ResolvedAt))
+            .ToListAsync();
+
+        return View(machines);
+    }
+
+    /// <summary>
+    /// Admin clears a machine back into service. Flips IsImmobilised off,
+    /// records who cleared + when + optional notes, audits the action, and
+    /// notifies the mechanic(s) whose work was just signed off.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ClearMachine(int machineId, string? clearanceNotes)
+    {
+        var machine = await _db.Machines
+            .Include(m => m.Submissions)
+                .ThenInclude(s => s.DefectOrders)
+                    .ThenInclude(d => d.AssignedMechanic)
+            .FirstOrDefaultAsync(m => m.Id == machineId);
+        if (machine == null)
+        {
+            TempData["Error"] = "Machine not found.";
+            return RedirectToAction("PendingClearances");
+        }
+
+        if (!machine.AwaitingAdminClearance)
+        {
+            TempData["Error"] = $"{machine.MachineNumber} isn't awaiting clearance.";
+            return RedirectToAction("PendingClearances");
+        }
+
+        var adminId = _users.GetUserId(User);
+
+        // Capture the mechanics who did the work — every distinct
+        // AssignedMechanicId across this machine's completed defects.
+        // We notify each one so they know their repair has been signed off.
+        var mechanicIds = machine.Submissions
+            .SelectMany(s => s.DefectOrders)
+            .Where(d => d.RepairStatus == RepairStatus.Completed &&
+                        !string.IsNullOrEmpty(d.AssignedMechanicId))
+            .Select(d => d.AssignedMechanicId!)
+            .Distinct()
+            .ToList();
+
+        // ── Commit the clearance ────────────────────────────────────────
+        machine.IsImmobilised           = false;
+        machine.ImmobilisedReason       = null;
+        machine.AwaitingAdminClearance  = false;
+        machine.ClearedByAdminId        = adminId;
+        machine.ClearedAt               = DateTime.UtcNow;
+        machine.AdminClearanceNotes     = string.IsNullOrWhiteSpace(clearanceNotes)
+                                            ? null : clearanceNotes.Trim();
+        await _db.SaveChangesAsync();
+
+        // ── Audit ───────────────────────────────────────────────────────
+        await _audit.LogAsync(
+            action:     AuditActions.MachineReleased,
+            targetType: "Machine",
+            targetId:   machine.Id,
+            payload:    new
+            {
+                reason  = "admin-cleared",
+                adminId = adminId,
+                notes   = machine.AdminClearanceNotes
+            });
+
+        // ── Notify mechanic(s) ──────────────────────────────────────────
+        foreach (var mid in mechanicIds)
+        {
+            await _notifications.PushAsync(
+                userId:           mid,
+                kind:             NotificationKinds.MachineCleared,
+                title:            $"✓ {machine.MachineNumber} cleared by admin",
+                body:             string.IsNullOrEmpty(machine.AdminClearanceNotes)
+                                    ? "Your repair has been signed off — machine returned to service."
+                                    : $"Signed off. Note: {machine.AdminClearanceNotes}",
+                relatedMachineId: machine.Id);
+        }
+
+        TempData["Success"] = $"{machine.MachineNumber} cleared and returned to service.";
+        return RedirectToAction("PendingClearances");
+    }
+
+    // ── Audit trail ───────────────────────────────────────────────────────────
+    // Browse the append-only AuditEvents table. Supports the standard
+    // ListFilter (search across actor name/email + action constant +
+    // date range on OccurredAtServer) PLUS a dedicated action dropdown,
+    // and an actor email pre-filter so the per-user "what did Sipho do
+    // this morning?" question is one click from the user list.
+    [HttpGet]
+    public async Task<IActionResult> Audit([FromQuery] ListFilter filter,
+                                           [FromQuery] string? action = null,
+                                           [FromQuery] string? actor  = null,
+                                           [FromQuery] int     page   = 1)
+    {
+        FilterPresets.Apply(filter);
+        // Default window — last 7 days. Audit volumes grow quickly so a wider
+        // default would chew RAM on busy mines.
+        filter.From ??= DateTime.UtcNow.Date.AddDays(-7);
+        filter.To   ??= DateTime.UtcNow.Date;
+
+        const int PAGE_SIZE = 50;
+        if (page < 1) page = 1;
+
+        IQueryable<AuditEvent> q = _db.AuditEvents
+            .ApplyDateRange(filter, e => e.OccurredAtServer);
+
+        if (!string.IsNullOrWhiteSpace(action))
+            q = q.Where(e => e.Action == action);
+        if (!string.IsNullOrWhiteSpace(actor))
+            q = q.Where(e => e.ActorEmail == actor);
+
+        // Materialise enough rows to comfortably search through in memory
+        // (the search hits ActorName/Email which are denormalised onto the
+        // row, so SQL Where would also work — but keeping the same pattern
+        // as the other list pages reads cleaner).
+        var loaded = await q
+            .OrderByDescending(e => e.OccurredAtServer)
+            .Take(5000)
+            .ToListAsync();
+
+        var filtered = loaded.ApplySearchInMemory(filter,
+            e => e.ActorName,
+            e => e.ActorEmail,
+            e => e.Action,
+            e => e.TargetType,
+            e => e.PayloadJson);
+
+        var total      = filtered.Count;
+        var totalPages = Math.Max(1, (int)Math.Ceiling(total / (double)PAGE_SIZE));
+        if (page > totalPages) page = totalPages;
+
+        var rows = filtered.Skip((page - 1) * PAGE_SIZE).Take(PAGE_SIZE).ToList();
+
+        // Distinct action names from the loaded window populate the dropdown
+        // — way better than hard-coding them, because admins can add new ones
+        // without touching the view.
+        var actions = loaded.Select(e => e.Action).Distinct().OrderBy(a => a).ToList();
+
+        ViewBag.Filter      = filter;
+        // Named `ActionFilter` (not `Action`) because the _ListFilterBar
+        // partial is invoked with a ViewDataDictionary that sets ViewData["Action"]
+        // to the form's POST URL — having both keys collide blows up the
+        // initializer with "An item with the same key has already been added".
+        ViewBag.ActionFilter = action;
+        ViewBag.Actor       = actor;
+        ViewBag.Actions     = actions;
+        ViewBag.Page        = page;
+        ViewBag.TotalPages  = totalPages;
+        ViewBag.TotalRows   = total;
+        ViewBag.WindowSize  = loaded.Count;
+        return View(rows);
+    }
+
     // ── Reports ───────────────────────────────────────────────────────────────
     [HttpGet]
-    public async Task<IActionResult> Reports(DateTime? from, DateTime? to)
+    public async Task<IActionResult> Reports([FromQuery] ListFilter filter)
     {
-        from ??= DateTime.UtcNow.Date.AddDays(-30);
-        to   ??= DateTime.UtcNow.Date.AddDays(1);
+        // Resolve preset chips into concrete dates, then default empty
+        // bounds to the "last 30 days" window the page has used forever.
+        FilterPresets.Apply(filter);
+        filter.From ??= DateTime.UtcNow.Date.AddDays(-30);
+        filter.To   ??= DateTime.UtcNow.Date;
 
-        var submissions = await _db.ChecklistSubmissions
+        // KPIs, trends, top-N — single round-trip into the dashboard service.
+        var dashboard = await _reports.BuildDashboardAsync(filter.From, filter.To);
+
+        // Pulled separately because the table still wants the full join with
+        // search applied; the dashboard payload deals only in aggregates.
+        var loaded = await _db.ChecklistSubmissions
             .Include(s => s.Machine)
             .Include(s => s.Operator)
             .Include(s => s.Items)
-            .Where(s => s.SubmittedAt >= from && s.SubmittedAt <= to)
+            .ApplyDateRange(filter, s => s.SubmittedAt)
             .OrderByDescending(s => s.SubmittedAt)
+            .Take(1000)
             .ToListAsync();
 
-        ViewBag.From = from;
-        ViewBag.To   = to;
+        var submissions = loaded.ApplySearchInMemory(
+            filter,
+            s => s.Machine.MachineNumber,
+            s => s.Machine.MachineName,
+            s => s.Operator.FullName,
+            s => s.Operator.EmployeeNumber);
+
+        ViewBag.Filter          = filter;
+        ViewBag.Dashboard       = dashboard;
+        ViewBag.From            = filter.From;   // legacy compat for any other binders
+        ViewBag.To              = filter.To;
+        ViewBag.TotalUnfiltered = loaded.Count;
         return View(submissions);
     }
 

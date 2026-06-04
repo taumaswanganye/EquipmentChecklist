@@ -277,8 +277,12 @@ window.PdfGenerator = (function () {
     // Footer
     const fY = doc.internal.pageSize.getHeight() - 6;
     doc.setFont('helvetica', 'normal').setFontSize(6.5).setTextColor(120, 130, 145);
+    // Compliance text comes from server config (MineSettings.ComplianceText)
+    // via the payload. Falls back silently if it's empty so an unconfigured
+    // mine just shows mine name + the "generated on-device" tag.
+    const compliance = payload.compliance ? ` · ${payload.compliance}` : '';
     doc.text(
-      `${payload.mineName || ''} · MHSA / DMR / CPS Level 8/9 Compliant · Generated on-device (offline)`,
+      `${payload.mineName || ''}${compliance} · Generated on-device (offline)`,
       pageW / 2, fY, { align: 'center' }
     );
 

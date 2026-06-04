@@ -30,6 +30,24 @@ builder.Services.AddSession(options =>
 builder.Services.AddScoped<ChecklistService>();
 builder.Services.AddScoped<PdfService>();
 builder.Services.AddScoped<EmailService>();
+builder.Services.AddScoped<NotificationService>();
+// KPI dashboard payload for /Admin/Reports. Scoped because it depends on
+// the per-request ApplicationDbContext.
+builder.Services.AddScoped<ReportsService>();
+
+// Append-only audit log. Needs IHttpContextAccessor to resolve the current
+// actor from the ambient ClaimsPrincipal — registered here as well in case
+// nothing else in the pipeline did it.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<AuditService>();
+
+// Site-specific labels (mine name, tagline, compliance text) — bound from
+// the "Mine" section of appsettings.json. Defaults in MineSettings cover
+// freshly cloned repos.
+builder.Services.Configure<MineSettings>(builder.Configuration.GetSection("Mine"));
+
+// SignalR — backs the /hubs/notifications real-time stream.
+builder.Services.AddSignalR();
 
 // ── Biometric / passwordless (WebAuthn + offline voucher) ───────────────────
 // OfflineVoucherService holds the long-lived RSA signing key and must be
@@ -82,6 +100,25 @@ builder.Services.AddAuthentication(opt =>
         ValidateAudience = false,
         ClockSkew = TimeSpan.Zero
     };
+
+    // SignalR can't set an Authorization header during the WebSocket
+    // upgrade — it falls back to a query-string token. Accept either
+    // form so /hubs/notifications works for mobile + browser clients
+    // while /api/sync/* keeps using the standard Authorization header.
+    opt.Events = new Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var token = context.Request.Query["access_token"];
+            var path  = context.HttpContext.Request.Path;
+            if (!string.IsNullOrEmpty(token) &&
+                path.StartsWithSegments("/hubs"))
+            {
+                context.Token = token;
+            }
+            return Task.CompletedTask;
+        }
+    };
 });
 
 // ── Authorisation roles ───────────────────────────────────────────────────────
@@ -123,6 +160,11 @@ app.MapControllerRoute(
     name: "default",
     pattern: "{controller=Home}/{action=Index}/{id?}");
 
+// Real-time notifications endpoint — JWT-auth, queue-and-broadcast pattern
+// described in NotificationService. Mobile connects with the access_token
+// query-string parameter.
+app.MapHub<NotificationHub>("/hubs/notifications");
+
 app.Run();
 
 // ─── Seeder ────────────────────────────────────────────────────────────────────
@@ -134,8 +176,20 @@ static async Task SeedRolesAndAdminAsync(WebApplication app)
     var cloudDb = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     var localDb = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
 
-    // 1. Run migrations for Cloud DB
-   // await cloudDb.Database.MigrateAsync();
+    // 1. Run migrations for Cloud DB.
+    //
+    // Was previously commented out — which is why missing-column errors like
+    // "42703: column s.AudioData does not exist" survived re-deploys: a new
+    // migration file would land in the assembly but the schema was never
+    // pushed unless someone remembered to run `dotnet ef database update`
+    // by hand. Uncommenting means every app boot now drains the pending
+    // migrations list, so the schema can't drift behind the model.
+    //
+    // For production this is fine because all of our migrations are
+    // idempotent and additive. If you ever add a destructive migration
+    // (DROP COLUMN, DROP TABLE) gate it behind a feature flag or run it
+    // manually from a deploy step.
+    await cloudDb.Database.MigrateAsync();
 
     // 2. Ensure Local SQLite DB is created
     await localDb.Database.EnsureCreatedAsync();

@@ -1,0 +1,261 @@
+@model List<EquipmentChecklist.Models.Machine>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Pending Clearances";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div class="pc-head">
+    <div>
+        <h2 class="page-title">⏳ Pending Clearances</h2>
+        <p class="page-subtitle">
+            Machines whose defects have been fully repaired by mechanics, awaiting your sign-off
+            before returning to service.
+        </p>
+    </div>
+    @if (Model.Any())
+    {
+        <div class="pc-stat">
+            <div class="pc-stat-n">@Model.Count</div>
+            <div class="pc-stat-l">awaiting clearance</div>
+        </div>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(TempData["Success"] as string))
+{
+    <div class="alert alert-success">@TempData["Success"]</div>
+}
+@if (!string.IsNullOrEmpty(TempData["Error"] as string))
+{
+    <div class="alert alert-danger">@TempData["Error"]</div>
+}
+
+@if (!Model.Any())
+{
+    <div class="pc-empty">
+        <div class="pc-empty-icon">✅</div>
+        <h3>Nothing pending</h3>
+        <p>No machines are waiting for your clearance right now.</p>
+    </div>
+}
+else
+{
+    <div class="pc-grid">
+        @foreach (var m in Model)
+        {
+            // Resolved defects on this machine — what the admin is signing off on.
+            var resolved = m.Submissions
+                .SelectMany(s => s.DefectOrders)
+                .Where(d => d.RepairStatus == RepairStatus.Completed)
+                .OrderByDescending(d => d.ResolvedAt)
+                .ToList();
+
+            var latestSub = m.Submissions
+                .OrderByDescending(s => s.SubmittedAt)
+                .FirstOrDefault();
+
+            var fixedAt = resolved.Max(d => d.ResolvedAt) ?? DateTime.UtcNow;
+            var waitDays = (int)Math.Floor((DateTime.UtcNow - fixedAt).TotalDays);
+            var waitLabel = waitDays switch
+            {
+                0 => "Completed today",
+                1 => "Completed 1 day ago",
+                _ => $"Completed {waitDays} days ago"
+            };
+            var distinctMechanics = resolved
+                .Where(d => d.AssignedMechanic != null)
+                .Select(d => d.AssignedMechanic!.FullName)
+                .Distinct()
+                .ToList();
+
+            <div class="pc-card">
+                <div class="pc-top">
+                    <div>
+                        <div class="pc-mnum">@m.MachineNumber</div>
+                        <div class="pc-mname">
+                            @m.MachineName
+                            @if (!string.IsNullOrEmpty(m.TypeName))
+                            {
+                                <span class="pc-mtype"> · @m.TypeName</span>
+                            }
+                        </div>
+                    </div>
+                    <span class="pc-badge">⏳ AWAITING CLEARANCE</span>
+                </div>
+
+                <div class="pc-meta">
+                    <div class="pc-meta-item">
+                        <span class="pc-meta-l">Mechanic</span>
+                        <span class="pc-meta-v">@(distinctMechanics.Count == 0 ? "—" : string.Join(", ", distinctMechanics))</span>
+                    </div>
+                    <div class="pc-meta-item">
+                        <span class="pc-meta-l">Last repair</span>
+                        <span class="pc-meta-v mono">@fixedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                        <span class="pc-meta-sub @(waitDays >= 1 ? "warn" : "")">@waitLabel</span>
+                    </div>
+                    @if (latestSub != null)
+                    {
+                        <div class="pc-meta-item">
+                            <span class="pc-meta-l">Original NO-GO operator</span>
+                            <span class="pc-meta-v">@(latestSub.Operator?.FullName ?? "—")</span>
+                            <span class="pc-meta-sub mono">@latestSub.SubmittedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                        </div>
+                    }
+                </div>
+
+                <div class="pc-defects">
+                    <div class="pc-defects-h">Defects resolved (@resolved.Count)</div>
+                    @foreach (var d in resolved)
+                    {
+                        <div class="pc-defect">
+                            <div class="pc-defect-name">
+                                ✓ @(d.SubmissionItem?.TemplateItem?.ItemName ?? d.DefectDescription)
+                            </div>
+                            @if (!string.IsNullOrEmpty(d.ResolutionNotes))
+                            {
+                                <div class="pc-defect-notes">"@d.ResolutionNotes"</div>
+                            }
+                            <div class="pc-defect-meta">
+                                @if (!string.IsNullOrEmpty(d.AssignedMechanic?.FullName))
+                                {
+                                    <span>🧰 @d.AssignedMechanic.FullName</span>
+                                }
+                                @if (d.ResolvedAt.HasValue)
+                                {
+                                    <span class="mono">@d.ResolvedAt.Value.ToString("yyyy-MM-dd HH:mm")</span>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                <form method="post" action="/Admin/ClearMachine" class="pc-form">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="machineId" value="@m.Id" />
+                    <label class="pc-notes-l">
+                        Clearance notes <span class="pc-notes-opt">(optional)</span>
+                    </label>
+                    <textarea name="clearanceNotes" class="pc-notes" rows="2"
+                              placeholder="Inspected. Brake hoses replaced and tested. Cleared to operate."></textarea>
+                    <div class="pc-actions">
+                        <a href="/Mechanic/NoGoDetail/@m.Id" class="btn btn-ghost btn-sm">🔍 View full detail</a>
+                        <button type="submit" class="btn btn-success btn-sm">
+                            ✓ Clear & Return to Service
+                        </button>
+                    </div>
+                </form>
+            </div>
+        }
+    </div>
+}
+
+<style>
+    .pc-head {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        margin-bottom:18px; flex-wrap:wrap; gap:14px;
+    }
+    .pc-stat {
+        background:var(--steel-mid); border:1px solid #f59e0b;
+        border-radius:10px; padding:10px 18px; text-align:center;
+        min-width:140px;
+    }
+    .pc-stat-n { font-size:28px; font-weight:800; color:#fbbf24; line-height:1; }
+    .pc-stat-l { font-size:10px; color:var(--text-muted); letter-spacing:.6px;
+                 margin-top:4px; text-transform:uppercase; }
+
+    .pc-empty {
+        background:var(--steel-mid); border:1px solid var(--steel-border);
+        border-radius:12px; padding:60px 20px; text-align:center;
+        color:var(--text-muted);
+    }
+    .pc-empty-icon { font-size:56px; margin-bottom:12px; }
+    .pc-empty h3 { color:var(--text-primary); font-size:22px; margin:0 0 6px; }
+    .pc-empty p { font-size:13px; margin:0; }
+
+    .pc-grid {
+        display:grid; grid-template-columns:repeat(auto-fill, minmax(460px, 1fr));
+        gap:16px;
+    }
+    @@media (max-width: 800px) { .pc-grid { grid-template-columns: 1fr; } }
+
+    .pc-card {
+        background:var(--steel-mid);
+        border:1px solid var(--steel-border);
+        border-left:4px solid #f59e0b;
+        border-radius:10px;
+        display:flex; flex-direction:column;
+        overflow:hidden;
+    }
+    .pc-top {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        gap:12px; padding:14px 18px;
+        background:rgba(245,158,11,.06);
+        border-bottom:1px solid var(--steel-border);
+    }
+    .pc-mnum   { font-size:20px; font-weight:800; font-family:var(--font-mono); }
+    .pc-mname  { font-size:13px; color:var(--text-muted); margin-top:2px; }
+    .pc-mtype  { font-style:italic; }
+    .pc-badge {
+        background:rgba(245,158,11,.18); color:#fbbf24;
+        border:1px solid #f59e0b; padding:4px 10px; border-radius:5px;
+        font-size:11px; font-weight:700; letter-spacing:.6px;
+        white-space:nowrap; flex-shrink:0;
+    }
+
+    .pc-meta {
+        padding:14px 18px;
+        display:grid; grid-template-columns:repeat(3, 1fr); gap:14px;
+        border-bottom:1px solid var(--steel-border);
+    }
+    @@media (max-width: 700px) { .pc-meta { grid-template-columns:1fr; } }
+    .pc-meta-item { display:flex; flex-direction:column; gap:1px; }
+    .pc-meta-l {
+        font-size:10px; color:var(--text-muted);
+        text-transform:uppercase; letter-spacing:.5px; font-weight:600;
+    }
+    .pc-meta-v { font-size:13px; font-weight:600; color:var(--text-primary); }
+    .pc-meta-sub { font-size:11px; color:var(--text-muted); margin-top:2px; }
+    .pc-meta-sub.warn { color:#fbbf24; font-weight:600; }
+
+    .pc-defects {
+        padding:14px 18px; background:rgba(0,0,0,.10);
+        border-bottom:1px solid var(--steel-border);
+    }
+    .pc-defects-h {
+        font-size:11px; font-weight:700; color:var(--text-muted);
+        letter-spacing:.5px; text-transform:uppercase; margin-bottom:10px;
+    }
+    .pc-defect {
+        padding:10px 12px; background:var(--steel-mid);
+        border:1px solid #1a2638; border-radius:8px; margin-bottom:8px;
+    }
+    .pc-defect:last-child { margin-bottom:0; }
+    .pc-defect-name { font-size:13px; font-weight:600; color:#86efac; }
+    .pc-defect-notes {
+        font-size:12px; color:#cbd5e1; font-style:italic; margin-top:4px;
+    }
+    .pc-defect-meta {
+        display:flex; gap:12px; flex-wrap:wrap; margin-top:6px;
+        font-size:11px; color:var(--text-muted);
+    }
+    .mono { font-family:var(--font-mono); }
+
+    .pc-form { padding:14px 18px; }
+    .pc-notes-l {
+        display:block; font-size:11px; font-weight:700; color:var(--text-muted);
+        letter-spacing:.5px; text-transform:uppercase; margin-bottom:6px;
+    }
+    .pc-notes-opt { font-weight:400; text-transform:none; letter-spacing:0; }
+    .pc-notes {
+        width:100%; background:var(--steel-mid); border:1px solid var(--steel-border);
+        color:var(--text-primary); padding:8px 10px; border-radius:6px;
+        font-size:13px; font-family:inherit; outline:none;
+        resize:vertical; min-height:60px;
+    }
+    .pc-notes:focus { border-color:var(--amber); }
+    .pc-actions {
+        display:flex; justify-content:space-between; gap:8px;
+        margin-top:10px; flex-wrap:wrap;
+    }
+</style>

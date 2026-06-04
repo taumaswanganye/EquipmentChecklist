@@ -3,10 +3,23 @@
 @{
     ViewData["Title"] = "Employees";
     Layout = "~/Views/Shared/_Layout.cshtml";
+
+    // Group once on the server so each tab's table renders with just its
+    // own slice. Counts feed the tab badges so admins can see at a glance
+    // how the headcount splits across roles.
+    var admins      = Model.Where(u => u.Role == UserRole.Admin).OrderBy(u => u.FullName).ToList();
+    var supervisors = Model.Where(u => u.Role == UserRole.Supervisor).OrderBy(u => u.FullName).ToList();
+    var mechanics   = Model.Where(u => u.Role == UserRole.Mechanic).OrderBy(u => u.FullName).ToList();
+    var operators   = Model.Where(u => u.Role == UserRole.Operator).OrderBy(u => u.FullName).ToList();
 }
 
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-    <h2 style="font-size:20px">All Employees</h2>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h2 style="font-size:20px;margin:0">All Employees</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+            @Model.Count total · @admins.Count admin · @supervisors.Count supervisor · @mechanics.Count mechanic · @operators.Count operator
+        </p>
+    </div>
     <a href="/Admin/CreateEmployee" class="btn btn-primary">+ Add Employee</a>
 </div>
 
@@ -19,46 +32,170 @@
 }
 else
 {
-    <table class="data-table" data-paginate="5">
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Employee #</th>
-                <th>Email</th>
-                <th>Role</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var user in Model)
-            {
-                <tr>
-                    <td><strong>@user.FullName</strong></td>
-                    <td style="color:var(--text-muted)">@user.EmployeeNumber</td>
-                    <td style="color:var(--text-muted)">@user.Email</td>
-                    <td>
-                        @{
-                            var roleClass = user.Role switch {
-                                UserRole.Admin      => "badge-nogo",
-                                UserRole.Supervisor => "badge-gobut",
-                                UserRole.Mechanic   => "badge-pending",
-                                _                   => "badge-go"
-                            };
-                        }
-                        <span class="badge @roleClass">@user.Role</span>
-                    </td>
-                    <td>
-                        @if (user.IsActive)
-                        {
-                            <span class="badge badge-go">Active</span>
-                        }
-                        else
-                        {
-                            <span class="badge badge-pending">Inactive</span>
-                        }
-                    </td>
-                </tr>
+    @* ─── Search bar (client-side; filters the visible tab's rows) ─── *@
+    <div class="emp-search-wrap">
+        <span class="emp-search-ico">🔍</span>
+        <input type="search" id="empSearch"
+               placeholder="Search by name, employee number, or email…"
+               class="emp-search-input" autocomplete="off" />
+        <span class="emp-search-info" id="empSearchInfo"></span>
+    </div>
+
+    @* ─── Role tabs ───
+       Each tab gets its own table; the JS at the bottom hides/shows them.
+       Default-active is Admin so an admin landing here sees their peers
+       first. *@
+    <div class="emp-tabs" role="tablist">
+        <button type="button" class="emp-tab active" data-tab="admin" role="tab">
+            🛡 Admin <span class="emp-tab-count">@admins.Count</span>
+        </button>
+        <button type="button" class="emp-tab" data-tab="operator" role="tab">
+            👷 Operator <span class="emp-tab-count">@operators.Count</span>
+        </button>
+        <button type="button" class="emp-tab" data-tab="supervisor" role="tab">
+            ✍️ Supervisor <span class="emp-tab-count">@supervisors.Count</span>
+        </button>
+        <button type="button" class="emp-tab" data-tab="mechanic" role="tab">
+            🔧 Mechanic <span class="emp-tab-count">@mechanics.Count</span>
+        </button>
+    </div>
+
+    @* ─── Per-role panes ───
+       Each pane hosts the _EmployeeTable partial scoped to a single role
+       list. Page-level JS swaps display:none between panes when a tab is
+       clicked. *@
+
+    @* Admin tab *@
+    <div class="emp-pane" data-pane="admin">
+        @await Html.PartialAsync("_EmployeeTable", admins)
+    </div>
+
+    @* Operator tab *@
+    <div class="emp-pane" data-pane="operator" style="display:none">
+        @await Html.PartialAsync("_EmployeeTable", operators)
+    </div>
+
+    @* Supervisor tab *@
+    <div class="emp-pane" data-pane="supervisor" style="display:none">
+        @await Html.PartialAsync("_EmployeeTable", supervisors)
+    </div>
+
+    @* Mechanic tab *@
+    <div class="emp-pane" data-pane="mechanic" style="display:none">
+        @await Html.PartialAsync("_EmployeeTable", mechanics)
+    </div>
+}
+
+<style>
+    /* ── Search bar ───────────────────────────────────────────────── */
+    .emp-search-wrap {
+        position: relative; margin-bottom: 14px;
+        background: var(--steel-mid); border: 1px solid var(--steel-border);
+        border-radius: 10px; padding: 8px 12px;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .emp-search-ico {
+        font-size: 14px; color: var(--text-muted); flex-shrink: 0;
+    }
+    .emp-search-input {
+        flex: 1; background: transparent; border: none; outline: none;
+        color: var(--text-primary); font-size: 13px; font-family: inherit;
+    }
+    .emp-search-input::placeholder { color: var(--text-muted); }
+    .emp-search-info {
+        font-size: 11px; color: var(--text-muted); white-space: nowrap;
+    }
+
+    /* ── Role tabs ────────────────────────────────────────────────── */
+    .emp-tabs {
+        display: flex; gap: 4px; margin-bottom: 14px;
+        border-bottom: 1px solid var(--steel-border);
+    }
+    .emp-tab {
+        background: transparent; border: none;
+        color: var(--text-muted);
+        padding: 10px 18px; cursor: pointer;
+        font-family: inherit; font-size: 13px; font-weight: 600;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        display: inline-flex; align-items: center; gap: 8px;
+        transition: color .15s, border-color .15s;
+    }
+    .emp-tab:hover { color: var(--text-primary); }
+    .emp-tab.active {
+        color: var(--amber);
+        border-bottom-color: var(--amber);
+    }
+    .emp-tab-count {
+        background: var(--steel-mid); color: var(--text-primary);
+        padding: 1px 8px; border-radius: 999px;
+        font-size: 11px; font-weight: 700;
+        min-width: 18px; text-align: center;
+    }
+    .emp-tab.active .emp-tab-count {
+        background: var(--amber); color: #0a1726;
+    }
+
+    /* ── Empty-pane state ─────────────────────────────────────────── */
+    .emp-empty {
+        text-align: center; padding: 50px 20px;
+        color: var(--text-muted); font-size: 13px;
+    }
+    .emp-empty-icon { font-size: 36px; margin-bottom: 10px; }
+</style>
+
+@section Scripts {
+<script>
+    // ── Tab switching ────────────────────────────────────────────
+    // Pure-DOM no-framework toggle: clicking a tab activates its button,
+    // shows its pane, hides the others. Search filter is re-applied to
+    // the new tab so the typed query persists across tab switches.
+    (function empInit() {
+        const tabs   = document.querySelectorAll('.emp-tab');
+        const panes  = document.querySelectorAll('.emp-pane');
+        const search = document.getElementById('empSearch');
+        const info   = document.getElementById('empSearchInfo');
+
+        function applySearch() {
+            const q = (search?.value || '').trim().toLowerCase();
+            let visibleTotal = 0;
+            let matchTotal   = 0;
+
+            panes.forEach(pane => {
+                if (pane.style.display === 'none') return;
+                const rows = pane.querySelectorAll('tbody tr');
+                rows.forEach(row => {
+                    const hay = (row.getAttribute('data-search') || '').toLowerCase();
+                    const match = !q || hay.includes(q);
+                    row.style.display = match ? '' : 'none';
+                    visibleTotal++;
+                    if (match) matchTotal++;
+                });
+            });
+
+            if (info) {
+                if (!q) {
+                    info.textContent = '';
+                } else {
+                    info.textContent = matchTotal + ' of ' + visibleTotal + ' match';
+                }
             }
-        </tbody>
-    </table>
+        }
+
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const key = tab.getAttribute('data-tab');
+                tabs.forEach(t => t.classList.toggle('active', t === tab));
+                panes.forEach(p => {
+                    p.style.display = p.getAttribute('data-pane') === key ? '' : 'none';
+                });
+                applySearch();
+            });
+        });
+
+        if (search) {
+            search.addEventListener('input', applySearch);
+        }
+    })();
+</script>
 }

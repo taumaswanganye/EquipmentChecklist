@@ -21,6 +21,8 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<OperatorSupervisorAssignment> OperatorSupervisorAssignments => Set<OperatorSupervisorAssignment>();
     public DbSet<IconLibraryItem> IconLibraryItems => Set<IconLibraryItem>();
     public DbSet<UserCredential>  UserCredentials  => Set<UserCredential>();
+    public DbSet<Notification>    Notifications    => Set<Notification>();
+    public DbSet<AuditEvent>      AuditEvents      => Set<AuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

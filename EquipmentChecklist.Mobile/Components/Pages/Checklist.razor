@@ -14,6 +14,8 @@
 @inject IAudioManager    AudioMgr
 @inject ToastService     Toasts
 @inject HapticService    Haptics
+@inject MineConfigService Mine
+@inject Audit            Audit
 @inject NavigationManager Nav
 @inject IJSRuntime       JS
 
@@ -984,6 +986,27 @@
             SetStage("pdf", "error", "PDF receipt couldn't be generated (the submission is still saved).");
         }
 
+        // ── Audit ──
+        // One row per submission whether it landed on the server or got
+        // queued. The server-side handler will create its OWN audit row
+        // when the queued submission eventually drains — both rows are
+        // useful (mobile records "user clicked submit", server records
+        // "we processed it") and the time delta tells the story of how
+        // long they were offline.
+        var defectCount = req.Items.Count(i => i.Status == ItemStatus.Defect);
+        await Audit.LogAsync(
+            action:     AuditActions.SubmissionCreated,
+            targetType: "Submission",
+            targetId:   null,    // server-side Id not known yet on offline path
+            payload:    new
+            {
+                machineId   = req.MachineId,
+                localId     = req.LocalId,
+                shift       = req.Shift.ToString(),
+                defectCount,
+                deliveredVia = serverAccepted ? "online" : "queue"
+            });
+
         // ── Stage 4 · done · short pause so the green ticks are visible ──
         SetStage("done", "done", serverAccepted
             ? "All done — heading to dashboard."
@@ -1025,9 +1048,12 @@
             var user = Auth.CurrentUser;
             if (user is null) return;
 
-            // Mine name is currently hard-coded to match the production sample.
-            // If we ever expose it as a server config, swap this for a fetch.
-            const string mineName = "BELFAST COAL MINE";
+            // Mine name comes from server config via MineConfigService —
+            // falls back to "MINE" if the device has never been online and
+            // we don't even have a cached value.
+            var mineName = string.IsNullOrEmpty(Mine.Current.Name)
+                ? "MINE"
+                : Mine.Current.Name.ToUpperInvariant();
 
             await LocalPdf.GenerateAndCacheAsync(req, template, machine, user, mineName);
         }

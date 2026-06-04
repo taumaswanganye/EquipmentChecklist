@@ -8,6 +8,7 @@
 @inject LocalCache       Cache
 @inject ToastService     Toasts
 @inject HapticService    Haptics
+@inject Audit            Audit
 @inject NavigationManager Nav
 
 <PullToRefresh OnRefresh="LoadAsync">
@@ -59,6 +60,12 @@ else
             <span class="cnt">@queue.Unassigned.Count</span>
         </button>
     </div>
+
+    @* ───────────── SEARCH + DATE-RANGE BAR ─────────────
+       Searches across machine number / name, operator name, item name, and
+       part required. Date range narrows by CreatedAt. *@
+    <FilterBar Placeholder="Search machine, operator, item, or part…"
+               OnChange="OnFilterChanged" />
 
     if (Rows.Count == 0)
     {
@@ -229,20 +236,56 @@ else
     // Out of markup so we don't put a multi-line ternary with apostrophes /
     // em-dashes inside @(...) — that mix has tripped the Razor tokenizer in
     // earlier builds. Plain properties are immune.
-    private string EmptyIcon => view == View.Mine ? "✅" : "🌤";
-    private string EmptyMessage => view == View.Mine
-        ? "You are all caught up. No jobs assigned right now."
-        : "No unassigned jobs in the queue. Nice work, team.";
+    private string EmptyIcon => _bar.IsActive
+        ? "🔍"
+        : (view == View.Mine ? "✅" : "🌤");
+
+    private string EmptyMessage
+    {
+        get
+        {
+            if (_bar.IsActive)
+                return "No defects match your search. Try clearing the filters or widening the date range.";
+            return view == View.Mine
+                ? "You are all caught up. No jobs assigned right now."
+                : "No unassigned jobs in the queue. Nice work, team.";
+        }
+    }
+
+    /// <summary>Search + date-range state owned by the <see cref="FilterBar"/>.</summary>
+    private FilterBar.State _bar = new(Search: "", From: null, To: null);
+
+    private void OnFilterChanged(FilterBar.State s)
+    {
+        _bar = s;
+        StateHasChanged();
+    }
 
     /// <summary>
-    /// Rows to render in the current tab. Computed (rather than a local in the
-    /// markup) to avoid a nested code block inside the outer else branch — the
-    /// Razor 8 parser rejects that with "Unexpected brace after at sign".
+    /// Rows to render in the current tab, with FilterBar (search + date range)
+    /// applied on top.
     /// </summary>
-    private IReadOnlyList<MechanicDefectDto> Rows =>
-        queue is null
-            ? Array.Empty<MechanicDefectDto>()
-            : (view == View.Mine ? queue.MyOrders : queue.Unassigned);
+    private IReadOnlyList<MechanicDefectDto> Rows
+    {
+        get
+        {
+            if (queue is null) return Array.Empty<MechanicDefectDto>();
+            IEnumerable<MechanicDefectDto> rows =
+                view == View.Mine ? queue.MyOrders : queue.Unassigned;
+
+            if (_bar.IsActive)
+            {
+                rows = rows.Where(d =>
+                    _bar.Includes(d.CreatedAt) &&
+                    _bar.Matches(d.MachineNumber, d.MachineName, d.TypeDisplay,
+                                 d.OperatorName, d.ItemName,
+                                 d.PartRequired, d.PartNumber,
+                                 d.OperatorNotes, d.DefectDescription));
+            }
+
+            return rows.ToList();
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -331,6 +374,8 @@ else
             if (Connectivity.NetworkAccess != NetworkAccess.Internet)
             {
                 await Actions.EnqueueClaimAsync(id);
+                await Audit.LogAsync(AuditActions.DefectClaimed, "DefectOrder", id,
+                    new { deliveredVia = "queue" });
                 Toasts.Warning("Saved offline — will sync when signal returns.");
                 return;
             }
@@ -342,6 +387,8 @@ else
                 {
                     Haptics.Success();
                     Toasts.Success("Job claimed.");
+                    await Audit.LogAsync(AuditActions.DefectClaimed, "DefectOrder", id,
+                        new { deliveredVia = "online" });
                     await LoadAsync();
                 }
                 else
@@ -353,6 +400,8 @@ else
             {
                 // Connectivity blip mid-call — queue and bail.
                 await Actions.EnqueueClaimAsync(id);
+                await Audit.LogAsync(AuditActions.DefectClaimed, "DefectOrder", id,
+                    new { deliveredVia = "queue_after_network_drop" });
                 Toasts.Warning("Saved offline — will sync when signal returns.");
             }
         }

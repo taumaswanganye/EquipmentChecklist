@@ -22,23 +22,47 @@ public class MechanicController : Controller
                                UserManager<ApplicationUser> users, EmailService email, PdfService pdf)
     { _db = db; _svc = svc; _users = users; _email = email; _pdf = pdf; }
 
-    public async Task<IActionResult> Index()
+    public async Task<IActionResult> Index([FromQuery] ListFilter filter,
+                                           [FromQuery] int jobsPage = 1)
     {
+        FilterPresets.Apply(filter);
+
         var userId = _users.GetUserId(User)!;
 
-        var myOrders = await _db.DefectOrders
-            .Include(d => d.Submission).ThenInclude(s => s.Machine)
-            .Include(d => d.SubmissionItem).ThenInclude(i => i.TemplateItem)
-            .Where(d => d.AssignedMechanicId == userId && d.RepairStatus != RepairStatus.Completed)
-            .OrderByDescending(d => d.Submission.Machine.IsImmobilised).ThenBy(d => d.CreatedAt)
+        // Same base query shape for both buckets, just differing on the
+        // assignment / status predicate. The date range bites on
+        // d.CreatedAt — when the operator originally reported the defect.
+        IQueryable<DefectOrder> Build(IQueryable<DefectOrder> q) =>
+            q.Include(d => d.Submission).ThenInclude(s => s.Machine)
+             .Include(d => d.Submission).ThenInclude(s => s.Operator)
+             .Include(d => d.SubmissionItem).ThenInclude(i => i.TemplateItem)
+             .ApplyDateRange(filter, d => d.CreatedAt)
+             .OrderByDescending(d => d.Submission.Machine.IsImmobilised)
+             .ThenBy(d => d.CreatedAt);
+
+        var myOrdersRaw = await Build(_db.DefectOrders
+            .Where(d => d.AssignedMechanicId == userId && d.RepairStatus != RepairStatus.Completed))
             .ToListAsync();
 
-        var unassigned = await _db.DefectOrders
-            .Include(d => d.Submission).ThenInclude(s => s.Machine)
-            .Include(d => d.SubmissionItem).ThenInclude(i => i.TemplateItem)
-            .Where(d => d.AssignedMechanicId == null && d.RepairStatus == RepairStatus.Pending)
-            .OrderByDescending(d => d.Submission.Machine.IsImmobilised).ThenBy(d => d.CreatedAt)
+        var unassignedRaw = await Build(_db.DefectOrders
+            .Where(d => d.AssignedMechanicId == null && d.RepairStatus == RepairStatus.Pending))
             .ToListAsync();
+
+        // Search across machine + operator + defect item + part — navigation
+        // paths, so apply in memory.
+        var myOrders = myOrdersRaw.ApplySearchInMemory(filter,
+            d => d.Submission.Machine.MachineNumber,
+            d => d.Submission.Machine.MachineName,
+            d => d.Submission.Operator.FullName,
+            d => d.SubmissionItem.TemplateItem.ItemName,
+            d => d.PartRequired,
+            d => d.PartNumber);
+
+        var unassigned = unassignedRaw.ApplySearchInMemory(filter,
+            d => d.Submission.Machine.MachineNumber,
+            d => d.Submission.Machine.MachineName,
+            d => d.Submission.Operator.FullName,
+            d => d.SubmissionItem.TemplateItem.ItemName);
 
         var noGoMachines = await _db.Machines
             .Include(m => m.Submissions.OrderByDescending(s => s.SubmittedAt).Take(1))
@@ -47,10 +71,32 @@ public class MechanicController : Controller
             .Where(m => m.IsImmobilised)
             .ToListAsync();
 
-        ViewBag.Unassigned   = unassigned;
-        ViewBag.NoGoMachines = noGoMachines;
-        ViewBag.CartCount    = GetCart().Count;
-        return View(myOrders);
+        // ── Paging for the "My Active Jobs" section ────────────────────
+        // Only this section gets paged — the unassigned-defects table
+        // upstream already uses the layout's client-side data-paginate
+        // pager. The job cards are visually heavier so we serve a smaller
+        // window.
+        const int JOBS_PAGE_SIZE = 6;
+        if (jobsPage < 1) jobsPage = 1;
+        var jobsTotal      = myOrders.Count;
+        var jobsTotalPages = Math.Max(1, (int)Math.Ceiling(jobsTotal / (double)JOBS_PAGE_SIZE));
+        if (jobsPage > jobsTotalPages) jobsPage = jobsTotalPages;
+        var jobsSlice = myOrders
+            .Skip((jobsPage - 1) * JOBS_PAGE_SIZE)
+            .Take(JOBS_PAGE_SIZE)
+            .ToList();
+
+        ViewBag.Unassigned         = unassigned;
+        ViewBag.NoGoMachines       = noGoMachines;
+        ViewBag.CartCount          = GetCart().Count;
+        ViewBag.Filter             = filter;
+        ViewBag.TotalMyOrders      = myOrdersRaw.Count;
+        ViewBag.TotalUnassigned    = unassignedRaw.Count;
+        ViewBag.JobsPage           = jobsPage;
+        ViewBag.JobsTotalPages     = jobsTotalPages;
+        ViewBag.JobsPageSize       = JOBS_PAGE_SIZE;
+        ViewBag.JobsTotal          = jobsTotal;       // post-filter total
+        return View(jobsSlice);
     }
 
     [HttpGet("/Mechanic/NoGoDetail/{machineId:int}")]

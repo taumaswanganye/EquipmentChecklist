@@ -281,7 +281,21 @@ public class LocalCache
         public const string SupervisorOperators = "sup-operators";
         public const string NoGoMachines        = "nogo";          // shared by Supervisor + Mechanic
         public const string MechanicDefects     = "mech-defects";
+        /// <summary>Site-level mine config (one row, not per-user).</summary>
+        public const string MineConfig          = "mine";
     }
+
+    // ── Mine config (singleton — not per-user) ──────────────────────────────
+    // Re-uses the SaveBlob/GetBlob pattern with a fixed sentinel key so the
+    // single global row is easy to find. Cached so first launch on a fresh
+    // device with no signal still has labels to render.
+    private const string MineConfigKey = "__mine__";
+
+    public Task SaveMineConfigAsync(EquipmentChecklist.DTOs.MineDto config) =>
+        SaveBlobAsync(MineConfigKey, BlobKinds.MineConfig, config);
+
+    public Task<EquipmentChecklist.DTOs.MineDto?> GetMineConfigAsync() =>
+        GetBlobAsync<EquipmentChecklist.DTOs.MineDto>(MineConfigKey, BlobKinds.MineConfig);
 
     public Task SaveSupervisorQueueAsync(string supervisorEmail, IEnumerable<SupervisorQueueItemDto> items) =>
         SaveBlobAsync(supervisorEmail, BlobKinds.SupervisorQueue, items);

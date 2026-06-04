@@ -15,24 +15,29 @@ public class SupervisorController : Controller
     private readonly ChecklistService             _svc;
     private readonly UserManager<ApplicationUser> _users;
     private readonly EmailService                 _email;
+    private readonly NotificationService           _notifications;
     private readonly ILogger<SupervisorController> _log;
 
     public SupervisorController(ApplicationDbContext db,
                                 ChecklistService svc,
                                 UserManager<ApplicationUser> users,
                                 EmailService email,
+                                NotificationService notifications,
                                 ILogger<SupervisorController> log)
     {
         _db    = db;
         _svc   = svc;
         _users = users;
         _email = email;
+        _notifications = notifications;
         _log   = log;
     }
 
     // ── Sign-Off Queue ────────────────────────────────────────────────────────
-    public async Task<IActionResult> Index()
+    public async Task<IActionResult> Index([FromQuery] ListFilter filter)
     {
+        FilterPresets.Apply(filter);
+
         var supervisorId = _users.GetUserId(User)!;
         var isAdmin = User.IsInRole("Admin");
 
@@ -50,18 +55,30 @@ public class SupervisorController : Controller
                 .ToListAsync();
         }
 
-        var pending = await _db.ChecklistSubmissions
+        var baseQuery = _db.ChecklistSubmissions
             .Include(s => s.Machine)
             .Include(s => s.Operator)
             .Include(s => s.Items).ThenInclude(i => i.TemplateItem)
             .Where(s => s.Status == ChecklistStatus.GoButRepair24H
                      && s.SupervisorId == null
                      && assignedOperatorIds.Contains(s.OperatorId))
-            .OrderBy(s => s.SubmittedAt)
-            .ToListAsync();
+            .ApplyDateRange(filter, s => s.SubmittedAt)
+            .OrderBy(s => s.SubmittedAt);
+
+        var loaded = await baseQuery.ToListAsync();
+
+        // Search hits navigation properties — apply in memory.
+        var pending = loaded.ApplySearchInMemory(
+            filter,
+            s => s.Machine.MachineNumber,
+            s => s.Machine.MachineName,
+            s => s.Operator.FullName,
+            s => s.Operator.EmployeeNumber);
 
         // Pass available mechanics so supervisor can pick who to assign on reject
-        ViewBag.Mechanics = await _users.GetUsersInRoleAsync("Mechanic");
+        ViewBag.Mechanics       = await _users.GetUsersInRoleAsync("Mechanic");
+        ViewBag.Filter          = filter;
+        ViewBag.TotalUnfiltered = loaded.Count;
 
         return View(pending);
     }
@@ -104,6 +121,20 @@ public class SupervisorController : Controller
         {
             await _svc.SupervisorSignOffAsync(id, supervisorId, status, supervisorSignature);
             TempData["Success"] = "Sign-off recorded.";
+        }
+        catch (ChecklistService.ConflictException cx)
+        {
+            // Two supervisors raced on the same submission, we lost. Write
+            // a notification so the bell badge surfaces it next page load,
+            // and show TempData so the redirect destination renders an
+            // immediate explanation.
+            await _notifications.PushAsync(
+                userId:              supervisorId,
+                kind:                NotificationKinds.ConflictRejected,
+                title:               $"✕ Sign-off rejected — {cx.MachineNumber ?? "submission"}",
+                body:                cx.Message,
+                relatedSubmissionId: id);
+            TempData["Error"] = cx.Message;
         }
         catch (Exception ex)
         {
@@ -193,6 +224,22 @@ public class SupervisorController : Controller
                                 "Reject persisted; email pipeline was skipped.", id);
         }
 
+        // In-app notification to the operator (parallels the mobile API path).
+        try
+        {
+            await _notifications.PushAsync(
+                userId:              submission.OperatorId,
+                kind:                NotificationKinds.SubmissionRejected,
+                title:               $"🛑 Rejected on {submission.Machine.MachineNumber}",
+                body:                $"Reason: {rejectionReason}",
+                relatedSubmissionId: submission.Id,
+                relatedMachineId:    submission.MachineId);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Rejection in-app notification failed for submission {SubmissionId} (web).", id);
+        }
+
         TempData["Success"] = "Submission rejected. Machine immobilised and defects sent to mechanic.";
         return RedirectToAction("Index");
     }
@@ -249,14 +296,58 @@ public class SupervisorController : Controller
 
     // ── NO-GO Machines ────────────────────────────────────────────────────────
     [HttpGet]
-    public async Task<IActionResult> NoGoMachines()
+    public async Task<IActionResult> NoGoMachines(int page = 1)
     {
-        var machines = await _db.Machines
+        // Pull the full assignment graph so the view can render mechanic
+        // names + acknowledgement state per defect without N+1 queries.
+        // Ordering happens in memory below — nested Min() over a filtered
+        // subset is the kind of EF expression that the Npgsql translator
+        // dislikes, and the row count here (immobilised machines, usually
+        // <50 at a busy mine) is small enough that in-memory ordering is
+        // free.
+        var loaded = await _db.Machines
+            .Include(m => m.Submissions)
+                .ThenInclude(s => s.Operator)
             .Include(m => m.Submissions)
                 .ThenInclude(s => s.DefectOrders)
+                    .ThenInclude(d => d.AssignedMechanic)
+            .Include(m => m.Submissions)
+                .ThenInclude(s => s.DefectOrders)
+                    .ThenInclude(d => d.SubmissionItem)
+                        .ThenInclude(i => i.TemplateItem)
             .Where(m => m.IsImmobilised)
             .ToListAsync();
 
-        return View(machines);
+        // Oldest open defect first — the supervisor cares most about
+        // machines that have been down longest. Machines with no open
+        // defects (rare — usually means data drift) sort to the end.
+        var all = loaded
+            .OrderBy(m =>
+            {
+                var openCreated = m.Submissions
+                    .SelectMany(s => s.DefectOrders)
+                    .Where(d => d.RepairStatus != RepairStatus.Completed)
+                    .Select(d => (DateTime?)d.CreatedAt)
+                    .DefaultIfEmpty(null)
+                    .Min();
+                return openCreated ?? DateTime.MaxValue;
+            })
+            .ToList();
+
+        const int PAGE_SIZE = 6;
+        if (page < 1) page = 1;
+        var totalPages = Math.Max(1, (int)Math.Ceiling(all.Count / (double)PAGE_SIZE));
+        if (page > totalPages) page = totalPages;
+
+        var pageRows = all
+            .Skip((page - 1) * PAGE_SIZE)
+            .Take(PAGE_SIZE)
+            .ToList();
+
+        ViewBag.Page       = page;
+        ViewBag.TotalPages = totalPages;
+        ViewBag.TotalCount = all.Count;
+        ViewBag.PageSize   = PAGE_SIZE;
+        return View(pageRows);
     }
 }

@@ -24,12 +24,27 @@ public static class MauiProgram
 		builder.Services.AddSingleton<LocalCache>();
 		builder.Services.AddSingleton<SubmissionQueue>();
 		builder.Services.AddSingleton<ActionQueue>();
+		// Append-only audit buffer. Singletons because the queue owns a SQLite
+		// connection — only one instance should ever hold the file handle.
+		builder.Services.AddSingleton<AuditQueue>();
+		builder.Services.AddSingleton<Audit>();
 		builder.Services.AddSingleton<SyncWorker>();
+		// Bridges SyncWorker.PrunedStale into the toast system so the user
+		// gets a one-shot warning when bounded retention drops old rows.
+		builder.Services.AddSingleton<StalePruneNotifier>();
 		builder.Services.AddSingleton<ApiHealth>();
 		// Tactile feedback — toasts subscribed in MainLayout, haptics
 		// invoked from pages on commit-style actions.
 		builder.Services.AddSingleton<ToastService>();
 		builder.Services.AddSingleton<HapticService>();
+		// Real-time notification feed — SignalR client + inbox HTTP fallback.
+		// Subscribes to AuthService.SignedIn/SignedOut to start/stop the
+		// connection automatically; pages just inject and bind to the
+		// UnreadCountChanged event.
+		builder.Services.AddSingleton<NotificationService>();
+		// Site labels (Mine name, Tagline, etc.) read from GET /api/sync/mine
+		// on launch + post-signin and cached in SQLite for offline boots.
+		builder.Services.AddSingleton<MineConfigService>();
 		// Scoped: LocalPdfService captures IJSRuntime which is per-WebView.
 		builder.Services.AddScoped<LocalPdfService>();
 		// Cross-platform recorder/player factory from Plugin.Maui.Audio.
@@ -102,6 +117,26 @@ public static class MauiProgram
 		// the status pill becomes accurate within seconds of app launch
 		// instead of waiting for the first page that injects it.
 		_ = app.Services.GetRequiredService<ApiHealth>();
+
+		// Force-resolve Audit so its AuthService.SignedIn / SignedOut subscriber
+		// is wired up BEFORE the first sign-in attempt — otherwise the very
+		// first sign-in event fires into a service that DI hasn't constructed
+		// yet and the audit row is silently dropped.
+		_ = app.Services.GetRequiredService<Audit>();
+
+		// Same trick: subscribe to SyncWorker.PrunedStale at boot so the
+		// first prune pass (which fires near-immediately on the startup
+		// drain) doesn't miss its chance to toast.
+		_ = app.Services.GetRequiredService<StalePruneNotifier>();
+
+		// Force-resolve NotificationService so it can wire its
+		// AuthService.SignedIn handler before the first page renders.
+		_ = app.Services.GetRequiredService<NotificationService>();
+
+		// Same trick for MineConfigService — hydrates from SQLite + kicks
+		// the /mine refresh in the background so labels are populated by
+		// the time the first page asks.
+		_ = app.Services.GetRequiredService<MineConfigService>();
 
 		return app;
 	}

@@ -54,6 +54,14 @@ public class ApiClient
     /// icons / item images that live in the server's wwwroot.</summary>
     public Uri? BaseAddress => _http.BaseAddress;
 
+    /// <summary>Site labels read on app launch and re-pulled after sign-in.
+    /// Anonymous endpoint so it works pre-login.</summary>
+    public async Task<MineDto?> MineConfigAsync()
+    {
+        try   { return await _http.GetFromJsonAsync<MineDto>("api/sync/mine"); }
+        catch { return null; }
+    }
+
     /// <summary>
     /// Lightweight liveness check used by <see cref="ApiHealth"/>. Anonymous
     /// (no token applied) and capped at a short timeout so it doesn't stall
@@ -286,9 +294,69 @@ public class ApiClient
         return await ToResultAsync(resp);
     }
 
+    /// <summary>
+    /// Batch upload audit events buffered locally in <see cref="AuditQueue"/>.
+    /// One round-trip per drain pass (up to AUDIT_BATCH events). The server
+    /// rejects events whose actor doesn't match the JWT subject, so we never
+    /// need to send an explicit ActorUserId — the server stamps it from the
+    /// token.
+    /// </summary>
+    public async Task<ApiResult> PostAuditBatchAsync(System.Collections.Generic.List<AuditEventDto> events)
+    {
+        await ApplyAuthAsync();
+        var resp = await _http.PostAsJsonAsync(
+            "api/sync/audit",
+            new AuditEventBatchRequest { Events = events });
+        return await ToResultAsync(resp);
+    }
+
     public async Task<MechanicStatsDto?> MechanicStatsAsync()
     {
         await ApplyAuthAsync();
         return await _http.GetFromJsonAsync<MechanicStatsDto>("api/sync/mechanic/stats");
+    }
+
+    // ── Notifications inbox ──────────────────────────────────────────────────
+    public async Task<List<NotificationDto>?> NotificationsAsync(int take = 30)
+    {
+        await ApplyAuthAsync();
+        try
+        {
+            return await _http.GetFromJsonAsync<List<NotificationDto>>(
+                $"api/sync/notifications?take={take}");
+        }
+        catch (HttpRequestException) { return null; }
+    }
+
+    public async Task<int?> NotificationsUnreadCountAsync()
+    {
+        await ApplyAuthAsync();
+        try
+        {
+            return await _http.GetFromJsonAsync<int>("api/sync/notifications/unread-count");
+        }
+        catch (HttpRequestException) { return null; }
+    }
+
+    public async Task<bool> NotificationsMarkReadAsync(int id)
+    {
+        await ApplyAuthAsync();
+        try
+        {
+            var resp = await _http.PostAsync($"api/sync/notifications/{id}/read", null);
+            return resp.IsSuccessStatusCode;
+        }
+        catch (HttpRequestException) { return false; }
+    }
+
+    public async Task<bool> NotificationsMarkAllReadAsync()
+    {
+        await ApplyAuthAsync();
+        try
+        {
+            var resp = await _http.PostAsync("api/sync/notifications/read-all", null);
+            return resp.IsSuccessStatusCode;
+        }
+        catch (HttpRequestException) { return false; }
     }
 }

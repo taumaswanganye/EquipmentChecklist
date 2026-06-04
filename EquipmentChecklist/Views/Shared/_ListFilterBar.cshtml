@@ -1,0 +1,131 @@
+@*
+    _ListFilterBar.cshtml — search + date-range band shared across the MVC
+    list pages (History, Sign-Off Queue, Defects, Reports).
+
+    Usage from a parent view:
+
+        @{ ViewData["FilterAction"] = "/Checklist/History"; }
+        @await Html.PartialAsync("_ListFilterBar", (EquipmentChecklist.Models.ListFilter)ViewBag.Filter,
+            new ViewDataDictionary(ViewData) {
+                { "Placeholder", "Search machine number, name, or operator…" },
+                { "Action",      "/Checklist/History" }
+            })
+
+    Or, more conveniently, by setting ViewBag.FilterPlaceholder and using the
+    parent view's current path as the action.
+
+    The bar submits with method=GET so the filter ends up in the URL — this
+    means deep-links, the browser back-button, and the existing data-paginate
+    pager all keep the filter scope without any extra plumbing.
+*@
+
+@model EquipmentChecklist.Models.ListFilter
+@{
+    var placeholder = (ViewData["Placeholder"] as string) ?? "Search…";
+    var action      = (ViewData["Action"]      as string) ?? Context.Request.Path.ToString();
+    var showDates   = !(ViewData["HideDateRange"] is bool hd && hd);
+    var fromQs      = Model.From?.ToString("yyyy-MM-dd") ?? "";
+    var toQs        = Model.To?.ToString("yyyy-MM-dd")   ?? "";
+    var active      = Model.IsActive;
+}
+
+<form method="get" action="@action" class="lfb">
+    <div class="lfb-search">
+        <span class="lfb-ico">🔍</span>
+        <input type="search" name="q" value="@Model.Search" placeholder="@placeholder"
+               class="lfb-input" autocomplete="off" />
+    </div>
+
+    @if (showDates)
+    {
+        <div class="lfb-dates">
+            <label class="lfb-lbl">From</label>
+            <input type="date" name="from" value="@fromQs" class="lfb-date" />
+            <span class="lfb-sep">→</span>
+            <label class="lfb-lbl">To</label>
+            <input type="date" name="to" value="@toQs" class="lfb-date" />
+        </div>
+
+        @* Preset chips. Each one is a submit-button that sets the `preset`
+           form field; the controller re-derives From/To when binding. *@
+        <div class="lfb-presets">
+            <button type="submit" name="preset" value="today"
+                    class="lfb-preset @(Model.Preset == "today" ? "on" : "")">Today</button>
+            <button type="submit" name="preset" value="7d"
+                    class="lfb-preset @(Model.Preset == "7d" ? "on" : "")">7d</button>
+            <button type="submit" name="preset" value="30d"
+                    class="lfb-preset @(Model.Preset == "30d" ? "on" : "")">30d</button>
+            <button type="submit" name="preset" value="month"
+                    class="lfb-preset @(Model.Preset == "month" ? "on" : "")">This month</button>
+        </div>
+    }
+
+    <button type="submit" class="lfb-apply">Apply</button>
+
+    @if (active)
+    {
+        @* Clear = navigate to the bare action URL with no query string. *@
+        <a class="lfb-clear" href="@action">✕ Clear filters</a>
+    }
+</form>
+
+<style>
+    .lfb {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+        padding: 10px 12px; margin-bottom: 18px;
+        background: var(--steel-mid, #0d1729);
+        border: 1px solid var(--steel-border, #1f2a3a);
+        border-radius: 10px;
+    }
+    .lfb-search { position: relative; flex: 1 1 220px; min-width: 200px;
+                  display: flex; align-items: center; }
+    .lfb-ico    { position: absolute; left: 10px; top: 50%;
+                  transform: translateY(-50%); font-size: 13px;
+                  color: var(--text-muted, #94a3b8); pointer-events: none; }
+    .lfb-input  { width: 100%; background: var(--steel-mid, #111c2e);
+                  border: 1px solid var(--steel-border, #243246);
+                  color: var(--text-primary, #e5e7eb);
+                  padding: 8px 12px 8px 32px; border-radius: 8px;
+                  font-size: 13px; font-family: inherit; outline: none; }
+    .lfb-input::placeholder { color: var(--text-muted, #64748b); }
+    .lfb-input:focus { border-color: var(--amber, #0e9488); }
+
+    .lfb-dates  { display: flex; align-items: center; gap: 6px; }
+    .lfb-lbl    { font-size: 10px; color: var(--text-muted, #94a3b8);
+                  letter-spacing: .4px; font-weight: 600; }
+    .lfb-date   { background: var(--steel-mid, #111c2e);
+                  border: 1px solid var(--steel-border, #243246);
+                  color: var(--text-primary, #e5e7eb);
+                  padding: 6px 8px; border-radius: 6px; font-size: 12px;
+                  font-family: inherit; outline: none; color-scheme: dark; }
+    .lfb-date:focus { border-color: var(--amber, #0e9488); }
+    .lfb-sep    { color: var(--text-muted, #475569); font-size: 12px; padding: 0 2px; }
+
+    .lfb-presets { display: flex; gap: 4px; flex-wrap: wrap; }
+    .lfb-preset {
+        background: transparent; border: 1px solid var(--steel-border, #243246);
+        color: var(--text-muted, #94a3b8); padding: 5px 10px;
+        border-radius: 999px; font-size: 11px; font-weight: 600;
+        cursor: pointer; font-family: inherit;
+    }
+    .lfb-preset:hover { border-color: var(--amber, #0e9488); color: var(--text-primary, #cbd5e1); }
+    .lfb-preset.on    { background: var(--amber, #0e9488); color: #0a1726;
+                        border-color: var(--amber, #0e9488); }
+
+    .lfb-apply  { background: var(--amber, #0e9488); color: #0a1726;
+                  border: none; padding: 7px 14px; border-radius: 6px;
+                  font-size: 12px; font-weight: 700; cursor: pointer;
+                  font-family: inherit; }
+    .lfb-apply:hover { filter: brightness(1.1); }
+
+    .lfb-clear { color: #fca5a5; border: 1px solid #7f1d1d;
+                 padding: 5px 10px; border-radius: 6px; font-size: 11px;
+                 font-weight: 600; text-decoration: none; }
+    .lfb-clear:hover { background: rgba(127,29,29,.18); }
+
+    @@media (max-width: 640px) {
+        .lfb-search   { flex-basis: 100%; }
+        .lfb-dates    { flex-basis: 100%; }
+        .lfb-presets  { flex-basis: 100%; }
+    }
+</style>

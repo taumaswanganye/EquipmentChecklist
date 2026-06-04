@@ -73,6 +73,12 @@
     -->
     <PackageReference Include="Plugin.Maui.Audio" Version="4.0.0" />
     <!--
+      SignalR client for real-time notifications. Connects to
+      /hubs/notifications with the JWT bearer token on the access_token
+      query string (WebSocket upgrades can't set headers).
+    -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.0" />
+    <!--
       Bitmap library — used to resize defect photos before upload. A 3 MB
       phone JPEG becomes ~150 KB after a 1280×960 / 80% quality re-encode.
       Critical for cellular submissions at the mine.

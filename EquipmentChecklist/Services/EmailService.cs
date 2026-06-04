@@ -8,11 +8,16 @@ public class EmailService
 {
     private readonly IConfiguration _cfg;
     private readonly ILogger<EmailService> _log;
+    private readonly MineSettings _mine;
 
-    public EmailService(IConfiguration cfg, ILogger<EmailService> log)
+    public EmailService(
+        IConfiguration cfg,
+        ILogger<EmailService> log,
+        Microsoft.Extensions.Options.IOptions<MineSettings> mine)
     {
-        _cfg = cfg;
-        _log = log;
+        _cfg  = cfg;
+        _log  = log;
+        _mine = mine.Value;
     }
 
     // ── Send order confirmation to mechanic + parts order PDF to manager ───────
@@ -106,7 +111,7 @@ public class EmailService
 
     // ── Email bodies ──────────────────────────────────────────────────────────
 
-    private static string BuildMechanicEmailHtml(
+    private string BuildMechanicEmailHtml(
         string toName, string orderRef, string rows, int count)
     {
         return $"""
@@ -116,7 +121,7 @@ public class EmailService
         <body style="font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:0">
           <div style="max-width:620px;margin:32px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1)">
             <div style="background:#1e3a5f;padding:24px 28px">
-              <div style="color:#f59e0b;font-weight:800;font-size:18px;text-transform:uppercase">Belfast Coal Mine</div>
+              <div style="color:#f59e0b;font-weight:800;font-size:18px;text-transform:uppercase">{_mine.Name}</div>
               <div style="color:#9ca3af;font-size:12px">Digital Equipment Checklist System</div>
             </div>
             <div style="padding:28px">
@@ -142,7 +147,7 @@ public class EmailService
               </div>
             </div>
             <div style="padding:16px 28px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af">
-              Belfast Coal Mine · MHSA / DMR / CPS Level 8/9 Compliant · Auto-generated – do not reply
+              {_mine.Name} · {_mine.ComplianceText} · Auto-generated – do not reply
             </div>
           </div>
         </body>
@@ -218,7 +223,7 @@ public class EmailService
         }
     }
 
-    private static string BuildRejectionEmailHtml(
+    private string BuildRejectionEmailHtml(
         string mechanicName, string operatorName, string machineNumber, string machineName,
         string reason, int defectCount, string supervisorName)
     {
@@ -231,7 +236,7 @@ public class EmailService
           <div style="max-width:640px;margin:32px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1)">
             <div style="background:#7f1d1d;padding:24px 28px">
               <div style="color:#fef3c7;font-weight:800;font-size:18px;text-transform:uppercase">Submission Rejected · Machine NO-GO</div>
-              <div style="color:#fecaca;font-size:12px">Belfast Coal Mine · Equipment Checklist System</div>
+              <div style="color:#fecaca;font-size:12px">{_mine.Name} · Equipment Checklist System</div>
             </div>
             <div style="padding:28px">
               <h2 style="margin:0 0 8px;color:#1e3a5f">Hi {mechanicName},</h2>
@@ -273,7 +278,7 @@ public class EmailService
               </div>
             </div>
             <div style="padding:16px 28px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af">
-              Belfast Coal Mine · MHSA / DMR / CPS Level 8/9 Compliant · Auto-generated — do not reply
+              {_mine.Name} · {_mine.ComplianceText} · Auto-generated — do not reply
             </div>
           </div>
         </body>
@@ -281,7 +286,7 @@ public class EmailService
         """;
     }
 
-    private static string BuildManagerEmailHtml(
+    private string BuildManagerEmailHtml(
         string mechanicName, string orderRef, string rows, int count)
     {
         return $"""
@@ -292,7 +297,7 @@ public class EmailService
           <div style="max-width:680px;margin:32px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1)">
             <div style="background:#1e3a5f;padding:24px 28px;display:flex;justify-content:space-between;align-items:center">
               <div>
-                <div style="color:#f59e0b;font-weight:800;font-size:18px;text-transform:uppercase">Belfast Coal Mine</div>
+                <div style="color:#f59e0b;font-weight:800;font-size:18px;text-transform:uppercase">{_mine.Name}</div>
                 <div style="color:#9ca3af;font-size:12px">Equipment Maintenance Department</div>
               </div>
               <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:8px 14px;text-align:right">
@@ -324,7 +329,7 @@ public class EmailService
               </div>
             </div>
             <div style="padding:16px 28px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af">
-              Belfast Coal Mine · MHSA / DMR / CPS Level 8/9 Compliant · Auto-generated – do not reply
+              {_mine.Name} · {_mine.ComplianceText} · Auto-generated – do not reply
             </div>
           </div>
         </body>

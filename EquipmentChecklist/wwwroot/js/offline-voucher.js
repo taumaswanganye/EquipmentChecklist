@@ -26,20 +26,75 @@
     'use strict';
 
     // ── IndexedDB ────────────────────────────────────────────────────────────
+    //
+    // IMPORTANT: this database is SHARED with sw.js. The current shipping
+    // version is 2 (sw.js bumped it to add the `submit_queue` store while
+    // keeping `kv`). Any time sw.js bumps the version again, bump DB_VER
+    // here to match — otherwise this script throws VersionError: "The
+    // requested version (N) is less than the existing version (M)" the
+    // first time a page is loaded after the Service Worker registers.
+    //
+    // The upgrade handler below also stays idempotent: it only creates a
+    // store if it isn't already there, so the script is safe whether
+    // sw.js has run first or not.
     const DB_NAME = 'eq_offline';
-    const DB_VER  = 1;
+    const DB_VER  = 2;           // ← must equal the version used in sw.js
     const STORE   = 'kv';
     const KEY_VOUCHER = 'voucher';
     const KEY_PUBKEY  = 'pubkey';
 
     function openDb() {
         return new Promise(function (resolve, reject) {
-            const req = indexedDB.open(DB_NAME, DB_VER);
-            req.onupgradeneeded = function () {
-                req.result.createObjectStore(STORE);
-            };
-            req.onsuccess = function () { resolve(req.result); };
-            req.onerror   = function () { reject(req.error); };
+            tryOpen(DB_VER);
+
+            function tryOpen(version) {
+                let req;
+                try {
+                    req = indexedDB.open(DB_NAME, version);
+                } catch (e) {
+                    reject(e);
+                    return;
+                }
+
+                req.onupgradeneeded = function () {
+                    // Idempotent: never call createObjectStore on a name that
+                    // already exists — sw.js may have created it at version 2
+                    // already, and a duplicate call throws ConstraintError.
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(STORE)) {
+                        db.createObjectStore(STORE);
+                    }
+                    // Don't TOUCH submit_queue here — that's sw.js's store.
+                    // The browser is happy with an upgrade transaction that
+                    // doesn't visit every store; sw.js will create it on
+                    // its own first open.
+                };
+
+                req.onsuccess = function () { resolve(req.result); };
+
+                req.onerror = function () {
+                    // Fallback path: the on-disk version is HIGHER than the
+                    // one we asked for (a future sw.js bumped it without
+                    // a matching offline-voucher.js update). Open without
+                    // a version argument — this attaches to whatever version
+                    // already exists and never triggers an upgrade. We rely
+                    // on the fact that `kv` was created in v1 (or by sw.js
+                    // at v2) so the store is guaranteed to be present.
+                    if (req.error && req.error.name === 'VersionError') {
+                        let fallback;
+                        try {
+                            fallback = indexedDB.open(DB_NAME);
+                        } catch (e) {
+                            reject(e);
+                            return;
+                        }
+                        fallback.onsuccess = function () { resolve(fallback.result); };
+                        fallback.onerror   = function () { reject(fallback.error); };
+                        return;
+                    }
+                    reject(req.error);
+                };
+            }
         });
     }
 

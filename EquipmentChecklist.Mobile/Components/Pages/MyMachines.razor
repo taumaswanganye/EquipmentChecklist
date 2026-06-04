@@ -39,6 +39,13 @@
 @* ───────────── MY ASSIGNED MACHINES ───────────── *@
 <h2 class="section-title">My Assigned Machines</h2>
 
+@* Search only — machines don't have a "happened on" date, and the status
+   pills aren't shown here. Plain text search across number/name/type is
+   the highest-value affordance on a long roster. *@
+<FilterBar Placeholder="Search machine number, name, or type…"
+           ShowDateRange="false"
+           OnChange="OnMachineFilterChanged" />
+
 @if (busy && machines is null)
 {
     <div class="state"><div class="spinner"></div><p>Loading your machines…</p></div>
@@ -58,10 +65,17 @@ else if (machines is null || machines.Count == 0)
         <p>No machines assigned. Speak to your supervisor.</p>
     </div>
 }
+else if (FilteredMachines.Count == 0)
+{
+    <div class="state">
+        <div class="big">🔍</div>
+        <p>No machines match your search.</p>
+    </div>
+}
 else
 {
     <div class="m-grid">
-        @foreach (var m in machines)
+        @foreach (var m in FilteredMachines)
         {
             var disabled = m.IsImmobilised || !m.HasTemplate;
             <div class="m-card @(m.IsImmobilised ? "nogo" : "")">
@@ -260,6 +274,30 @@ else
     private bool   offline     = false;
     private string error       = "";
     private int    currentPage = 1;
+
+    /// <summary>Search state for the machines grid (no date range here —
+    /// machines don't have a "happened on" date).</summary>
+    private FilterBar.State _machineBar = new(Search: "", From: null, To: null);
+
+    private void OnMachineFilterChanged(FilterBar.State s)
+    {
+        _machineBar = s;
+        StateHasChanged();
+    }
+
+    /// <summary>Machines after applying the search filter.</summary>
+    private List<SyncMachineSummaryDto> FilteredMachines
+    {
+        get
+        {
+            if (machines is null) return new();
+            if (!_machineBar.IsActive) return machines;
+            return machines
+                .Where(m => _machineBar.Matches(
+                    m.MachineNumber, m.MachineName, m.TypeDisplay))
+                .ToList();
+        }
+    }
 
     private int TotalPages =>
         recent is null || recent.Count == 0 ? 1 : (int)Math.Ceiling(recent.Count / (double)PAGE_SIZE);

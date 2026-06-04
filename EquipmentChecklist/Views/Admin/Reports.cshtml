@@ -1,68 +1,242 @@
 @model List<EquipmentChecklist.Models.ChecklistSubmission>
 @using EquipmentChecklist.Models
+@using EquipmentChecklist.Services
 @{
     ViewData["Title"] = "Reports";
     Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var filter          = (ListFilter)(ViewBag.Filter ?? new ListFilter());
+    var dashboard       = (ReportsDashboard)ViewBag.Dashboard;
+    var k               = dashboard.Kpis;
+    var totalUnfiltered = (int)(ViewBag.TotalUnfiltered ?? Model.Count);
+
+    // Round-trip the active filter to the export buttons so a manager
+    // exporting the screen-current scope gets exactly that.
+    // Export endpoints accept from/to only. The search term doesn't pass
+    // through to the exporter because the workbook generator pulls fresh
+    // rows from the DB and ignores the in-memory needle.
+    var exportFrom = filter.From?.ToString("yyyy-MM-dd") ?? "";
+    var exportTo   = filter.To?.ToString("yyyy-MM-dd")   ?? "";
+    var exportQs   = $"?from={exportFrom}&to={exportTo}";
+
+    // Pre-serialize the chart data so the JS is plain literal arrays —
+    // saves us escaping headaches inside <script>.
+    string DaysJson(IEnumerable<TrendPoint> series) =>
+        "[" + string.Join(",", series.Select(p => "\"" + p.Date.ToString("yyyy-MM-dd") + "\"")) + "]";
+    string CountsJson(IEnumerable<TrendPoint> series) =>
+        "[" + string.Join(",", series.Select(p => p.Count.ToString())) + "]";
 }
 
-@{
-    var fromQs = ((DateTime?)ViewBag.From)?.ToString("yyyy-MM-dd") ?? "";
-    var toQs   = ((DateTime?)ViewBag.To)?.ToString("yyyy-MM-dd")   ?? "";
-}
-
-<div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:16px 20px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap">
-    <form method="get" action="/Admin/Reports" style="display:flex;gap:12px;align-items:flex-end">
-        <div class="form-group" style="margin:0">
-            <label class="form-label">From</label>
-            <input type="date" name="from" class="form-control" value="@fromQs" />
-        </div>
-        <div class="form-group" style="margin:0">
-            <label class="form-label">To</label>
-            <input type="date" name="to" class="form-control" value="@toQs" />
-        </div>
-        <button type="submit" class="btn btn-primary">Filter</button>
-    </form>
-
-    <div style="display:flex;gap:8px;align-items:flex-end">
-        <a href="/Admin/ExportReportsXlsx?from=@fromQs&to=@toQs" class="btn btn-ghost" title="Download Excel">
+@* ───────────── PAGE HEAD ───────────── *@
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h2 class="page-title">Reports & KPIs</h2>
+        <p class="page-subtitle">
+            Pre-shift inspections, defect trend, and machine / operator scorecards
+            — scoped to <strong>@dashboard.From.ToString("yyyy-MM-dd")</strong> →
+            <strong>@dashboard.To.ToString("yyyy-MM-dd")</strong>.
+        </p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a href="/Admin/ExportReportsXlsx@exportQs"
+           class="btn btn-ghost" title="Download Excel for the current scope">
             📊 Download Excel
         </a>
-        <a href="/Admin/ExportReportsPdf?from=@fromQs&to=@toQs" class="btn btn-ghost" title="Download PDF">
+        <a href="/Admin/ExportReportsPdf@exportQs"
+           class="btn btn-ghost" title="Download PDF for the current scope">
             📄 Download PDF
         </a>
     </div>
 </div>
 
-<!-- Summary -->
+@* ───────────── SEARCH + DATE-RANGE BAR ───────────── *@
+@await Html.PartialAsync("_ListFilterBar", filter,
+    new ViewDataDictionary(ViewData) {
+        { "Placeholder", "Search machine number, name, or operator…" },
+        { "Action",      "/Admin/Reports" }
+    })
+
+@* ───────────── KPI CARDS ───────────── *@
 <div class="stat-grid" style="margin-bottom:24px">
     <div class="stat-card info">
-        <div class="stat-label">Total Submissions</div>
-        <div class="stat-value">@Model.Count</div>
+        <div class="stat-label">Submissions</div>
+        <div class="stat-value">@k.TotalSubmissions</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">in window</div>
     </div>
     <div class="stat-card go">
-        <div class="stat-label">GO</div>
-        <div class="stat-value">@Model.Count(s => s.Status == ChecklistStatus.Go)</div>
+        <div class="stat-label">GO Rate</div>
+        <div class="stat-value">@k.GoRatePct.ToString("0.0")%</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">@k.GoCount of @k.TotalSubmissions</div>
     </div>
     <div class="stat-card gobut">
         <div class="stat-label">GO-BUT</div>
-        <div class="stat-value">@Model.Count(s => s.Status == ChecklistStatus.GoButRepair24H || s.Status == ChecklistStatus.GoTillNextService)</div>
+        <div class="stat-value">@k.GoButCount</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">supervisor sign-off</div>
     </div>
     <div class="stat-card nogo">
         <div class="stat-label">NO-GO</div>
-        <div class="stat-value">@Model.Count(s => s.Status == ChecklistStatus.NoGo)</div>
+        <div class="stat-value">@k.NoGoCount</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">machine immobilised</div>
+    </div>
+    <div class="stat-card" style="border-top:3px solid #f97316">
+        <div class="stat-label">Defects (period)</div>
+        <div class="stat-value" style="color:#f97316">@k.DefectCount</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">items flagged</div>
+    </div>
+    <div class="stat-card" style="border-top:3px solid #8b5cf6">
+        <div class="stat-label">Open Defects</div>
+        <div class="stat-value" style="color:#a78bfa">@k.OpenDefects</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">@k.AwaitingParts awaiting parts</div>
     </div>
 </div>
 
-@if (!Model.Any())
+@* ───────────── CHARTS ─────────────
+   Chart.js 4.x via the same CDN scheme the rest of the app uses. The data
+   arrays are emitted inline as JSON literals above. *@
+<div class="chart-row">
+    <div class="chart-card">
+        <div class="chart-head">
+            <h3>Submissions per day</h3>
+            <p>Daily pre-use inspection volume across the selected window.</p>
+        </div>
+        <canvas id="chartSubmissions" height="120"></canvas>
+    </div>
+    <div class="chart-card">
+        <div class="chart-head">
+            <h3>Defects per day</h3>
+            <p>How many checklist items came back flagged each day.</p>
+        </div>
+        <canvas id="chartDefects" height="120"></canvas>
+    </div>
+</div>
+
+<div class="chart-row">
+    <div class="chart-card">
+        <div class="chart-head">
+            <h3>Result breakdown</h3>
+            <p>Submission outcomes for the current scope.</p>
+        </div>
+        <canvas id="chartStatus" height="140"></canvas>
+    </div>
+    <div class="chart-card">
+        <div class="chart-head">
+            <h3>Top 10 machines by defects</h3>
+            <p>Which equipment is generating the most repair work.</p>
+        </div>
+        <canvas id="chartMachines" height="140"></canvas>
+    </div>
+</div>
+
+@* ───────────── LEADERBOARDS ───────────── *@
+<div class="chart-row">
+    <div class="chart-card">
+        <div class="chart-head">
+            <h3>Top operators</h3>
+            <p>Pre-use inspections submitted in the current scope.</p>
+        </div>
+        @if (!dashboard.TopOperators.Any())
+        {
+            <p style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center">No submissions in this window.</p>
+        }
+        else
+        {
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Operator</th>
+                        <th style="text-align:right">Submissions</th>
+                        <th style="text-align:right">GO</th>
+                        <th style="text-align:right">Defects flagged</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var op in dashboard.TopOperators)
+                    {
+                        var goPct = op.TotalSubmissions == 0 ? 0 : Math.Round(100.0 * op.GoCount / op.TotalSubmissions, 0);
+                        <tr>
+                            <td>
+                                <strong>@op.OperatorName</strong>
+                                <div style="font-size:11px;color:var(--text-muted)">#@op.EmployeeNumber</div>
+                            </td>
+                            <td style="text-align:right;font-family:var(--font-mono)">@op.TotalSubmissions</td>
+                            <td style="text-align:right">
+                                <span class="badge badge-go" style="font-size:10px">@op.GoCount</span>
+                                <span style="font-size:11px;color:var(--text-muted);margin-left:4px">@goPct%</span>
+                            </td>
+                            <td style="text-align:right;color:@(op.DefectCount > 0 ? "var(--red-nogo)" : "var(--text-muted)");font-weight:600">
+                                @op.DefectCount
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+
+    <div class="chart-card">
+        <div class="chart-head">
+            <h3>Open-defect aging</h3>
+            <p>How long the open repair queue has been waiting.</p>
+        </div>
+        @{
+            var totalOpen = dashboard.Aging.UnderOneDay + dashboard.Aging.OneToThree +
+                            dashboard.Aging.ThreeToSeven + dashboard.Aging.OverSeven;
+            int Pct(int n) => totalOpen == 0 ? 0 : (int)Math.Round(100.0 * n / totalOpen);
+        }
+        <div style="padding:12px 16px">
+            <div class="aging-row">
+                <span class="aging-label">&lt; 1 day</span>
+                <div class="aging-bar"><div style="width:@(Pct(dashboard.Aging.UnderOneDay))%;background:#22c55e"></div></div>
+                <span class="aging-count">@dashboard.Aging.UnderOneDay</span>
+            </div>
+            <div class="aging-row">
+                <span class="aging-label">1–3 days</span>
+                <div class="aging-bar"><div style="width:@(Pct(dashboard.Aging.OneToThree))%;background:#06b6d4"></div></div>
+                <span class="aging-count">@dashboard.Aging.OneToThree</span>
+            </div>
+            <div class="aging-row">
+                <span class="aging-label">3–7 days</span>
+                <div class="aging-bar"><div style="width:@(Pct(dashboard.Aging.ThreeToSeven))%;background:#f59e0b"></div></div>
+                <span class="aging-count">@dashboard.Aging.ThreeToSeven</span>
+            </div>
+            <div class="aging-row">
+                <span class="aging-label">&gt; 7 days</span>
+                <div class="aging-bar"><div style="width:@(Pct(dashboard.Aging.OverSeven))%;background:#ef4444"></div></div>
+                <span class="aging-count" style="color:#fca5a5">@dashboard.Aging.OverSeven</span>
+            </div>
+        </div>
+        <p style="font-size:11px;color:var(--text-muted);padding:0 16px 14px">
+            Aging buckets are absolute — they don't depend on the date filter above. They reflect every open defect in the system right now.
+        </p>
+    </div>
+</div>
+
+@* ───────────── RAW TABLE ───────────── *@
+<h3 style="font-size:15px;margin:24px 0 10px">Submissions in scope</h3>
+
+@if (!Model.Any() && filter.IsActive)
 {
-    <div style="text-align:center;padding:60px;color:var(--text-muted)">
-        <div style="font-size:48px;margin-bottom:12px">📋</div>
-        <p>No submissions found for this date range.</p>
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">
+        <div style="font-size:36px;margin-bottom:8px">🔍</div>
+        <p>No submissions match your search. Try widening the date range or clearing filters.</p>
+    </div>
+}
+else if (!Model.Any())
+{
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">
+        <div style="font-size:36px;margin-bottom:8px">📋</div>
+        <p>No submissions in this window.</p>
     </div>
 }
 else
 {
-    <table class="data-table" data-paginate="5">
+    @if (filter.IsActive)
+    {
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+            Showing @Model.Count of @totalUnfiltered submissions in the current scope.
+        </p>
+    }
+    <table class="data-table" data-paginate="10">
         <thead>
             <tr>
                 <th>Date / Time</th>
@@ -111,4 +285,134 @@ else
             }
         </tbody>
     </table>
+}
+
+<style>
+    .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+    @@media (max-width: 980px) { .chart-row { grid-template-columns: 1fr; } }
+
+    .chart-card {
+        background: var(--steel-mid, #111c2e);
+        border: 1px solid var(--steel-border, #1f2a3a);
+        border-radius: 10px; padding: 16px 18px;
+    }
+    .chart-card .chart-head { margin-bottom: 12px; }
+    .chart-card h3 { font-size: 14px; font-weight: 700; margin: 0; }
+    .chart-card .chart-head p {
+        font-size: 11px; color: var(--text-muted, #94a3b8);
+        margin: 2px 0 0; line-height: 1.5;
+    }
+
+    .aging-row {
+        display: grid;
+        grid-template-columns: 80px 1fr 40px;
+        gap: 10px; align-items: center;
+        padding: 6px 0; font-size: 12px;
+    }
+    .aging-label { color: var(--text-muted, #94a3b8); }
+    .aging-bar {
+        height: 8px; background: rgba(255,255,255,.06);
+        border-radius: 4px; overflow: hidden;
+    }
+    .aging-bar > div { height: 100%; transition: width .3s ease; }
+    .aging-count {
+        text-align: right; font-family: var(--font-mono);
+        font-weight: 700; color: var(--text-primary, #e5e7eb);
+    }
+</style>
+
+@section Scripts {
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <script>
+        // ── Inputs ─────────────────────────────────────────────────────
+        // Server-rendered JSON literals (no escaping needed — only digits and quoted dates).
+        const days        = @Html.Raw(DaysJson(dashboard.SubmissionTrend));
+        const subsCounts  = @Html.Raw(CountsJson(dashboard.SubmissionTrend));
+        const defCounts   = @Html.Raw(CountsJson(dashboard.DefectTrend));
+
+        const statusLabels = ['GO','GO-BUT','NO-GO','Rejected'];
+        const statusCounts = [@k.GoCount, @k.GoButCount, @k.NoGoCount, @k.RejectedCount];
+        const statusColors = ['#22c55e','#06b6d4','#ef4444','#f97316'];
+
+        const topMachineLabels = @Html.Raw("[" + string.Join(",", dashboard.TopMachines.Select(m => "\"" + m.MachineNumber.Replace("\"", "\\\"") + "\"")) + "]");
+        const topMachineCounts = @Html.Raw("[" + string.Join(",", dashboard.TopMachines.Select(m => m.DefectCount)) + "]");
+
+        // ── Shared style ────────────────────────────────────────────────
+        Chart.defaults.color           = '#94a3b8';
+        Chart.defaults.borderColor     = '#1f2a3a';
+        Chart.defaults.font.family     = "system-ui, -apple-system, sans-serif";
+        Chart.defaults.font.size       = 11;
+
+        const lineOpts = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales:  {
+                x: { grid: { display: false } },
+                y: { beginAtZero: true, ticks: { precision: 0 } }
+            }
+        };
+
+        // ── Charts ──────────────────────────────────────────────────────
+        new Chart(document.getElementById('chartSubmissions'), {
+            type: 'line',
+            data: {
+                labels: days,
+                datasets: [{
+                    data: subsCounts,
+                    borderColor:     '#0e9488',
+                    backgroundColor: 'rgba(14,148,136,0.15)',
+                    fill: true, tension: .3, pointRadius: 2
+                }]
+            },
+            options: lineOpts
+        });
+
+        new Chart(document.getElementById('chartDefects'), {
+            type: 'line',
+            data: {
+                labels: days,
+                datasets: [{
+                    data: defCounts,
+                    borderColor:     '#ef4444',
+                    backgroundColor: 'rgba(239,68,68,0.15)',
+                    fill: true, tension: .3, pointRadius: 2
+                }]
+            },
+            options: lineOpts
+        });
+
+        new Chart(document.getElementById('chartStatus'), {
+            type: 'doughnut',
+            data: {
+                labels: statusLabels,
+                datasets: [{ data: statusCounts, backgroundColor: statusColors, borderWidth: 0 }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { position: 'bottom' } }
+            }
+        });
+
+        new Chart(document.getElementById('chartMachines'), {
+            type: 'bar',
+            data: {
+                labels: topMachineLabels,
+                datasets: [{
+                    data: topMachineCounts,
+                    backgroundColor: '#f97316',
+                    borderColor: '#ea580c', borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                indexAxis: 'y',
+                plugins: { legend: { display: false } },
+                scales:  {
+                    x: { beginAtZero: true, ticks: { precision: 0 } },
+                    y: { grid: { display: false } }
+                }
+            }
+        });
+    </script>
 }

@@ -148,6 +148,35 @@ public class ActionQueue
     }
 
     /// <summary>
+    /// Drop rows older than <paramref name="maxAge"/>. Same intent as
+    /// <see cref="SubmissionQueue.PruneOldAsync"/>: a phone offline for
+    /// months shouldn't grow this table indefinitely. After a 60-day window
+    /// the actions are almost certainly stale anyway — the operator the
+    /// claim/sign-off referred to may have left, the submission may already
+    /// have been resolved server-side from a different device, etc.
+    /// </summary>
+    public async Task<PruneResult> PruneOldAsync(TimeSpan maxAge)
+    {
+        await EnsureInitAsync();
+        var cutoff = DateTime.UtcNow - maxAge;
+
+        var stale = await _db.Table<QueuedAction>()
+            .Where(q => q.QueuedAt < cutoff)
+            .ToListAsync();
+        foreach (var s in stale)
+            try { await _db.DeleteAsync(s); } catch { /* races */ }
+
+        DateTime? oldest = null;
+        var survivor = await _db.Table<QueuedAction>()
+            .OrderBy(q => q.QueuedAt)
+            .FirstOrDefaultAsync();
+        if (survivor != null) oldest = survivor.QueuedAt;
+
+        if (stale.Count > 0) Changed?.Invoke();
+        return new PruneResult(stale.Count, oldest);
+    }
+
+    /// <summary>
     /// Constants for the <see cref="QueuedAction.ActionType"/> discriminator.
     /// Kept as strings (not enums) so the column stays human-readable when
     /// inspecting the SQLite file during debugging.

@@ -22,6 +22,73 @@ namespace EquipmentChecklist.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("EquipmentChecklist.Models.AuditEvent", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<string>("ActorEmail")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ActorName")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("ActorRole")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("ActorUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("character varying(450)");
+
+                    b.Property<string>("DeviceKind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("OccurredAtClient")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("OccurredAtServer")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PayloadJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<long?>("TargetId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("TargetType")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Action");
+
+                    b.HasIndex("OccurredAtServer");
+
+                    b.HasIndex("ActorUserId", "OccurredAtServer");
+
+                    b.HasIndex("TargetType", "TargetId");
+
+                    b.ToTable("AuditEvents");
+                });
+
             modelBuilder.Entity("EquipmentChecklist.Models.ApplicationUser", b =>
                 {
                     b.Property<string>("Id")
@@ -381,6 +448,20 @@ namespace EquipmentChecklist.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AdminClearanceNotes")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<bool>("AwaitingAdminClearance")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("ClearedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ClearedByAdminId")
+                        .HasMaxLength(450)
+                        .HasColumnType("character varying(450)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -415,6 +496,10 @@ namespace EquipmentChecklist.Migrations
                         .HasColumnType("character varying(100)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("AwaitingAdminClearance");
+
+                    b.HasIndex("ClearedByAdminId");
 
                     b.HasIndex("MachineNumber")
                         .IsUnique();
@@ -460,6 +545,59 @@ namespace EquipmentChecklist.Migrations
                     b.ToTable("MachineAssignments");
                 });
 
+            modelBuilder.Entity("EquipmentChecklist.Models.Notification", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Body")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<string>("PayloadJson")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ReadAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("RelatedMachineId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("RelatedSubmissionId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("character varying(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("UserId", "CreatedAt");
+
+                    b.ToTable("Notifications");
+                });
+
             modelBuilder.Entity("EquipmentChecklist.Models.OperatorSupervisorAssignment", b =>
                 {
                     b.Property<int>("Id")
@@ -499,9 +637,23 @@ namespace EquipmentChecklist.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<byte[]>("AudioData")
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("AudioMimeType")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
                     b.Property<string>("Notes")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
+
+                    b.Property<byte[]>("PhotoData")
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("PhotoMimeType")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");
@@ -794,6 +946,16 @@ namespace EquipmentChecklist.Migrations
                     b.Navigation("SubmissionItem");
                 });
 
+            modelBuilder.Entity("EquipmentChecklist.Models.Machine", b =>
+                {
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", "ClearedByAdmin")
+                        .WithMany()
+                        .HasForeignKey("ClearedByAdminId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("ClearedByAdmin");
+                });
+
             modelBuilder.Entity("EquipmentChecklist.Models.MachineAssignment", b =>
                 {
                     b.HasOne("EquipmentChecklist.Models.Machine", "Machine")
@@ -817,6 +979,17 @@ namespace EquipmentChecklist.Migrations
                     b.Navigation("Mechanic");
 
                     b.Navigation("Operator");
+                });
+
+            modelBuilder.Entity("EquipmentChecklist.Models.Notification", b =>
+                {
+                    b.HasOne("EquipmentChecklist.Models.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("EquipmentChecklist.Models.OperatorSupervisorAssignment", b =>

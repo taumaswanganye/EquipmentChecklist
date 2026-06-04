@@ -3,9 +3,30 @@
 @{
     ViewData["Title"] = "Defect Orders";
     Layout = "~/Views/Shared/_Layout.cshtml";
-    var unassigned   = ViewBag.Unassigned   as List<DefectOrder> ?? new();
-    var noGoMachines = ViewBag.NoGoMachines as List<Machine>     ?? new();
-    var cartCount    = (int)(ViewBag.CartCount ?? 0);
+    var unassigned        = ViewBag.Unassigned   as List<DefectOrder> ?? new();
+    var noGoMachines      = ViewBag.NoGoMachines as List<Machine>     ?? new();
+    var cartCount         = (int)(ViewBag.CartCount ?? 0);
+    var filter            = (ListFilter)(ViewBag.Filter ?? new ListFilter());
+    var totalMyOrders     = (int)(ViewBag.TotalMyOrders   ?? Model.Count);
+    var totalUnassigned   = (int)(ViewBag.TotalUnassigned ?? unassigned.Count);
+
+    // ── Paging for the "My Active Jobs" section ────────────────────
+    // Variables named `*PageNum` not `*Page` to dodge Razor's @page directive
+    // trap. The controller slices Model to the current page already; we just
+    // render it + a pager strip.
+    var jobsPageNum    = (int)(ViewBag.JobsPage       ?? 1);
+    var jobsTotalPages = (int)(ViewBag.JobsTotalPages ?? 1);
+    var jobsPageSize   = (int)(ViewBag.JobsPageSize   ?? 6);
+    var jobsTotal      = (int)(ViewBag.JobsTotal      ?? Model.Count);
+
+    // Round-trip the filter so paging doesn't blow the search/date scope.
+    // Pager links carry every filter param plus the new jobsPage value.
+    string JobsPageUrl(int p)
+    {
+        var qs = filter.ToQueryString();
+        var sep = string.IsNullOrEmpty(qs) ? "?" : "&";
+        return $"/Mechanic{qs}{sep}jobsPage={p}";
+    }
 }
 
 <!-- Top bar -->
@@ -22,6 +43,22 @@
         }
     </a>
 </div>
+
+@* ───────────── SEARCH + DATE-RANGE BAR ─────────────
+   Applies to BOTH "Assigned to me" and "Unassigned" tables — the supervisor
+   wants a single search across all defects they could touch. *@
+@await Html.PartialAsync("_ListFilterBar", filter,
+    new ViewDataDictionary(ViewData) {
+        { "Placeholder", "Search machine, operator, item, or part…" },
+        { "Action",      "/Mechanic" }
+    })
+
+@if (filter.IsActive)
+{
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
+        Showing @Model.Count of @totalMyOrders assigned, @unassigned.Count of @totalUnassigned unassigned in the current scope.
+    </p>
+}
 
 <!-- ── UNASSIGNED DEFECTS ─────────────────────────────────── -->
 @if (unassigned.Any())
@@ -84,108 +121,358 @@
 }
 
 <!-- ── MY ACTIVE JOBS ─────────────────────────────────────── -->
-<h3 style="font-size:15px;margin-bottom:12px">My Active Jobs (@Model.Count)</h3>
+<div class="maj-head">
+    <h3 class="maj-title">
+        🔧 My Active Jobs
+        <span class="maj-count">@jobsTotal</span>
+    </h3>
+    @if (jobsTotal > 0)
+    {
+        var pending    = Model.Count(d => d.RepairStatus == RepairStatus.Pending);
+        var inProg     = Model.Count(d => d.RepairStatus == RepairStatus.InProgress);
+        var waitParts  = Model.Count(d => d.RepairStatus == RepairStatus.AwaitingParts);
+        <div class="maj-mini-stats">
+            @if (pending > 0)   { <span class="maj-mini pending">⏳ @pending pending</span> }
+            @if (inProg > 0)    { <span class="maj-mini progress">🔧 @inProg in progress</span> }
+            @if (waitParts > 0) { <span class="maj-mini parts">🧰 @waitParts awaiting parts</span> }
+        </div>
+    }
+</div>
 
 @if (!Model.Any())
 {
-    <div class="empty-state">
-        <div class="empty-icon">🔧</div>
+    <div class="maj-empty">
+        <div class="maj-empty-icon">🛠️</div>
         <h3>No active jobs</h3>
         <p>Take an unassigned defect above to get started.</p>
     </div>
 }
 else
 {
-    <div style="display:flex;flex-direction:column;gap:12px">
+    <div class="maj-grid">
         @foreach (var d in Model)
         {
+            // ── Per-card derived state ─────────────────────────────
             var (sc, sl) = d.RepairStatus switch {
-                RepairStatus.Pending       => ("badge-pending", "Pending"),
-                RepairStatus.InProgress    => ("badge-gobut",   "In Progress"),
-                RepairStatus.AwaitingParts => ("badge-gobut",   "Awaiting Parts"),
-                RepairStatus.Completed     => ("badge-go",      "Completed"),
-                _                          => ("badge-pending",  "Unknown")
+                RepairStatus.Pending       => ("maj-st-pending", "Pending"),
+                RepairStatus.InProgress    => ("maj-st-prog",    "In Progress"),
+                RepairStatus.AwaitingParts => ("maj-st-parts",   "Awaiting Parts"),
+                RepairStatus.Completed     => ("maj-st-done",    "Completed"),
+                _                          => ("maj-st-pending", "Unknown")
             };
-            var borderColor = d.SubmissionItem.TemplateItem.IsNoGoItem
-                ? "var(--red-nogo)" : "var(--steel-border)";
+            var isCritical = d.SubmissionItem.TemplateItem.IsNoGoItem;
+            var ageDays    = (int)Math.Floor((DateTime.UtcNow - d.CreatedAt).TotalDays);
+            var ageLabel   = ageDays switch {
+                0 => "Reported today",
+                1 => "Reported 1 day ago",
+                _ => $"Reported {ageDays} days ago"
+            };
+            var ageWarn    = ageDays >= 3;
+            var operatorName = d.Submission.Operator?.FullName ?? "—";
+            var operatorEmp  = d.Submission.Operator?.EmployeeNumber ?? "";
+            var lastActivity = d.ResolvedAt ?? d.CreatedAt;
 
-            <div style="background:var(--steel-mid);border:1px solid @borderColor;border-radius:10px;overflow:hidden">
-                <!-- Job header -->
-                <div style="padding:10px 16px;background:var(--steel-dark);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-                    <div style="display:flex;align-items:center;gap:10px">
-                        <strong>@d.Submission.Machine.MachineNumber</strong>
-                        <span style="color:var(--text-muted);font-size:12px">@d.Submission.Machine.MachineName</span>
-                        @if (d.Submission.Machine.IsImmobilised)
-                        {
-                            <span class="badge badge-nogo" style="font-size:9px">🚫 NO-GO</span>
-                        }
-                    </div>
-                    <span class="badge @sc">@sl</span>
-                </div>
-
-                <div style="padding:14px 16px">
-                    <!-- Defect info -->
-                    <div style="margin-bottom:12px">
-                        <div style="font-size:14px;font-weight:700">
-                            @d.SubmissionItem.TemplateItem.ItemName
-                            @if (d.SubmissionItem.TemplateItem.IsNoGoItem)
+            <div class="maj-card @(isCritical ? "critical" : "")">
+                @* ── Top strip ───────────────────────────────────── *@
+                <div class="maj-top">
+                    <div>
+                        <div class="maj-mnum">@d.Submission.Machine.MachineNumber</div>
+                        <div class="maj-mname">
+                            @d.Submission.Machine.MachineName
+                            @if (!string.IsNullOrEmpty(d.Submission.Machine.TypeName))
                             {
-                                <span style="font-size:10px;color:var(--red-nogo);margin-left:6px">⚠ CRITICAL – NO-GO ITEM</span>
+                                <span class="maj-mtype"> · @d.Submission.Machine.TypeName</span>
                             }
                         </div>
-                        @if (d.SubmissionItem.Notes != null)
+                    </div>
+                    <div class="maj-badges">
+                        @if (d.Submission.Machine.IsImmobilised)
                         {
-                            <p style="font-size:12px;color:var(--amber);font-style:italic;margin-top:3px">
-                                Operator said: "@d.SubmissionItem.Notes"
-                            </p>
+                            <span class="maj-bdg nogo">🚫 NO-GO</span>
                         }
-                        @if (d.PartRequired != null)
+                        <span class="maj-bdg @sc">@sl</span>
+                    </div>
+                </div>
+
+                @* ── Defect line ─────────────────────────────────── *@
+                <div class="maj-defect">
+                    <div class="maj-defect-name">
+                        @d.SubmissionItem.TemplateItem.ItemName
+                        @if (isCritical)
                         {
-                            <p style="font-size:12px;margin-top:4px">
-                                <span style="color:var(--text-muted)">Part ordered:</span>
-                                <strong>@d.PartRequired</strong>
-                                @if (d.PartNumber != null)
-                                {
-                                    <span style="color:var(--accent);margin-left:4px">#@d.PartNumber</span>
-                                }
-                            </p>
+                            <span class="maj-crit">⚠ CRITICAL</span>
                         }
                     </div>
+                    @if (!string.IsNullOrEmpty(d.SubmissionItem.Notes))
+                    {
+                        <p class="maj-quote">"@d.SubmissionItem.Notes"</p>
+                    }
+                </div>
 
-                    <!-- Action buttons -->
-                    <div style="display:flex;gap:8px;flex-wrap:wrap">
-                        <!-- Order Part (always available until completed) -->
-                        @if (d.RepairStatus != RepairStatus.Completed)
+                @* ── Meta strip — operator, dates, age ──────────── *@
+                <div class="maj-meta">
+                    <span class="maj-meta-item">
+                        <span class="maj-meta-l">Operator</span>
+                        <span class="maj-meta-v">@operatorName</span>
+                        @if (!string.IsNullOrEmpty(operatorEmp))
                         {
-                            <form method="post" action="/Mechanic/AddToCart" style="display:inline">
-                                @Html.AntiForgeryToken()
-                                <input type="hidden" name="defectOrderId" value="@d.Id" />
-                                <input type="hidden" name="itemName" value="@d.SubmissionItem.TemplateItem.ItemName" />
-                                <button type="submit" class="btn btn-ghost btn-sm">🛒 Add to Parts Cart</button>
-                            </form>
+                            <span class="maj-meta-sub">#@operatorEmp</span>
+                        }
+                    </span>
+                    <span class="maj-meta-item">
+                        <span class="maj-meta-l">Reported</span>
+                        <span class="maj-meta-v mono">@d.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                        <span class="maj-meta-sub @(ageWarn ? "warn" : "")">@ageLabel</span>
+                    </span>
+                    @if (d.PartRequired != null)
+                    {
+                        <span class="maj-meta-item">
+                            <span class="maj-meta-l">Part ordered</span>
+                            <span class="maj-meta-v">@d.PartRequired</span>
+                            @if (d.PartNumber != null)
+                            {
+                                <span class="maj-meta-sub mono">#@d.PartNumber</span>
+                            }
+                        </span>
+                    }
+                    @if (d.ResolvedAt.HasValue)
+                    {
+                        <span class="maj-meta-item">
+                            <span class="maj-meta-l">Completed</span>
+                            <span class="maj-meta-v mono">@d.ResolvedAt.Value.ToString("yyyy-MM-dd HH:mm")</span>
+                        </span>
+                    }
+                </div>
 
-                            <a href="/Mechanic/OrderPart/@d.Id" class="btn btn-ghost btn-sm">📦 Order Part Directly</a>
-                        }
-
-                        <!-- Mark Fixed & Send to Admin -->
-                        @if (d.RepairStatus != RepairStatus.Completed)
-                        {
-                            <button onclick="markFixed(@d.Id)" class="btn btn-success btn-sm">
-                                ✓ Mark Fixed – Send to Admin
-                            </button>
-                        }
-                        else
-                        {
-                            <span style="font-size:12px;color:var(--green-go);padding:4px 8px">
-                                ✓ Completed @(d.ResolvedAt?.ToString("yyyy-MM-dd") ?? "")
-                            </span>
-                        }
-                    </div>
+                @* ── Action footer ───────────────────────────────── *@
+                <div class="maj-actions">
+                    @if (d.RepairStatus != RepairStatus.Completed)
+                    {
+                        <form method="post" action="/Mechanic/AddToCart" class="maj-form">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="defectOrderId" value="@d.Id" />
+                            <input type="hidden" name="itemName" value="@d.SubmissionItem.TemplateItem.ItemName" />
+                            <button type="submit" class="btn btn-ghost btn-sm">🛒 Add to Cart</button>
+                        </form>
+                        <a href="/Mechanic/OrderPart/@d.Id" class="btn btn-ghost btn-sm">📦 Order Part</a>
+                        <button onclick="markFixed(@d.Id)" class="btn btn-success btn-sm">
+                            ✓ Mark Fixed
+                        </button>
+                    }
+                    else
+                    {
+                        <span class="maj-done">✓ Completed @(d.ResolvedAt?.ToString("yyyy-MM-dd") ?? "")</span>
+                    }
                 </div>
             </div>
         }
     </div>
+
+    @* ── Pager ─────────────────────────────────────────────── *@
+    @if (jobsTotalPages > 1)
+    {
+        var window = 1;
+        var visible = new List<int>();
+        for (int p = 1; p <= jobsTotalPages; p++)
+        {
+            if (p == 1 || p == jobsTotalPages ||
+                (p >= jobsPageNum - window && p <= jobsPageNum + window))
+                visible.Add(p);
+            else if (p == jobsPageNum - window - 1 || p == jobsPageNum + window + 1)
+                visible.Add(-1);
+        }
+        int firstRow = (jobsPageNum - 1) * jobsPageSize + 1;
+        int lastRow  = Math.Min(jobsPageNum * jobsPageSize, jobsTotal);
+
+        <div class="maj-pager">
+            <span class="maj-pager-info">
+                Page @jobsPageNum of @jobsTotalPages
+                <span class="maj-dot-sep">·</span>
+                @firstRow–@lastRow of @jobsTotal
+            </span>
+            <div class="maj-pager-btns">
+                <a href="@JobsPageUrl(Math.Max(1, jobsPageNum - 1))"
+                   class="maj-pg @(jobsPageNum == 1 ? "disabled" : "")"
+                   title="Previous">‹ Prev</a>
+
+                @foreach (var p in visible)
+                {
+                    if (p == -1)
+                    {
+                        <span class="maj-pg dots">…</span>
+                    }
+                    else
+                    {
+                        <a href="@JobsPageUrl(p)"
+                           class="maj-pg @(p == jobsPageNum ? "on" : "")">@p</a>
+                    }
+                }
+
+                <a href="@JobsPageUrl(Math.Min(jobsTotalPages, jobsPageNum + 1))"
+                   class="maj-pg @(jobsPageNum == jobsTotalPages ? "disabled" : "")"
+                   title="Next">Next ›</a>
+            </div>
+        </div>
+    }
 }
+
+<style>
+    /* ── My Active Jobs section ─────────────────────────────── */
+    .maj-head {
+        display:flex; justify-content:space-between; align-items:center;
+        flex-wrap:wrap; gap:10px; margin-bottom:14px;
+    }
+    .maj-title {
+        font-size:16px; font-weight:700; margin:0;
+        display:inline-flex; align-items:center; gap:10px;
+    }
+    .maj-count {
+        background:var(--steel-mid); color:var(--text-primary);
+        padding:2px 10px; border-radius:999px;
+        font-size:12px; font-weight:700; min-width:24px; text-align:center;
+        border:1px solid var(--steel-border);
+    }
+    .maj-mini-stats { display:flex; gap:6px; flex-wrap:wrap; }
+    .maj-mini {
+        font-size:11px; padding:3px 9px; border-radius:5px;
+        border:1px solid; font-weight:600;
+    }
+    .maj-mini.pending  { color:#fbbf24; border-color:#92400e;
+                         background:rgba(245,158,11,.10); }
+    .maj-mini.progress { color:#7dd3fc; border-color:#0ea5e9;
+                         background:rgba(14,165,233,.10); }
+    .maj-mini.parts    { color:#c4b5fd; border-color:#7c3aed;
+                         background:rgba(124,58,237,.10); }
+
+    /* Empty state */
+    .maj-empty {
+        background:var(--steel-mid); border:1px solid var(--steel-border);
+        border-radius:10px; padding:50px 20px; text-align:center;
+        color:var(--text-muted);
+    }
+    .maj-empty-icon { font-size:42px; margin-bottom:10px; }
+    .maj-empty h3 { color:var(--text-primary); font-size:18px; margin:0 0 6px; }
+    .maj-empty p { font-size:13px; margin:0; }
+
+    /* Card grid */
+    .maj-grid {
+        display:grid; grid-template-columns:repeat(auto-fill, minmax(420px, 1fr));
+        gap:14px;
+    }
+    @@media (max-width: 800px) { .maj-grid { grid-template-columns: 1fr; } }
+
+    .maj-card {
+        background:var(--steel-mid);
+        border:1px solid var(--steel-border);
+        border-left:4px solid var(--amber);
+        border-radius:10px;
+        display:flex; flex-direction:column;
+        overflow:hidden;
+        transition:transform .15s, border-color .15s;
+    }
+    .maj-card:hover { transform:translateY(-1px); }
+    .maj-card.critical { border-left-color:var(--red-nogo); }
+
+    .maj-top {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        gap:12px; padding:12px 16px;
+        background:rgba(0,0,0,.18);
+        border-bottom:1px solid var(--steel-border);
+    }
+    .maj-mnum  { font-size:18px; font-weight:800; font-family:var(--font-mono);
+                 color:var(--text-primary); }
+    .maj-mname { font-size:12px; color:var(--text-muted); margin-top:2px; }
+    .maj-mtype { color:#94a3b8; font-style:italic; }
+
+    .maj-badges { display:flex; gap:6px; flex-wrap:wrap; flex-shrink:0; }
+    .maj-bdg {
+        font-size:10px; font-weight:700; letter-spacing:.4px;
+        padding:3px 9px; border-radius:5px; border:1px solid;
+        white-space:nowrap;
+    }
+    .maj-bdg.nogo            { color:#fca5a5; border-color:#ef4444;
+                               background:rgba(239,68,68,.10); }
+    .maj-bdg.maj-st-pending  { color:#fbbf24; border-color:#92400e;
+                               background:rgba(245,158,11,.10); }
+    .maj-bdg.maj-st-prog     { color:#7dd3fc; border-color:#0ea5e9;
+                               background:rgba(14,165,233,.10); }
+    .maj-bdg.maj-st-parts    { color:#c4b5fd; border-color:#7c3aed;
+                               background:rgba(124,58,237,.10); }
+    .maj-bdg.maj-st-done     { color:#86efac; border-color:#16a34a;
+                               background:rgba(34,197,94,.10); }
+
+    .maj-defect {
+        padding:12px 16px;
+        border-bottom:1px solid var(--steel-border);
+    }
+    .maj-defect-name {
+        font-size:14px; font-weight:700; color:var(--text-primary);
+        line-height:1.4;
+    }
+    .maj-crit {
+        margin-left:8px; font-size:9px; font-weight:800;
+        color:#fff; background:#dc2626;
+        padding:2px 7px; border-radius:3px; letter-spacing:.6px;
+    }
+    .maj-quote {
+        margin:6px 0 0; font-size:12px; color:var(--amber);
+        font-style:italic; line-height:1.5;
+    }
+
+    .maj-meta {
+        padding:12px 16px;
+        display:grid; grid-template-columns:repeat(2, 1fr); gap:10px 16px;
+        background:rgba(0,0,0,.08);
+        border-bottom:1px solid var(--steel-border);
+    }
+    @@media (max-width: 540px) { .maj-meta { grid-template-columns: 1fr; } }
+    .maj-meta-item { display:flex; flex-direction:column; gap:1px; }
+    .maj-meta-l {
+        font-size:10px; color:var(--text-muted);
+        text-transform:uppercase; letter-spacing:.5px; font-weight:600;
+    }
+    .maj-meta-v { font-size:13px; font-weight:600; color:var(--text-primary); }
+    .maj-meta-sub { font-size:11px; color:var(--text-muted); }
+    .maj-meta-sub.warn { color:#fbbf24; font-weight:600; }
+    .mono { font-family:var(--font-mono); }
+
+    .maj-actions {
+        padding:12px 16px;
+        display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+    }
+    .maj-form { display:inline; }
+    .maj-done {
+        font-size:12px; color:var(--green-go); font-weight:600;
+        padding:4px 8px;
+    }
+
+    /* ── Pager ────────────────────────────────────────────────── */
+    .maj-pager {
+        margin-top:18px; padding:12px 16px;
+        background:var(--steel-mid); border:1px solid var(--steel-border);
+        border-radius:10px;
+        display:flex; justify-content:space-between; align-items:center;
+        flex-wrap:wrap; gap:10px;
+    }
+    .maj-pager-info { font-size:11px; color:var(--text-muted); }
+    .maj-dot-sep    { color:#475569; margin:0 4px; }
+    .maj-pager-btns { display:flex; align-items:center; gap:4px;
+                      flex-wrap:wrap; }
+    .maj-pg {
+        display:inline-flex; align-items:center; justify-content:center;
+        min-width:32px; padding:5px 10px;
+        border:1px solid var(--steel-border);
+        color:var(--text-primary); background:transparent;
+        border-radius:6px; font-size:12px; text-decoration:none;
+    }
+    .maj-pg:hover:not(.disabled):not(.dots):not(.on)
+                     { background:#1a2638; border-color:var(--amber); }
+    .maj-pg.on       { background:var(--amber); color:#0a1726;
+                       border-color:var(--amber); font-weight:700; }
+    .maj-pg.disabled { opacity:.35; pointer-events:none; }
+    .maj-pg.dots     { border:none; cursor:default; color:#64748b;
+                       padding:5px 4px; min-width:auto; }
+</style>
 
 <!-- ── NO-GO MACHINES (compact) ─────────────────────────── -->
 @if (noGoMachines.Any())

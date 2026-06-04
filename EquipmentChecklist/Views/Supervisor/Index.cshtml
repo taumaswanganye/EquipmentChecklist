@@ -3,10 +3,27 @@
 @{
     ViewData["Title"] = "Supervisor – Sign-Off Queue";
     Layout = "~/Views/Shared/_Layout.cshtml";
-    var mechanics = ViewBag.Mechanics as IList<ApplicationUser> ?? new List<ApplicationUser>();
+    var mechanics       = ViewBag.Mechanics as IList<ApplicationUser> ?? new List<ApplicationUser>();
+    var filter          = (ListFilter)(ViewBag.Filter ?? new ListFilter());
+    var totalUnfiltered = (int)(ViewBag.TotalUnfiltered ?? Model.Count);
 }
 
-@if (!Model.Any())
+@* ───────────── SEARCH + DATE-RANGE BAR ───────────── *@
+@await Html.PartialAsync("_ListFilterBar", filter,
+    new ViewDataDictionary(ViewData) {
+        { "Placeholder", "Search operator name, employee #, or machine…" },
+        { "Action",      "/Supervisor" }
+    })
+
+@if (!Model.Any() && filter.IsActive)
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:56px;margin-bottom:12px">🔍</div>
+        <h2 style="font-size:24px">No matches</h2>
+        <p style="margin-top:8px">No submissions match your search. Try clearing the filters or widening the date range.</p>
+    </div>
+}
+else if (!Model.Any())
 {
     <div style="text-align:center;padding:60px;color:var(--text-muted)">
         <div style="font-size:56px;margin-bottom:12px">✅</div>
@@ -17,7 +34,14 @@
 else
 {
     <div class="alert alert-warning" style="margin-bottom:20px">
-        <strong>@Model.Count submission(s)</strong> require your supervisor sign-off.
+        @if (filter.IsActive)
+        {
+            <text><strong>@Model.Count of @totalUnfiltered submission(s)</strong> match the current scope.</text>
+        }
+        else
+        {
+            <text><strong>@Model.Count submission(s)</strong> require your supervisor sign-off.</text>
+        }
     </div>
 
     @foreach (var s in Model)

@@ -1,0 +1,214 @@
+@using EquipmentChecklist.DTOs
+@using EquipmentChecklist.Mobile.Services
+@inject NotificationService Notifs
+@inject NavigationManager Nav
+@implements IDisposable
+
+@*
+   Renders the 🔔 chip in MainLayout's topbar.
+
+   Behaviour:
+     * Badge shows the unread count from NotificationService.UnreadCount.
+     * Tap to toggle a dropdown listing the most recent notifications.
+     * Each row click navigates to the related submission (when present)
+       and marks the row as read.
+     * "Mark all read" button at the bottom of the dropdown.
+*@
+
+<div class="bell-wrap">
+    <button class="bell" @onclick="ToggleAsync" title="Notifications">
+        🔔
+        @if (Notifs.UnreadCount > 0)
+        {
+            <span class="bell-badge">@(Notifs.UnreadCount > 99 ? "99+" : Notifs.UnreadCount.ToString())</span>
+        }
+    </button>
+
+    @if (open)
+    {
+        <div class="bell-pop" @onclick:stopPropagation="true">
+            <div class="bell-head">
+                <span>Notifications</span>
+                @if (Notifs.UnreadCount > 0)
+                {
+                    <button class="bell-readall" @onclick="MarkAllAsync">Mark all read</button>
+                }
+            </div>
+
+            @if (busy && items is null)
+            {
+                <div class="bell-empty">Loading…</div>
+            }
+            else if (items is null || items.Count == 0)
+            {
+                <div class="bell-empty">No notifications yet.</div>
+            }
+            else
+            {
+                <div class="bell-list">
+                    @foreach (var n in items)
+                    {
+                        <button class="bell-row @(n.ReadAt is null ? "unread" : "")"
+                                @onclick="() => OpenAsync(n)">
+                            <div class="bell-title">@n.Title</div>
+                            @if (!string.IsNullOrEmpty(n.Body))
+                            {
+                                <div class="bell-body">@n.Body</div>
+                            }
+                            <div class="bell-time">@RelativeTime(n.CreatedAt)</div>
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@if (open)
+{
+    @* Tap-anywhere-else to close. Sits behind the popover (z-index lower). *@
+    <div class="bell-scrim" @onclick="Close"></div>
+}
+
+<style>
+    .bell-wrap { position:relative; }
+    .bell      { background:#111c2e; border:1px solid #1f2a3a; color:#cbd5e1;
+                 padding:5px 10px; border-radius:999px; font-size:13px;
+                 cursor:pointer; font-family:inherit; position:relative; }
+    .bell:hover { border-color:#0e9488; }
+    .bell-badge { position:absolute; top:-4px; right:-4px;
+                  background:#dc2626; color:#fff; font-size:10px; font-weight:700;
+                  padding:1px 6px; border-radius:10px; min-width:14px;
+                  text-align:center; line-height:1.3; }
+
+    .bell-scrim { position:fixed; inset:0; z-index:35; }
+    .bell-pop   { position:absolute; right:0; top:42px; z-index:40;
+                  background:#111c2e; border:1px solid #1f2a3a; border-radius:10px;
+                  width:min(360px, 92vw); max-height:60vh; overflow:hidden;
+                  display:flex; flex-direction:column;
+                  box-shadow:0 14px 36px rgba(0,0,0,.45); }
+    .bell-head  { display:flex; justify-content:space-between; align-items:center;
+                  padding:10px 14px; border-bottom:1px solid #1f2a3a;
+                  font-size:12px; color:#cbd5e1; font-weight:700;
+                  letter-spacing:.5px; text-transform:uppercase; }
+    .bell-readall { background:transparent; border:none; color:#7dd3fc;
+                    font-size:11px; cursor:pointer; padding:2px 6px;
+                    font-family:inherit; }
+    .bell-readall:hover { color:#bae6fd; }
+
+    .bell-empty { padding:30px 14px; text-align:center; color:#64748b;
+                  font-size:13px; }
+
+    .bell-list { overflow-y:auto; }
+    .bell-row  { display:block; width:100%; text-align:left;
+                 background:transparent; border:none; cursor:pointer;
+                 padding:10px 14px; border-bottom:1px solid #1a2638;
+                 color:#cbd5e1; font-family:inherit; }
+    .bell-row:hover { background:#0d1729; }
+    .bell-row.unread { background:rgba(13,148,136,.06); }
+    .bell-row.unread .bell-title { color:#e5e7eb; }
+
+    .bell-title { font-size:13px; font-weight:600; color:#cbd5e1; line-height:1.3; }
+    .bell-body  { font-size:11px; color:#94a3b8; margin-top:3px;
+                  line-height:1.4; overflow:hidden;
+                  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+    .bell-time  { font-size:10px; color:#64748b; margin-top:4px;
+                  font-family:ui-monospace,monospace; }
+</style>
+
+@code {
+    private bool                 open;
+    private bool                 busy;
+    private List<NotificationDto>? items;
+
+    protected override void OnInitialized()
+    {
+        Notifs.UnreadCountChanged += OnUnreadChanged;
+        Notifs.Received           += OnReceived;
+    }
+
+    private void OnUnreadChanged(int _)
+        => InvokeAsync(StateHasChanged);
+
+    private void OnReceived(NotificationDto n)
+    {
+        InvokeAsync(() =>
+        {
+            // Prepend to the cached list so re-opening the dropdown shows
+            // the new item without an HTTP round-trip.
+            items ??= new List<NotificationDto>();
+            items.Insert(0, n);
+            StateHasChanged();
+        });
+    }
+
+    private async Task ToggleAsync()
+    {
+        open = !open;
+        if (open && items is null) await ReloadAsync();
+        StateHasChanged();
+    }
+
+    private void Close()
+    {
+        open = false;
+        StateHasChanged();
+    }
+
+    private async Task ReloadAsync()
+    {
+        busy = true;
+        StateHasChanged();
+        try   { items = await Notifs.GetRecentAsync(30); }
+        catch { /* offline */ }
+        finally { busy = false; }
+    }
+
+    private async Task OpenAsync(NotificationDto n)
+    {
+        if (n.ReadAt is null)
+        {
+            n.ReadAt = DateTime.UtcNow;   // optimistic local mark
+            StateHasChanged();
+            await Notifs.MarkReadAsync(n.Id);
+        }
+
+        // Deep-link to the relevant view if we have one.
+        if (n.RelatedSubmissionId.HasValue)
+        {
+            Close();
+            Nav.NavigateTo("/submissions");
+        }
+        else
+        {
+            Close();
+        }
+    }
+
+    private async Task MarkAllAsync()
+    {
+        await Notifs.MarkAllReadAsync();
+        if (items != null)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var n in items) n.ReadAt ??= now;
+        }
+        StateHasChanged();
+    }
+
+    private static string RelativeTime(DateTime utc)
+    {
+        var diff = DateTime.UtcNow - utc;
+        if (diff.TotalMinutes < 1)  return "just now";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours   < 24) return $"{(int)diff.TotalHours}h ago";
+        if (diff.TotalDays    < 7)  return $"{(int)diff.TotalDays}d ago";
+        return utc.ToLocalTime().ToString("yyyy-MM-dd");
+    }
+
+    public void Dispose()
+    {
+        Notifs.UnreadCountChanged -= OnUnreadChanged;
+        Notifs.Received           -= OnReceived;
+    }
+}

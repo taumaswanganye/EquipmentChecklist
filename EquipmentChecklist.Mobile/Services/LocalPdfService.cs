@@ -21,18 +21,21 @@ namespace EquipmentChecklist.Mobile.Services;
 /// </summary>
 public class LocalPdfService
 {
-    private readonly IJSRuntime       _js;
-    private readonly LocalCache       _cache;
-    private readonly SubmissionQueue  _queue;
-    private readonly AuthService      _auth;
+    private readonly IJSRuntime         _js;
+    private readonly LocalCache         _cache;
+    private readonly SubmissionQueue    _queue;
+    private readonly AuthService        _auth;
+    private readonly MineConfigService? _mine;
 
     public LocalPdfService(IJSRuntime js, LocalCache cache,
-                           SubmissionQueue queue, AuthService auth)
+                           SubmissionQueue queue, AuthService auth,
+                           MineConfigService? mine = null)
     {
         _js    = js;
         _cache = cache;
         _queue = queue;
         _auth  = auth;
+        _mine  = mine;
     }
 
     /// <summary>
@@ -97,7 +100,16 @@ public class LocalPdfService
         SyncUserDto              operatorUser,
         string                   mineName)
     {
-        var payload = BuildPayload(req, template, machine, operatorUser, mineName);
+        // Resolve mine-specific labels here in the instance method, then pass
+        // them into the static payload builder. BuildPayload stays static
+        // (no `this`) which makes it trivial to unit-test in isolation.
+        var tagline = string.IsNullOrEmpty(_mine?.Current.Tagline)
+            ? "Pre-Shift Inspection Checklist"
+            : _mine!.Current.Tagline;
+        var compliance = _mine?.Current.ComplianceText ?? "";
+
+        var payload = BuildPayload(
+            req, template, machine, operatorUser, mineName, tagline, compliance);
 
         // Probe first: a clear "library missing" failure is much easier to
         // debug than a generic "interop threw" one.
@@ -158,7 +170,9 @@ public class LocalPdfService
         SyncTemplateDto       template,
         SyncMachineSummaryDto machine,
         SyncUserDto           operatorUser,
-        string                mineName)
+        string                mineName,
+        string                subtitle,
+        string                compliance)
     {
         // Index template items so we can resolve TemplateItemId → name / flags.
         var itemsByTplId = template.Items.ToDictionary(i => i.Id);
@@ -188,10 +202,15 @@ public class LocalPdfService
 
         var submitted = req.SubmittedAt == default ? DateTime.UtcNow : req.SubmittedAt;
 
+        // subtitle + compliance are resolved by the caller from MineConfigService
+        // (see GenerateAndCacheAsync). Keeping them as parameters lets this
+        // method stay static and trivially testable.
+
         return new
         {
             mineName,
-            subtitle      = "Pre-Shift Inspection Checklist",
+            subtitle,
+            compliance,
             machineType   = machine.TypeDisplay,
             machineNumber = machine.MachineNumber,
             machineName   = machine.MachineName,

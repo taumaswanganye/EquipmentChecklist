@@ -1,0 +1,319 @@
+@model List<EquipmentChecklist.Models.AuditEvent>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Audit Trail";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var filter      = (ListFilter)(ViewBag.Filter ?? new ListFilter());
+    // Renamed from `ViewBag.Action` — collided with the _ListFilterBar
+    // partial's ViewData["Action"] (which carries the form's POST URL).
+    var action      = (string?)ViewBag.ActionFilter;
+    var actorEmail  = (string?)ViewBag.Actor;
+    var actions     = (List<string>)(ViewBag.Actions ?? new List<string>());
+    // Renamed from `page` because Razor reserves @page as a directive marker
+    // and treats `@page` ANYWHERE in a file as the directive — even mid-
+    // markup. Using @pageNum sidesteps the tokenizer's special-casing.
+    var pageNum     = (int)(ViewBag.Page ?? 1);
+    var totalPages  = (int)(ViewBag.TotalPages ?? 1);
+    var totalRows   = (int)(ViewBag.TotalRows ?? Model.Count);
+    var windowSize  = (int)(ViewBag.WindowSize ?? Model.Count);
+
+    // Compose query string for pager links — must preserve every filter
+    // so paging doesn't reset the user's narrow scope.
+    string QsExceptPage()
+    {
+        var qs = filter.ToQueryString();
+        if (!string.IsNullOrWhiteSpace(action))
+            qs += (string.IsNullOrEmpty(qs) ? "?" : "&") + "action=" + Uri.EscapeDataString(action);
+        if (!string.IsNullOrWhiteSpace(actorEmail))
+            qs += (string.IsNullOrEmpty(qs) ? "?" : "&") + "actor=" + Uri.EscapeDataString(actorEmail);
+        return qs;
+    }
+    var qs = QsExceptPage();
+    string PageUrl(int p) => $"/Admin/Audit{qs}{(string.IsNullOrEmpty(qs) ? "?" : "&")}page={p}";
+}
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h2 class="page-title">Audit Trail</h2>
+        <p class="page-subtitle">
+            Append-only log of every meaningful action on the system. One row
+            per submission, sign-off, reject, claim, completion, sign-in / out.
+        </p>
+    </div>
+</div>
+
+@* Standard search + date band.
+   Build the ViewData for the partial via indexer assignment instead of a
+   collection initializer — indexer overwrites a duplicate key silently,
+   the initializer would throw "An item with the same key has already been
+   added" if anything upstream had set ViewData["Action"]. *@
+@{
+    var lfbView = new ViewDataDictionary(ViewData);
+    lfbView["Placeholder"] = "Search actor, action, target, or payload…";
+    lfbView["Action"]      = "/Admin/Audit";
+}
+@await Html.PartialAsync("_ListFilterBar", filter, lfbView)
+
+@* Action-name dropdown + per-actor refinement. Submitted as GET so the URL
+   carries the entire filter state — bookmark-friendly. *@
+<form method="get" action="/Admin/Audit" class="audit-refine">
+    @* Forward the search/date state so this form doesn't blow away the
+       FilterBar's selection on submit. *@
+    @if (!string.IsNullOrWhiteSpace(filter.Search))   { <input type="hidden" name="q"      value="@filter.Search" /> }
+    @if (filter.From.HasValue)                        { <input type="hidden" name="from"   value="@filter.From.Value.ToString("yyyy-MM-dd")" /> }
+    @if (filter.To.HasValue)                          { <input type="hidden" name="to"     value="@filter.To.Value.ToString("yyyy-MM-dd")" /> }
+    @if (!string.IsNullOrWhiteSpace(filter.Preset))   { <input type="hidden" name="preset" value="@filter.Preset" /> }
+
+    <div class="audit-refine-row">
+        <label class="audit-lbl">Action</label>
+        <select name="action" class="audit-sel">
+            <option value="">(any)</option>
+            @foreach (var a in actions)
+            {
+                <option value="@a" selected="@(a == action ? "selected" : null)">@a</option>
+            }
+        </select>
+
+        <label class="audit-lbl">Actor email</label>
+        <input type="search" name="actor" value="@actorEmail" placeholder="sipho@belfast.co.za"
+               class="audit-inp" />
+
+        <button type="submit" class="btn btn-ghost">Apply</button>
+        @if (!string.IsNullOrWhiteSpace(action) || !string.IsNullOrWhiteSpace(actorEmail))
+        {
+            <a href="@($"/Admin/Audit{filter.ToQueryString()}")" class="lfb-clear">✕ Clear refinement</a>
+        }
+    </div>
+</form>
+
+@if (Model.Count == 0)
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">📜</div>
+        <p>No audit events match this scope. Try widening the date range above.</p>
+    </div>
+}
+else
+{
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+        Showing @((pageNum - 1) * 50 + 1)–@Math.Min(pageNum * 50, totalRows) of @totalRows
+        @if (windowSize == 5000) { <text>(window capped at 5000 — narrow the date range to see older rows).</text> }
+    </p>
+
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:10px;overflow:hidden">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>When (server)</th>
+                    <th>Actor</th>
+                    <th>Action</th>
+                    <th>Target</th>
+                    <th>Detail</th>
+                    <th>From</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var e in Model)
+                {
+                    var badgeClass = ActionBadgeClass(e.Action);
+                    <tr>
+                        <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted);white-space:nowrap">
+                            @e.OccurredAtServer.ToString("yyyy-MM-dd HH:mm:ss")
+                            @if (e.OccurredAtClient != default &&
+                                 Math.Abs((e.OccurredAtServer - e.OccurredAtClient).TotalSeconds) > 30)
+                            {
+                                <div style="font-size:10px;color:#f59e0b" title="Client clock differed from server">
+                                    client: @e.OccurredAtClient.ToString("HH:mm:ss")
+                                </div>
+                            }
+                        </td>
+                        <td style="font-size:13px">
+                            @if (!string.IsNullOrWhiteSpace(e.ActorName))
+                            {
+                                <strong>@e.ActorName</strong>
+                                <div style="font-size:11px;color:var(--text-muted)">
+                                    @e.ActorEmail
+                                    @if (!string.IsNullOrEmpty(e.ActorRole))
+                                    {
+                                        <span style="margin-left:4px;font-weight:600;color:var(--amber)">· @e.ActorRole</span>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <span style="color:var(--text-muted)">— system —</span>
+                            }
+                        </td>
+                        <td><span class="audit-badge @badgeClass">@e.Action</span></td>
+                        <td style="font-size:12px;color:var(--text-muted);white-space:nowrap">
+                            @if (!string.IsNullOrEmpty(e.TargetType))
+                            {
+                                @e.TargetType<text> </text>
+                                @if (e.TargetId.HasValue)
+                                {
+                                    var link = TargetLink(e.TargetType, e.TargetId.Value);
+                                    if (link != null)
+                                    {
+                                        <a href="@link" style="color:var(--amber);font-family:var(--font-mono)">#@e.TargetId</a>
+                                    }
+                                    else
+                                    {
+                                        <span style="font-family:var(--font-mono)">#@e.TargetId</span>
+                                    }
+                                }
+                            }
+                        </td>
+                        <td style="font-size:11px;color:#cbd5e1;max-width:340px">
+                            @if (!string.IsNullOrEmpty(e.PayloadJson))
+                            {
+                                <code style="font-family:var(--font-mono);white-space:pre-wrap;word-break:break-word">@e.PayloadJson</code>
+                            }
+                        </td>
+                        <td style="font-size:11px;color:var(--text-muted)">
+                            <span class="device-pill device-@e.DeviceKind">@e.DeviceKind</span>
+                            @if (!string.IsNullOrEmpty(e.IpAddress))
+                            {
+                                <div style="font-family:var(--font-mono);font-size:10px">@e.IpAddress</div>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        @if (totalPages > 1)
+        {
+            // Windowed page-list: show 1, the last page, and ±1 around the
+            // current page. -1 sentinels render as ellipses (…). Matches
+            // the MySubmissions / SignOffQueue pager style on mobile.
+            var window = 1;
+            var visible = new List<int>();
+            for (int p = 1; p <= totalPages; p++)
+            {
+                if (p == 1 || p == totalPages ||
+                    (p >= pageNum - window && p <= pageNum + window))
+                    visible.Add(p);
+                else if (p == pageNum - window - 1 || p == pageNum + window + 1)
+                    visible.Add(-1);
+            }
+
+            <div class="audit-pager">
+                <span class="audit-pager-info">
+                    Page @pageNum of @totalPages
+                    <span style="color:#475569;margin:0 4px">·</span>
+                    @((pageNum - 1) * 50 + 1)–@Math.Min(pageNum * 50, totalRows) of @totalRows
+                </span>
+                <div class="audit-pager-btns">
+                    <a href="@PageUrl(Math.Max(1, pageNum - 1))"
+                       class="audit-pg @(pageNum == 1 ? "disabled" : "")"
+                       title="Previous page">‹ Prev</a>
+
+                    @foreach (var p in visible)
+                    {
+                        if (p == -1)
+                        {
+                            <span class="audit-pg dots">…</span>
+                        }
+                        else
+                        {
+                            <a href="@PageUrl(p)"
+                               class="audit-pg @(p == pageNum ? "on" : "")">@p</a>
+                        }
+                    }
+
+                    <a href="@PageUrl(Math.Min(totalPages, pageNum + 1))"
+                       class="audit-pg @(pageNum == totalPages ? "disabled" : "")"
+                       title="Next page">Next ›</a>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<style>
+    .audit-refine { background:var(--steel-mid); border:1px solid var(--steel-border);
+                    border-radius:10px; padding:10px 12px; margin-bottom:18px; }
+    .audit-refine-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .audit-lbl  { font-size:10px; color:var(--text-muted); letter-spacing:.4px; font-weight:600; }
+    .audit-sel, .audit-inp {
+        background:#111c2e; border:1px solid var(--steel-border); color:var(--text-primary);
+        padding:6px 10px; border-radius:6px; font-size:12px; font-family:inherit;
+        outline:none; color-scheme:dark;
+    }
+    .audit-sel { min-width:200px; }
+    .audit-inp { min-width:220px; }
+    .audit-sel:focus, .audit-inp:focus { border-color:var(--amber); }
+
+    .audit-badge { display:inline-block; padding:3px 10px; border-radius:5px;
+                   font-size:10px; font-weight:700; letter-spacing:.4px;
+                   font-family:var(--font-mono);
+                   border:1px solid; white-space:nowrap; }
+    .audit-badge.audit-submission { color:#7dd3fc; border-color:#0ea5e9; background:rgba(14,165,233,.08); }
+    .audit-badge.audit-signoff    { color:#86efac; border-color:#16a34a; background:rgba(22,163,74,.08); }
+    .audit-badge.audit-reject     { color:#fca5a5; border-color:#dc2626; background:rgba(220,38,38,.08); }
+    .audit-badge.audit-defect     { color:#fdba74; border-color:#ea580c; background:rgba(234,88,12,.08); }
+    .audit-badge.audit-machine    { color:#c4b5fd; border-color:#7c3aed; background:rgba(124,58,237,.08); }
+    .audit-badge.audit-user       { color:#cbd5e1; border-color:#475569; background:rgba(71,85,105,.08); }
+    .audit-badge.audit-generic    { color:#cbd5e1; border-color:#334155; background:rgba(51,65,85,.08); }
+
+    .device-pill { display:inline-block; padding:1px 7px; border-radius:4px;
+                   font-size:10px; font-weight:700; letter-spacing:.3px; }
+    .device-web      { background:rgba(14,165,233,.18); color:#7dd3fc; }
+    .device-android  { background:rgba(34,197,94,.18);  color:#86efac; }
+    .device-windows  { background:rgba(148,163,184,.18);color:#cbd5e1; }
+
+    .btn.disabled { opacity:.4; pointer-events:none; }
+
+    /* ── Pager ───────────────────────────────────────────────────────
+       Numbered page chips with a window of 1 around the current page,
+       collapsing the middle with ellipses. Same visual language as the
+       mobile pagers (MySubmissions, SignOffQueue) so admins moving
+       between web + mobile see consistent affordances. */
+    .audit-pager      { display:flex; justify-content:space-between;
+                        align-items:center; padding:12px 16px;
+                        background:#0d1729;
+                        border-top:1px solid var(--steel-border);
+                        flex-wrap:wrap; gap:10px; }
+    .audit-pager-info { font-size:11px; color:var(--text-muted); }
+    .audit-pager-btns { display:flex; align-items:center; gap:4px;
+                        flex-wrap:wrap; }
+    .audit-pg         { display:inline-flex; align-items:center;
+                        justify-content:center; min-width:32px;
+                        padding:5px 10px; border:1px solid var(--steel-border);
+                        color:var(--text-primary); background:transparent;
+                        border-radius:6px; font-size:12px; font-family:inherit;
+                        text-decoration:none; cursor:pointer; }
+    .audit-pg:hover:not(.disabled):not(.dots):not(.on)
+                      { background:#1a2638; border-color:var(--amber); }
+    .audit-pg.on      { background:var(--amber); color:#0a1726;
+                        border-color:var(--amber); font-weight:700; }
+    .audit-pg.disabled{ opacity:.35; pointer-events:none; }
+    .audit-pg.dots    { border:none; cursor:default; color:#64748b;
+                        padding:5px 4px; min-width:auto; }
+</style>
+
+@functions {
+    // Maps an action prefix to a colour class. Keeps the markup compact by
+    // not hardcoding a switch in the foreach.
+    static string ActionBadgeClass(string action)
+    {
+        if (string.IsNullOrEmpty(action)) return "audit-generic";
+        if (action.StartsWith("submission.signoff")) return "audit-signoff";
+        if (action.StartsWith("submission.reject"))  return "audit-reject";
+        if (action.StartsWith("submission."))        return "audit-submission";
+        if (action.StartsWith("defect."))            return "audit-defect";
+        if (action.StartsWith("machine."))           return "audit-machine";
+        if (action.StartsWith("user."))              return "audit-user";
+        return "audit-generic";
+    }
+
+    // Hyperlink to the related entity when we know one — keeps the trail
+    // walkable in two clicks.
+    static string? TargetLink(string targetType, long targetId) => targetType switch
+    {
+        "Submission"  => $"/Checklist/Result/{targetId}",
+        "DefectOrder" => $"/Mechanic",   // no per-order detail page on web yet
+        _             => null
+    };
+}

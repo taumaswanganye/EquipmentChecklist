@@ -3,6 +3,8 @@
 @{
     ViewData["Title"] = "My Submissions";
     Layout = "~/Views/Shared/_Layout.cshtml";
+    var filter           = (ListFilter)(ViewBag.Filter ?? new ListFilter());
+    var totalUnfiltered  = (int)(ViewBag.TotalUnfiltered ?? Model.Count);
 }
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px">
@@ -16,7 +18,22 @@
     }
 </div>
 
-@if (!Model.Any())
+@* ───────────── SEARCH + DATE-RANGE BAR ───────────── *@
+@await Html.PartialAsync("_ListFilterBar", filter,
+    new ViewDataDictionary(ViewData) {
+        { "Placeholder", "Search machine number, name, or operator…" },
+        { "Action",      "/Checklist/History" }
+    })
+
+@if (!Model.Any() && filter.IsActive)
+{
+    <div class="empty-state">
+        <div class="empty-icon">🔍</div>
+        <h3>No matches</h3>
+        <p>No submissions match your search. Try clearing the filters or widening the date range.</p>
+    </div>
+}
+else if (!Model.Any())
 {
     <div class="empty-state">
         <div class="empty-icon">📋</div>
@@ -133,6 +150,13 @@ else
     </div>
 
     <p style="font-size:12px;color:var(--text-muted);margin-top:12px">
-        Showing @Model.Count most recent submissions.
+        @if (filter.IsActive)
+        {
+            <text>Showing @Model.Count of @totalUnfiltered submissions in the current scope.</text>
+        }
+        else
+        {
+            <text>Showing @Model.Count most recent submissions.</text>
+        }
     </p>
 }

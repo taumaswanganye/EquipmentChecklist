@@ -31,6 +31,13 @@ public class AuthService
     public bool         IsUnlocked  { get; private set; }
     public event Action? AuthChanged;
 
+    /// <summary>Fires the moment a successful sign-in finishes (online or
+    /// offline). NotificationService uses this to kick the SignalR connection.</summary>
+    public event Action? SignedIn;
+    /// <summary>Fires on explicit sign-out. NotificationService stops the
+    /// SignalR connection so it doesn't reconnect with a stale token.</summary>
+    public event Action? SignedOut;
+
     public bool IsSignedIn => CurrentUser != null && IsUnlocked;
 
     public AuthService(BiometricUnlock biometric, LocalCache cache)
@@ -132,6 +139,7 @@ public class AuthService
         CurrentUser = login.User;
         IsUnlocked  = true;
         AuthChanged?.Invoke();
+        SignedIn?.Invoke();
     }
 
     /// <summary>Verify password against the LocalCache PBKDF2 hash; rehydrate
@@ -171,6 +179,7 @@ public class AuthService
         CurrentUser = profile;
         IsUnlocked  = true;
         AuthChanged?.Invoke();
+        SignedIn?.Invoke();
         return OfflineSignInResult.Success;
     }
 
@@ -180,6 +189,7 @@ public class AuthService
         CurrentUser = null;
         IsUnlocked  = false;
         AuthChanged?.Invoke();
+        SignedOut?.Invoke();
         return Task.CompletedTask;
     }
 

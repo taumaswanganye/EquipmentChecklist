@@ -374,3 +374,134 @@ public class MechanicStatsDto
     public int CompletedToday { get; set; }
     public int NoGoMachines   { get; set; }
 }
+
+/// <summary>
+/// Site-specific labels the mobile app reads on sign-in via
+/// <c>GET /api/sync/mine</c>. Same fields as the server's MineSettings —
+/// kept in <c>Shared</c> so both sides bind to the same shape without
+/// duplicating it.
+/// </summary>
+public class MineDto
+{
+    public string Name           { get; set; } = "";
+    public string ShortName      { get; set; } = "";
+    public string Tagline        { get; set; } = "";
+    public string ComplianceText { get; set; } = "";
+}
+
+/// <summary>
+/// One row in the notification inbox feed. Read by the mobile bell-icon
+/// dropdown via <c>GET /api/sync/notifications</c>.
+/// </summary>
+public class NotificationDto
+{
+    public int      Id                  { get; set; }
+    public string   Kind                { get; set; } = "";
+    public string   Title               { get; set; } = "";
+    public string?  Body                { get; set; }
+    public int?     RelatedSubmissionId { get; set; }
+    public int?     RelatedMachineId    { get; set; }
+    public DateTime CreatedAt           { get; set; }
+    public DateTime? ReadAt             { get; set; }
+}
+
+// ─── Audit trail (MHSA-style append-only event log) ───────────────────────────
+//
+// Append-only: never updated or deleted. Every meaningful action on the
+// system writes one row. Mobile-originated events buffer locally in
+// AuditQueue and ship to /api/sync/audit when the device is online.
+//
+// Naming: action names use the pattern "&lt;subject&gt;.&lt;verb&gt;" (lower-case,
+// dot-separated) so they group cleanly in filters and ad-hoc SQL queries.
+// Add new constants here rather than passing magic strings — typos in
+// audit names are silently undetectable for months otherwise.
+
+/// <summary>Stable list of action names recognised by the audit pipeline.
+/// Server + mobile must agree on these strings; using the constant prevents
+/// drift between callers.</summary>
+public static class AuditActions
+{
+    // Submission lifecycle
+    public const string SubmissionCreated  = "submission.created";
+    public const string SubmissionSignedOff = "submission.signoff";
+    public const string SubmissionRejected = "submission.reject";
+    public const string SubmissionViewedPdf = "submission.viewpdf";
+
+    // Defect / repair lifecycle
+    public const string DefectCreated      = "defect.created";
+    public const string DefectClaimed      = "defect.claimed";
+    public const string DefectPartOrdered  = "defect.part_ordered";
+    public const string DefectCompleted    = "defect.completed";
+
+    // Machine lifecycle
+    public const string MachineImmobilised = "machine.immobilised";
+    public const string MachineReleased    = "machine.released";
+
+    // Auth lifecycle
+    public const string UserSignedIn          = "user.signin";
+    public const string UserSignedInOffline   = "user.signin_offline";
+    public const string UserSignedOut         = "user.signout";
+    public const string UserBiometricUnlocked = "user.biometric_unlock";
+}
+
+/// <summary>
+/// Wire shape for an audit event. Used both for server-internal logging
+/// and for the mobile → server batch upload at <c>POST /api/sync/audit</c>.
+///
+/// <para>The split between <see cref="OccurredAtClient"/> and
+/// <see cref="OccurredAtServer"/> is deliberate: mobile devices set the
+/// former from their (possibly wrong) clock, the server stamps the latter
+/// when it persists the row. The two together let an investigator answer
+/// "what time did the operator think it was when they signed off" vs
+/// "what time did the server see the action".</para>
+/// </summary>
+public class AuditEventDto
+{
+    /// <summary>Action constant from <see cref="AuditActions"/>.</summary>
+    public string Action { get; set; } = "";
+
+    /// <summary>What kind of thing the action targets — "Submission",
+    /// "DefectOrder", "Machine", "User", or null for global events.</summary>
+    public string? TargetType { get; set; }
+
+    /// <summary>Primary key of the target row. Null for global events.</summary>
+    public long? TargetId { get; set; }
+
+    /// <summary>UTC timestamp on the device that captured the event.</summary>
+    public DateTime OccurredAtClient { get; set; }
+
+    /// <summary>"web", "android", or "windows" — recorded by the originating
+    /// client so the admin trail shows which surface did it.</summary>
+    public string DeviceKind { get; set; } = "web";
+
+    /// <summary>Optional structured detail (JSON-serialisable). Stored as
+    /// jsonb on Postgres so the admin can query into it later.</summary>
+    public string? PayloadJson { get; set; }
+}
+
+/// <summary>Batch wrapper for mobile uploads — one HTTP round-trip drains
+/// many queued events.</summary>
+public class AuditEventBatchRequest
+{
+    public List<AuditEventDto> Events { get; set; } = new();
+}
+
+/// <summary>Server-projected shape for the admin browse view. Carries the
+/// resolved actor name + role snapshot so an old row still makes sense
+/// even after the user's role changes or they're deleted.</summary>
+public class AuditEventViewDto
+{
+    public long      Id               { get; set; }
+    public string?   ActorUserId      { get; set; }
+    public string?   ActorName        { get; set; }
+    public string?   ActorEmail       { get; set; }
+    public string?   ActorRole        { get; set; }
+    public string    Action           { get; set; } = "";
+    public string?   TargetType       { get; set; }
+    public long?     TargetId         { get; set; }
+    public string?   PayloadJson      { get; set; }
+    public DateTime  OccurredAtClient { get; set; }
+    public DateTime  OccurredAtServer { get; set; }
+    public string    DeviceKind       { get; set; } = "web";
+    public string?   IpAddress        { get; set; }
+}

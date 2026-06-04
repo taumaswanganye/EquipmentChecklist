@@ -109,6 +109,44 @@ public class SubmissionQueue
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Drop rows whose <see cref="PendingSubmission.QueuedAt"/> is older than
+    /// <paramref name="maxAge"/>. Returns the number of rows dropped + the
+    /// timestamp of the oldest surviving row.
+    ///
+    /// <para>The intent is bounded growth: a phone offline for months
+    /// (vacation, lost device, retired-but-not-wiped) won't accumulate a
+    /// queue that eventually OOMs SQLite or grinds it to a crawl. Sixty days
+    /// is the documented operational expectation in mining environments —
+    /// anything older than that almost certainly references a machine /
+    /// template / supervisor that's no longer valid anyway.</para>
+    ///
+    /// <para>This is destructive. Callers (currently
+    /// <see cref="SyncWorker.PruneStaleQueuesAsync"/>) surface a warning
+    /// when <c>Dropped</c> &gt; 0 so the operator knows their old work
+    /// didn't make it to the server.</para>
+    /// </summary>
+    public async Task<PruneResult> PruneOldAsync(TimeSpan maxAge)
+    {
+        await EnsureInitAsync();
+        var cutoff = DateTime.UtcNow - maxAge;
+
+        var stale = await _db.Table<PendingSubmission>()
+            .Where(p => p.QueuedAt < cutoff)
+            .ToListAsync();
+        foreach (var s in stale)
+            try { await _db.DeleteAsync(s); } catch { /* tolerate races */ }
+
+        DateTime? oldest = null;
+        var survivor = await _db.Table<PendingSubmission>()
+            .OrderBy(p => p.QueuedAt)
+            .FirstOrDefaultAsync();
+        if (survivor != null) oldest = survivor.QueuedAt;
+
+        if (stale.Count > 0) Changed?.Invoke();
+        return new PruneResult(stale.Count, oldest);
+    }
+
     [Table("pending_submissions")]
     public class PendingSubmission
     {

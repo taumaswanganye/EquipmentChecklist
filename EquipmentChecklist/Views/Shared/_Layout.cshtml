@@ -1,8 +1,11 @@
 @using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
 @using EquipmentChecklist.Models
+@using EquipmentChecklist.Data
 @inject SignInManager<ApplicationUser> SignInManager
 @inject UserManager<ApplicationUser> UserMgr
 @inject IWebHostEnvironment Env
+@inject ApplicationDbContext Db
 @{
     ApplicationUser? currentUser = null;
     if (SignInManager.IsSignedIn(User))
@@ -18,6 +21,13 @@
     var isMechanic   = User.IsInRole("Mechanic")   || isAdmin;
     var isOperator   = User.IsInRole("Operator");
     var path         = Context.Request.Path.Value ?? "";
+
+    // Pending-clearance count for the admin sidebar badge. One indexed
+    // COUNT(*) query, cheap to run on every layout render. Skipped for
+    // non-admins to save the round-trip.
+    var pendingClearances = isAdmin
+        ? await Db.Machines.AsNoTracking().CountAsync(m => m.AwaitingAdminClearance)
+        : 0;
 }
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -30,6 +40,79 @@
     @* Phase 4 · PWA: manifest enables 'Add to home screen' so operators can install the checklist app. *@
     <link rel="manifest" href="~/manifest.webmanifest" />
     <meta name="theme-color" content="#1f3a93" />
+    <style>
+        /* Notifications bell + dropdown. Inlined here rather than in
+           site.css because the bell is layout-scoped only and changes when
+           the layout changes — keeping the styles next to the markup makes
+           the relationship discoverable. */
+        .notif-wrap { position: relative; margin-right: 10px; }
+        .notif-btn  {
+            background: var(--steel-mid); border: 1px solid var(--steel-border);
+            color: var(--text-primary); font-size: 16px; padding: 6px 10px;
+            border-radius: 999px; cursor: pointer; position: relative;
+        }
+        .notif-btn:hover { border-color: var(--amber); }
+        .notif-badge {
+            position: absolute; top: -4px; right: -4px;
+            background: #ef4444; color: #fff;
+            font-size: 10px; font-weight: 700; line-height: 1;
+            padding: 2px 5px; border-radius: 999px;
+            min-width: 16px; text-align: center;
+        }
+        .notif-dropdown {
+            position: absolute; top: calc(100% + 8px); right: 0;
+            width: 360px; max-width: 92vw;
+            background: var(--steel-mid); border: 1px solid var(--steel-border);
+            border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.45);
+            z-index: 80; overflow: hidden;
+        }
+        .notif-head {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 14px; border-bottom: 1px solid var(--steel-border);
+            font-size: 13px;
+        }
+        .notif-mark {
+            background: transparent; border: none; color: var(--amber);
+            font-size: 11px; cursor: pointer; padding: 4px 6px;
+            border-radius: 4px;
+        }
+        .notif-mark:hover { background: var(--amber-glow); }
+        .notif-list { max-height: 420px; overflow-y: auto; }
+        .notif-empty {
+            padding: 30px 14px; text-align: center;
+            color: var(--text-muted); font-size: 12px;
+        }
+        .notif-item {
+            display: flex; gap: 10px; padding: 10px 14px;
+            border-bottom: 1px solid #1a2638; cursor: pointer;
+        }
+        .notif-item:last-child { border-bottom: none; }
+        .notif-item:hover { background: #0d1729; }
+        .notif-item.unread { background: rgba(14,148,136,.06); }
+        .notif-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            flex-shrink: 0; margin-top: 6px;
+        }
+        .notif-body { flex: 1; min-width: 0; }
+        .notif-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+        .notif-sub   { font-size: 11px; color: var(--text-muted); margin-top: 2px;
+                       line-height: 1.5; word-break: break-word; }
+        .notif-time  { font-size: 10px; color: #64748b; margin-top: 4px;
+                       font-family: var(--font-mono); }
+
+        /* Sidebar count badge — appears on nav items with pending counts
+           (Pending Clearance, in future possibly Sign-Off Queue, etc.).
+           Amber so it reads as "action needed" without screaming red. */
+        .nav-item { position: relative; }
+        .nav-item.has-badge { color: #fbbf24; }
+        .nav-badge {
+            margin-left: auto;
+            background: #f59e0b; color: #0a1726;
+            font-size: 10px; font-weight: 800;
+            padding: 2px 7px; border-radius: 999px;
+            min-width: 18px; text-align: center;
+        }
+    </style>
 </head>
 <body>
 <div class="app-shell">
@@ -82,6 +165,28 @@
                         <span id="voucherText">…</span>
                     </div>
                 }
+
+                <!-- Notifications bell + dropdown.
+                     Cookie auth works on /api/sync/notifications via the
+                     "multi" auth scheme in Program.cs, so we don't need a
+                     parallel /Notifications MVC controller — the JSON API
+                     does the work and the markup here just renders it. -->
+                <div class="notif-wrap" id="notifWrap">
+                    <button type="button" class="notif-btn" id="notifBtn"
+                            title="Notifications">
+                        🔔
+                        <span class="notif-badge" id="notifBadge" style="display:none">0</span>
+                    </button>
+                    <div class="notif-dropdown" id="notifMenu" style="display:none">
+                        <div class="notif-head">
+                            <strong>Notifications</strong>
+                            <button type="button" class="notif-mark" id="notifMarkAll">Mark all read</button>
+                        </div>
+                        <div class="notif-list" id="notifList">
+                            <div class="notif-empty">Loading…</div>
+                        </div>
+                    </div>
+                </div>
 
                 <!-- User dropdown -->
                 <div class="user-dropdown-wrap" id="userDropWrap">
@@ -199,8 +304,20 @@
                 <a href="/Admin/IconLibrary" class="nav-item @(path.StartsWith("/Admin/IconLibrary")?"active":"")">
                     <span class="nav-icon">🖼️</span> Icon Library
                 </a>
+                <a href="/Admin/PendingClearances"
+                   class="nav-item @(path.StartsWith("/Admin/PendingClear")?"active":"") @(pendingClearances > 0 ? "has-badge" : "")"
+                   title="Machines awaiting your clearance after repair">
+                    <span class="nav-icon">⏳</span> Pending Clearance
+                    @if (pendingClearances > 0)
+                    {
+                        <span class="nav-badge">@pendingClearances</span>
+                    }
+                </a>
                 <a href="/Admin/Reports" class="nav-item @(path.StartsWith("/Admin/Report")?"active":"")">
                     <span class="nav-icon">📈</span> Reports
+                </a>
+                <a href="/Admin/Audit" class="nav-item @(path.StartsWith("/Admin/Audit")?"active":"")">
+                    <span class="nav-icon">📜</span> Audit Trail
                 </a>
 
                 @if (Env.IsDevelopment())
@@ -259,6 +376,134 @@ if (dropBtn) {
     });
     document.addEventListener('click', () => dropMenu?.classList.remove('open'));
 }
+
+// ── Notifications bell ────────────────────────────────────
+// Polls the API for unread count every 30s, fetches the list when opened.
+// The cookie auth on /api/sync/notifications works because the multi
+// auth-scheme policy in Program.cs accepts both JWT and cookies. No JS
+// SignalR client here — for the web we accept the 30s delay; the bell is
+// "good enough for desk-bound supervisors", and avoids dragging the
+// SignalR client lib onto every page just for this dropdown.
+(function notifInit() {
+    const btn   = document.getElementById('notifBtn');
+    const menu  = document.getElementById('notifMenu');
+    const list  = document.getElementById('notifList');
+    const badge = document.getElementById('notifBadge');
+    const mark  = document.getElementById('notifMarkAll');
+    if (!btn || !menu) return;
+
+    let pollTimer = null;
+
+    async function fetchUnread() {
+        try {
+            const r = await fetch('/api/sync/notifications/unread-count',
+                { credentials: 'same-origin' });
+            if (!r.ok) return;
+            const n = await r.json();
+            // Endpoint may return either a bare number or {count: N}; tolerate both.
+            const count = (typeof n === 'number') ? n : (n.count ?? n.Count ?? 0);
+            if (count > 0) {
+                badge.textContent = count > 99 ? '99+' : String(count);
+                badge.style.display = '';
+            } else {
+                badge.style.display = 'none';
+            }
+        } catch { /* offline — leave existing badge */ }
+    }
+
+    async function fetchList() {
+        list.innerHTML = '<div class="notif-empty">Loading…</div>';
+        try {
+            const r = await fetch('/api/sync/notifications?take=30',
+                { credentials: 'same-origin' });
+            if (!r.ok) {
+                list.innerHTML = '<div class="notif-empty">Couldn\'t load notifications.</div>';
+                return;
+            }
+            const items = await r.json();
+            if (!Array.isArray(items) || items.length === 0) {
+                list.innerHTML = '<div class="notif-empty">You\'re all caught up.</div>';
+                return;
+            }
+            list.innerHTML = items.map(n => renderItem(n)).join('');
+            // Wire per-item click to mark-read then navigate (if related).
+            list.querySelectorAll('[data-notif-id]').forEach(el => {
+                el.addEventListener('click', async () => {
+                    const id = el.getAttribute('data-notif-id');
+                    try {
+                        await fetch(`/api/sync/notifications/${id}/read`,
+                            { method: 'POST', credentials: 'same-origin' });
+                    } catch { }
+                    const sub = el.getAttribute('data-related-sub');
+                    if (sub) location.href = `/Checklist/Result/${sub}`;
+                    else fetchUnread();
+                });
+            });
+        } catch {
+            list.innerHTML = '<div class="notif-empty">Couldn\'t load notifications.</div>';
+        }
+    }
+
+    function renderItem(n) {
+        const id      = n.id ?? n.Id;
+        const kind    = (n.kind ?? n.Kind ?? '').toLowerCase();
+        const title   = escape(n.title ?? n.Title ?? '');
+        const body    = escape(n.body  ?? n.Body  ?? '');
+        const at      = new Date(n.createdAt ?? n.CreatedAt);
+        const sub     = n.relatedSubmissionId ?? n.RelatedSubmissionId ?? '';
+        const isUnread= !(n.readAt ?? n.ReadAt);
+        // Per-kind dot colour so conflict.rejected stands out from approvals.
+        const dot     = kind.startsWith('conflict')    ? '#ef4444'
+                      : kind.startsWith('submission.approved') ? '#22c55e'
+                      : kind.startsWith('submission.rejected') ? '#f97316'
+                      : kind.startsWith('submission.')         ? '#06b6d4'
+                      : kind.startsWith('defect')              ? '#8b5cf6'
+                      : '#64748b';
+        return `
+            <div class="notif-item ${isUnread ? 'unread' : ''}"
+                 data-notif-id="${id}"
+                 ${sub ? `data-related-sub="${sub}"` : ''}>
+                <span class="notif-dot" style="background:${dot}"></span>
+                <div class="notif-body">
+                    <div class="notif-title">${title}</div>
+                    ${body ? `<div class="notif-sub">${body}</div>` : ''}
+                    <div class="notif-time">${at.toLocaleString()}</div>
+                </div>
+            </div>`;
+    }
+
+    function escape(s) {
+        return String(s).replace(/[&<>"']/g, c =>
+            ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+    }
+
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const opened = menu.style.display === 'block';
+        menu.style.display = opened ? 'none' : 'block';
+        if (!opened) fetchList();
+    });
+    document.addEventListener('click', () => { menu.style.display = 'none'; });
+    menu.addEventListener('click', (e) => e.stopPropagation());
+
+    if (mark) {
+        mark.addEventListener('click', async () => {
+            try {
+                await fetch('/api/sync/notifications/read-all',
+                    { method: 'POST', credentials: 'same-origin' });
+                fetchUnread();
+                fetchList();
+            } catch { }
+        });
+    }
+
+    // Initial unread + 30s polling. Visibility-guarded so the tab doesn't
+    // burn cellular data in the background.
+    fetchUnread();
+    pollTimer = setInterval(() => {
+        if (!document.hidden) fetchUnread();
+    }, 30000);
+})();
 
 // ── Online/offline ────────────────────────────────────────
 function updateSyncStatus() {

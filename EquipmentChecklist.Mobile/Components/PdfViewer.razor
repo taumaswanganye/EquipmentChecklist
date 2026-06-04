@@ -4,6 +4,7 @@
 @inject SubmissionQueue  Queue
 @inject SyncWorker       Sync
 @inject LocalPdfService  LocalPdf
+@inject MineConfigService Mine
 @inject IJSRuntime       JS
 @implements IAsyncDisposable
 
@@ -214,6 +215,8 @@
             // covers the case where the submit-time generation failed silently
             // (e.g. jsPDF wasn't loaded yet), or the cache was pruned.
             bytes = await LocalPdf.GenerateFromLocalIdAsync(localId, MineName);
+            // (MineName is computed below to follow the same fall-back ladder
+            // — server-cached value if we've ever been online, otherwise "MINE".)
             if (bytes is { Length: > 0 })
             {
                 servedFromCache = true;
@@ -248,7 +251,16 @@
     /// match the production sample; lift to a server config / app setting
     /// later if you ever run this for multiple mines.
     /// </summary>
-    private const string MineName = "BELFAST COAL MINE";
+    /// <summary>
+    /// Mine label passed to <see cref="LocalPdfService"/> when regenerating
+    /// a queued submission's PDF. Reads from <see cref="MineConfigService"/>
+    /// (server-configured), falls back to "MINE" if neither the cache nor
+    /// the network has ever delivered a real value.
+    /// </summary>
+    private string MineName =>
+        string.IsNullOrEmpty(Mine.Current.Name)
+            ? "MINE"
+            : Mine.Current.Name.ToUpperInvariant();
 
     /// <summary>Public so the parent page can re-trigger after a network blip.</summary>
     public Task ReloadAsync() => LoadAsync();

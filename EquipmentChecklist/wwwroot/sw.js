@@ -22,7 +22,14 @@
  *    If you start seeing 401s on replay, that's the polish to add next.
  */
 
-const SW_VERSION  = 'eq-sw-v1';
+// Bump this constant any time a SHELL_URLS asset changes (offline-voucher.js,
+// site.css, etc) OR when the SW itself changes behaviour. The ACTIVATE handler
+// below evicts every cache whose key doesn't match the current SHELL/STATIC
+// cache names — so the browser stops serving stale copies the next time the
+// SW activates. Without a bump, clients keep getting the old offline-voucher.js
+// from disk cache forever and IndexedDB version errors (and similar) survive
+// any number of source edits.
+const SW_VERSION  = 'eq-sw-v2';
 const SHELL_CACHE = 'eq-shell-' + SW_VERSION;
 const STATIC_CACHE = 'eq-static-' + SW_VERSION;
 
@@ -158,14 +165,29 @@ async function handleSubmit(req) {
 }
 
 // ── Queue store (IndexedDB) ──────────────────────────────────────────────────
-const QUEUE_DB    = 'eq_offline';
-const QUEUE_STORE = 'submit_queue';
+//
+// Database is SHARED with offline-voucher.js — bump QUEUE_DB_VER in lock-step
+// with the DB_VER constant over there, and add any new store creation here
+// in an idempotent block so concurrent openers don't double-create.
+//
+// If a future script bumps the on-disk version higher than ours, the
+// VersionError fallback below opens the DB without a version argument so
+// we just attach to whatever's there.
+const QUEUE_DB     = 'eq_offline';
+const QUEUE_DB_VER = 2;
+const QUEUE_STORE  = 'submit_queue';
 
 function openQueueDb() {
     return new Promise((resolve, reject) => {
-        const req = indexedDB.open(QUEUE_DB, 2);
-        req.onupgradeneeded = (ev) => {
+        let req;
+        try {
+            req = indexedDB.open(QUEUE_DB, QUEUE_DB_VER);
+        } catch (e) { reject(e); return; }
+
+        req.onupgradeneeded = () => {
             const db = req.result;
+            // Idempotent — only create the store if a concurrent opener
+            // hasn't already done so during an earlier upgrade transaction.
             if (!db.objectStoreNames.contains(QUEUE_STORE)) {
                 db.createObjectStore(QUEUE_STORE, { autoIncrement: true });
             }
@@ -174,7 +196,22 @@ function openQueueDb() {
             }
         };
         req.onsuccess = () => resolve(req.result);
-        req.onerror   = () => reject(req.error);
+        req.onerror   = () => {
+            // The on-disk version is higher than what we asked for
+            // (offline-voucher.js, or a future script, has bumped past us).
+            // Attach without an upgrade — both stores are guaranteed to be
+            // present because every version of this DB so far has created
+            // them.
+            if (req.error && req.error.name === 'VersionError') {
+                let fb;
+                try { fb = indexedDB.open(QUEUE_DB); }
+                catch (e) { reject(e); return; }
+                fb.onsuccess = () => resolve(fb.result);
+                fb.onerror   = () => reject(fb.error);
+                return;
+            }
+            reject(req.error);
+        };
     });
 }
 

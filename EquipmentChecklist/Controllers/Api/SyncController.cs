@@ -41,6 +41,8 @@ public class SyncController : ControllerBase
     private readonly IConfiguration                 _cfg;
     private readonly EmailService                   _email;
     private readonly PdfService                     _pdf;
+    private readonly NotificationService             _notifications;
+    private readonly AuditService                    _audit;
     private readonly ILogger<SyncController>        _log;
 
     public SyncController(ApplicationDbContext db,
@@ -50,15 +52,19 @@ public class SyncController : ControllerBase
                           IConfiguration cfg,
                           EmailService email,
                           PdfService pdf,
+                          NotificationService notifications,
+                          AuditService audit,
                           ILogger<SyncController> log)
     {
         _db    = db;
         _users = users;
         _signIn = signIn;
         _svc   = svc;
+        _audit = audit;
         _cfg   = cfg;
         _email = email;
         _pdf   = pdf;
+        _notifications = notifications;
         _log   = log;
     }
 
@@ -72,6 +78,28 @@ public class SyncController : ControllerBase
     [HttpGet("ping")]
     [AllowAnonymous]
     public IActionResult Ping() => Ok(new { ok = true, at = DateTime.UtcNow });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //                              MINE CONFIG
+    // Site-specific labels for splash / headers / PDF subtitle / etc.
+    // Anonymous — mobile fetches once on launch and caches in LocalCache so the
+    // labels survive offline boot. Admin changes the values in appsettings.json
+    // and restarts the server; clients pick up the new labels on the next sync.
+    // ══════════════════════════════════════════════════════════════════════════
+    [HttpGet("mine")]
+    [AllowAnonymous]
+    public ActionResult<MineDto> MineConfig(
+        [FromServices] Microsoft.Extensions.Options.IOptions<MineSettings> mine)
+    {
+        var m = mine.Value;
+        return Ok(new MineDto
+        {
+            Name           = m.Name,
+            ShortName      = m.ShortName,
+            Tagline        = m.Tagline,
+            ComplianceText = m.ComplianceText
+        });
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     //                                LOGIN
@@ -95,6 +123,32 @@ public class SyncController : ControllerBase
 
         var roles      = await _users.GetRolesAsync(user);
         var (token, exp) = IssueJwt(user, roles);
+
+        // Audit row uses an EXPLICIT actor — the controller's
+        // ClaimsPrincipal isn't populated for an unauthenticated POST.
+        // DeviceKind is read from the User-Agent so phone vs desktop is
+        // distinguishable in the trail.
+        var ua = HttpContext.Request.Headers["User-Agent"].ToString() ?? "";
+        var deviceKind = ua.Contains("Android", StringComparison.OrdinalIgnoreCase) ? "android"
+                       : ua.Contains("Windows", StringComparison.OrdinalIgnoreCase) ? "windows"
+                       : "web";
+        await _audit.LogAsync(
+            actor: new AuditService.ActorContext(
+                UserId:    user.Id,
+                Name:      user.FullName,
+                Email:     user.Email,
+                Role:      roles.Contains("Admin")      ? "Admin"
+                         : roles.Contains("Supervisor") ? "Supervisor"
+                         : roles.Contains("Mechanic")   ? "Mechanic"
+                         : roles.Contains("Operator")   ? "Operator"
+                         : roles.FirstOrDefault(),
+                DeviceKind:deviceKind,
+                IpAddress: HttpContext.Connection.RemoteIpAddress?.ToString()),
+            action:           AuditActions.UserSignedIn,
+            targetType:       "User",
+            targetId:         null,
+            payloadJson:      null,
+            occurredAtClient: DateTime.UtcNow);
 
         return Ok(new SyncLoginResponse
         {
@@ -623,6 +677,21 @@ public class SyncController : ControllerBase
             await _svc.SupervisorSignOffAsync(id, user.Id, resolved, req.Signature);
             return Ok(new { ok = true });
         }
+        catch (ChecklistService.ConflictException cx)
+        {
+            // Lost the race against another supervisor's earlier sign-off.
+            // Write a notification for the caller so they see the loss in
+            // their inbox even if the device was offline at the moment
+            // the winner's sign-off landed.
+            await _notifications.PushAsync(
+                userId:              user.Id,
+                kind:                NotificationKinds.ConflictRejected,
+                title:               $"✕ Sign-off rejected — {cx.MachineNumber ?? "submission"}",
+                body:                cx.Message,
+                relatedSubmissionId: id);
+            return StatusCode(StatusCodes.Status409Conflict,
+                new { error = cx.Message, conflict = true, winner = cx.WinnerName });
+        }
         catch (Exception ex)
         {
             return BadRequest(new { error = ex.Message });
@@ -693,6 +762,7 @@ public class SyncController : ControllerBase
         var submission = await _db.ChecklistSubmissions
             .Include(s => s.Machine)
             .Include(s => s.Operator)
+            .Include(s => s.Supervisor)
             .Include(s => s.Items).ThenInclude(i => i.TemplateItem)
             .FirstOrDefaultAsync(s => s.Id == id);
         if (submission == null) return NotFound();
@@ -707,6 +777,28 @@ public class SyncController : ControllerBase
                 .Select(a => a.OperatorId)
                 .ToListAsync();
             if (!teamIds.Contains(submission.OperatorId)) return Forbid();
+        }
+
+        // ── Conflict detection ───────────────────────────────────────────
+        // If another supervisor already signed-off OR already rejected this
+        // submission, we DO NOT silently overwrite their decision. Notify
+        // the loser and return 409.
+        if (!string.IsNullOrEmpty(submission.SupervisorId) &&
+            submission.SupervisorId != user.Id)
+        {
+            var winner = submission.Supervisor?.FullName ?? "another supervisor";
+            var verdictMsg = submission.Status == ChecklistStatus.Rejected
+                ? $"This submission was already rejected by {winner}."
+                : $"This submission was already signed off by {winner}.";
+            await _notifications.PushAsync(
+                userId:              user.Id,
+                kind:                NotificationKinds.ConflictRejected,
+                title:               $"✕ Rejection rejected — {submission.Machine.MachineNumber}",
+                body:                verdictMsg,
+                relatedSubmissionId: id,
+                relatedMachineId:    submission.MachineId);
+            return StatusCode(StatusCodes.Status409Conflict,
+                new { error = verdictMsg, conflict = true, winner });
         }
 
         // Sanity-check the chosen mechanic exists and is actually a mechanic.
@@ -754,6 +846,34 @@ public class SyncController : ControllerBase
 
         await _db.SaveChangesAsync();
 
+        // ── Audit ─────────────────────────────────────────────────────────
+        // Two rows: the supervisor's reject action and the resulting machine
+        // immobilisation. Investigators following a chain typically jump
+        // from "what happened to submission X" → "what happened to machine Y"
+        // so keeping both available makes the trail walkable.
+        await _audit.LogAsync(
+            action:     AuditActions.SubmissionRejected,
+            targetType: "Submission",
+            targetId:   submission.Id,
+            payload:    new
+            {
+                reason       = req.Reason.Trim(),
+                mechanicId   = req.MechanicId,
+                mechanicName = mech.FullName,
+                defectOrdersCreated = created,
+                operatorId   = submission.OperatorId
+            });
+        await _audit.LogAsync(
+            action:     AuditActions.MachineImmobilised,
+            targetType: "Machine",
+            targetId:   submission.Machine.Id,
+            payload:    new
+            {
+                reason          = "supervisor-rejected checklist",
+                bySubmissionId  = submission.Id,
+                bySupervisorId  = user.Id
+            });
+
         // ── Notify the assigned mechanic ──
         // The mechanic needs to know there's a NO-GO machine and N defects
         // waiting for them. Email failures must not break the API response.
@@ -773,6 +893,23 @@ public class SyncController : ControllerBase
         {
             _log.LogWarning(ex, "Rejection-notification email failed for submission {SubmissionId} " +
                                 "(mobile API). Reject persisted; email pipeline was skipped.", id);
+        }
+
+        // Notify the operator in-app so they don't walk to the machine
+        // next shift and find it immobilised with no context.
+        try
+        {
+            await _notifications.PushAsync(
+                userId:              submission.OperatorId,
+                kind:                NotificationKinds.SubmissionRejected,
+                title:               $"🛑 Rejected on {submission.Machine.MachineNumber}",
+                body:                $"Reason: {req.Reason.Trim()}",
+                relatedSubmissionId: submission.Id,
+                relatedMachineId:    submission.MachineId);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Rejection in-app notification failed for submission {SubmissionId}.", id);
         }
 
         return Ok(new { ok = true, defectsCreated = created });
@@ -939,16 +1076,44 @@ public class SyncController : ControllerBase
         var user = await CurrentUser();
         if (user == null) return Unauthorized();
 
-        var order = await _db.DefectOrders.FirstOrDefaultAsync(d => d.Id == id);
+        var order = await _db.DefectOrders
+            .Include(d => d.Submission).ThenInclude(s => s.Machine)
+            .Include(d => d.AssignedMechanic)
+            .FirstOrDefaultAsync(d => d.Id == id);
         if (order == null) return NotFound();
 
+        // ── Conflict detection ───────────────────────────────────────────
+        // The other mechanic-action endpoints don't have this race today
+        // (they're protected by RepairStatus transitions) but the bare
+        // Claim is the classic example — two mechanics tap "Claim" offline,
+        // one wins, the other's drain has to be told they lost so the
+        // bell badge surfaces the news instead of silently dropping.
         if (order.AssignedMechanicId != null && order.AssignedMechanicId != user.Id)
-            return BadRequest(new { error = "This job has already been claimed by another mechanic." });
+        {
+            var winner = order.AssignedMechanic?.FullName ?? "another mechanic";
+            var msg = $"This job was already claimed by {winner}.";
+            await _notifications.PushAsync(
+                userId:              user.Id,
+                kind:                NotificationKinds.ConflictRejected,
+                title:               $"✕ Claim rejected — {order.Submission.Machine.MachineNumber}",
+                body:                msg,
+                relatedSubmissionId: order.SubmissionId,
+                relatedMachineId:    order.Submission.MachineId);
+            return StatusCode(StatusCodes.Status409Conflict,
+                new { error = msg, conflict = true, winner });
+        }
 
         order.AssignedMechanicId = user.Id;
         if (order.RepairStatus == RepairStatus.Pending)
             order.RepairStatus = RepairStatus.InProgress;
         await _db.SaveChangesAsync();
+
+        await _audit.LogAsync(
+            action:     AuditActions.DefectClaimed,
+            targetType: "DefectOrder",
+            targetId:   order.Id,
+            payload:    new { submissionId = order.SubmissionId });
+
         return Ok(new { ok = true });
     }
 
@@ -973,8 +1138,31 @@ public class SyncController : ControllerBase
         var order = await _db.DefectOrders
             .Include(d => d.Submission).ThenInclude(s => s.Machine)
             .Include(d => d.SubmissionItem).ThenInclude(i => i.TemplateItem)
+            .Include(d => d.AssignedMechanic)
             .FirstOrDefaultAsync(d => d.Id == id);
         if (order == null) return NotFound();
+
+        // ── Conflict detection ───────────────────────────────────────────
+        // If another mechanic already owns + ordered a part on this defect,
+        // we don't quietly overwrite their part number. They might have
+        // already kicked off the procurement workflow on their part. Refuse
+        // and tell the loser.
+        if (!string.IsNullOrEmpty(order.AssignedMechanicId) &&
+            order.AssignedMechanicId != user.Id &&
+            order.RepairStatus == RepairStatus.AwaitingParts)
+        {
+            var winner = order.AssignedMechanic?.FullName ?? "another mechanic";
+            var msg = $"This defect already had a part ordered by {winner}.";
+            await _notifications.PushAsync(
+                userId:              user.Id,
+                kind:                NotificationKinds.ConflictRejected,
+                title:               $"✕ Part order rejected — {order.Submission.Machine.MachineNumber}",
+                body:                msg,
+                relatedSubmissionId: order.SubmissionId,
+                relatedMachineId:    order.Submission.MachineId);
+            return StatusCode(StatusCodes.Status409Conflict,
+                new { error = msg, conflict = true, winner });
+        }
 
         // Auto-claim if currently unassigned (the web flow does the same).
         if (string.IsNullOrEmpty(order.AssignedMechanicId))
@@ -984,6 +1172,17 @@ public class SyncController : ControllerBase
         order.PartNumber   = string.IsNullOrWhiteSpace(req.PartNumber) ? null : req.PartNumber.Trim();
         order.RepairStatus = RepairStatus.AwaitingParts;
         await _db.SaveChangesAsync();
+
+        await _audit.LogAsync(
+            action:     AuditActions.DefectPartOrdered,
+            targetType: "DefectOrder",
+            targetId:   order.Id,
+            payload:    new
+            {
+                partRequired = order.PartRequired,
+                partNumber   = order.PartNumber,
+                machineId    = order.Submission.Machine.Id
+            });
 
         // ── Fire confirmation to mechanic + parts-order PDF to manager ──
         // Matches the web flow in MechanicController.OrderPart so notifications
@@ -1041,6 +1240,19 @@ public class SyncController : ControllerBase
             await _svc.ResolveDefectAsync(id, user.Id, req.Notes ?? "Repair completed.", req.Signature);
             return Ok(new { ok = true });
         }
+        catch (ChecklistService.ConflictException cx)
+        {
+            // Another mechanic already closed it. Write the conflict
+            // notification so the mobile bell badge shows the news, then
+            // 409 so the drainer treats it as Permanent (drops the row).
+            await _notifications.PushAsync(
+                userId:           user.Id,
+                kind:             NotificationKinds.ConflictRejected,
+                title:            $"✕ Repair close rejected — {cx.MachineNumber ?? "defect"}",
+                body:             cx.Message);
+            return StatusCode(StatusCodes.Status409Conflict,
+                new { error = cx.Message, conflict = true, winner = cx.WinnerName });
+        }
         catch (Exception ex)
         {
             return BadRequest(new { error = ex.Message });
@@ -1088,6 +1300,49 @@ public class SyncController : ControllerBase
             CompletedToday = completedToday,
             NoGoMachines   = noGoMachines
         });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //                       AUDIT · MOBILE BATCH UPLOAD
+    // Mobile clients buffer audit events locally (AuditQueue) and drain a
+    // batch here when the SyncWorker fires. The endpoint enforces that the
+    // actor on every event matches the JWT subject — no impersonation by
+    // posting another user's id in the payload.
+    // ══════════════════════════════════════════════════════════════════════════
+    [HttpPost("audit")]
+    [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
+    public async Task<ActionResult> AuditBatch([FromBody] AuditEventBatchRequest req)
+    {
+        var user = await CurrentUser();
+        if (user == null) return Unauthorized();
+        if (req == null || req.Events == null || req.Events.Count == 0)
+            return Ok(new { saved = 0 });   // benign no-op, drainer treats as success
+
+        // Cap the batch so a stuck client can't DoS the server with a giant
+        // dump. 500 is generous — typical drain pass is < 100 events.
+        if (req.Events.Count > 500)
+            return BadRequest(new { error = "Batch exceeds 500 events." });
+
+        // Build a single actor snapshot from the JWT subject. Every row in
+        // the batch is stamped with these values regardless of what the
+        // client tried to put in the DTO — defence against an event whose
+        // ActorUserId field claims to be someone else.
+        var roles = await _users.GetRolesAsync(user);
+        string? role = roles.Contains("Admin")      ? "Admin"
+                     : roles.Contains("Supervisor") ? "Supervisor"
+                     : roles.Contains("Mechanic")   ? "Mechanic"
+                     : roles.Contains("Operator")   ? "Operator"
+                     : roles.FirstOrDefault();
+        var actor = new AuditService.ActorContext(
+            UserId:    user.Id,
+            Name:      user.FullName,
+            Email:     user.Email,
+            Role:      role,
+            DeviceKind:"android",   // overridden per-event below
+            IpAddress: HttpContext.Connection.RemoteIpAddress?.ToString());
+
+        var saved = await _audit.LogBatchAsync(actor, req.Events);
+        return Ok(new { saved });
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1233,6 +1488,99 @@ public class SyncController : ControllerBase
             _log.LogError(ex, "PDF render failed for submission {SubmissionId}", id);
             return StatusCode(500, new { error = "PDF render failed." });
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //                              NOTIFICATIONS · INBOX
+    // GET /notifications              — recent N notifications for the caller
+    // GET /notifications/unread-count — quick badge count
+    // POST /notifications/{id}/read   — mark a single one as read
+    // POST /notifications/read-all    — mark everything in inbox as read
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // Notifications endpoints accept BOTH the JWT bearer scheme (mobile app)
+    // AND the Identity cookie scheme (web browser). Combining them on the
+    // attribute lets the same endpoint serve both surfaces — the web's
+    // topbar bell hits these same URLs.
+    //
+    // Why the magic string instead of IdentityConstants.ApplicationScheme:
+    // attribute arguments must be compile-time constants, and
+    // IdentityConstants.ApplicationScheme is declared as `static readonly`,
+    // not `const`. The value "Identity.Application" is hard-coded inside
+    // IdentityConstants and has been stable since ASP.NET Core 2.x, so
+    // duplicating it here is safe — adding a unit test that asserts
+    // NotifAuthSchemes.EndsWith(IdentityConstants.ApplicationScheme) would
+    // catch any future framework change at build time.
+    private const string NotifAuthSchemes =
+        JwtBearerDefaults.AuthenticationScheme + ",Identity.Application";
+
+    [HttpGet("notifications")]
+    [Authorize(AuthenticationSchemes = NotifAuthSchemes)]
+    public async Task<ActionResult<List<NotificationDto>>> Notifications(int take = 30)
+    {
+        var user = await CurrentUser();
+        if (user == null) return Unauthorized();
+
+        take = Math.Clamp(take, 1, 200);
+        var rows = await _db.Notifications
+            .Where(n => n.UserId == user.Id)
+            .OrderByDescending(n => n.CreatedAt)
+            .Take(take)
+            .Select(n => new NotificationDto
+            {
+                Id                  = n.Id,
+                Kind                = n.Kind,
+                Title               = n.Title,
+                Body                = n.Body,
+                RelatedSubmissionId = n.RelatedSubmissionId,
+                RelatedMachineId    = n.RelatedMachineId,
+                CreatedAt           = n.CreatedAt,
+                ReadAt              = n.ReadAt
+            })
+            .ToListAsync();
+        return Ok(rows);
+    }
+
+    [HttpGet("notifications/unread-count")]
+    [Authorize(AuthenticationSchemes = NotifAuthSchemes)]
+    public async Task<ActionResult<int>> NotificationsUnreadCount()
+    {
+        var user = await CurrentUser();
+        if (user == null) return Unauthorized();
+        var n = await _db.Notifications
+            .CountAsync(x => x.UserId == user.Id && x.ReadAt == null);
+        return Ok(n);
+    }
+
+    [HttpPost("notifications/{id:int}/read")]
+    [Authorize(AuthenticationSchemes = NotifAuthSchemes)]
+    public async Task<ActionResult> NotificationMarkRead(int id)
+    {
+        var user = await CurrentUser();
+        if (user == null) return Unauthorized();
+
+        var n = await _db.Notifications
+            .FirstOrDefaultAsync(x => x.Id == id && x.UserId == user.Id);
+        if (n == null) return NotFound();
+        if (n.ReadAt == null)
+        {
+            n.ReadAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+        }
+        return Ok();
+    }
+
+    [HttpPost("notifications/read-all")]
+    [Authorize(AuthenticationSchemes = NotifAuthSchemes)]
+    public async Task<ActionResult> NotificationsMarkAllRead()
+    {
+        var user = await CurrentUser();
+        if (user == null) return Unauthorized();
+        var now = DateTime.UtcNow;
+        await _db.Notifications
+            .Where(n => n.UserId == user.Id && n.ReadAt == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(n => n.ReadAt, now));
+        return Ok();
     }
 
     // ══════════════════════════════════════════════════════════════════════════

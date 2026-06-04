@@ -1,4 +1,6 @@
+using EquipmentChecklist.DTOs;
 using EquipmentChecklist.Models;
+using EquipmentChecklist.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -9,13 +11,16 @@ public class AccountController : Controller
 {
     private readonly SignInManager<ApplicationUser> _signIn;
     private readonly UserManager<ApplicationUser>   _users;
+    private readonly AuditService                   _audit;
 
     public AccountController(
         SignInManager<ApplicationUser> signIn,
-        UserManager<ApplicationUser>   users)
+        UserManager<ApplicationUser>   users,
+        AuditService                   audit)
     {
         _signIn = signIn;
         _users  = users;
+        _audit  = audit;
     }
 
     // ── Login ─────────────────────────────────────────────────────────────────
@@ -36,6 +41,11 @@ public class AccountController : Controller
 
         if (result.Succeeded)
         {
+            // Audit: web sign-in. The cookie ClaimsPrincipal IS populated by
+            // the time we get here, so the no-arg LogAsync resolves the actor
+            // from HttpContext automatically.
+            await _audit.LogAsync(action: AuditActions.UserSignedIn, targetType: "User");
+
             if (!string.IsNullOrEmpty(returnUrl) && Url.IsLocalUrl(returnUrl))
                 return Redirect(returnUrl);
             return RedirectToAction("Index", "Home");
@@ -54,6 +64,10 @@ public class AccountController : Controller
     [HttpPost, ValidateAntiForgeryToken, Authorize]
     public async Task<IActionResult> Logout()
     {
+        // Capture the actor BEFORE SignOutAsync nukes the cookie — afterwards
+        // the ClaimsPrincipal is anonymous and the audit row would record
+        // the sign-out as an anonymous event.
+        await _audit.LogAsync(action: AuditActions.UserSignedOut, targetType: "User");
         await _signIn.SignOutAsync();
         return RedirectToAction("Login");
     }

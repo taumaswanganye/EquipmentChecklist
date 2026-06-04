@@ -98,6 +98,18 @@ public class Machine
     public string? ImmobilisedReason { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    // ── Admin clearance gate ────────────────────────────────────────────────
+    // When a mechanic completes the LAST open defect on a machine, the machine
+    // stops auto-releasing — instead it flips to AwaitingAdminClearance so an
+    // admin can inspect/sign off before the machine returns to service. Until
+    // an admin clicks "Clear", IsImmobilised stays true and operators can't
+    // start a checklist on it.
+    public bool AwaitingAdminClearance { get; set; } = false;
+    [MaxLength(450)] public string? ClearedByAdminId { get; set; }
+    public ApplicationUser? ClearedByAdmin { get; set; }
+    public DateTime? ClearedAt { get; set; }
+    [MaxLength(500)] public string? AdminClearanceNotes { get; set; }
+
     // Navigation
     public ICollection<MachineAssignment> Assignments { get; set; } = new List<MachineAssignment>();
     public ICollection<ChecklistSubmission> Submissions { get; set; } = new List<ChecklistSubmission>();
@@ -300,6 +312,100 @@ public class UserCredential
     public DateTime CreatedAt  { get; set; } = DateTime.UtcNow;
     public DateTime? LastUsedAt { get; set; }
     public bool IsActive { get; set; } = true;
+}
+
+// ─── In-app notification (cross-role notifications) ────────────────────────
+/// <summary>
+/// Append-only feed of notifications addressed to a specific user. Written by
+/// <c>NotificationService</c> from the business-logic layer whenever a state
+/// change happens that someone outside the actor should know about
+/// (operator submits NO-GO → supervisor; supervisor signs off → operator;
+/// mechanic completes repair → operator; etc.).
+///
+/// <para>Read paths:</para>
+/// <list type="bullet">
+///   <item><description>The mobile bell icon polls <c>/api/sync/notifications/unread-count</c> for a badge.</description></item>
+///   <item><description>Connected SignalR clients receive a live "notification" event the moment the row is written.</description></item>
+///   <item><description>The notification dropdown lists the most recent N rows via <c>/api/sync/notifications</c>.</description></item>
+/// </list>
+/// </summary>
+public class Notification
+{
+    public int Id { get; set; }
+
+    /// <summary>FK to <see cref="ApplicationUser"/> — the recipient.</summary>
+    [Required, MaxLength(450)] public string UserId { get; set; } = "";
+    public ApplicationUser User { get; set; } = null!;
+
+    /// <summary>Discriminator constant from <see cref="NotificationKinds"/>.
+    /// Stored as a string rather than an enum so old payloads stay readable
+    /// after we add new kinds.</summary>
+    [Required, MaxLength(60)] public string Kind { get; set; } = "";
+
+    /// <summary>Short human-readable headline shown in the dropdown.</summary>
+    [Required, MaxLength(160)] public string Title { get; set; } = "";
+
+    /// <summary>Optional second line of detail.</summary>
+    [MaxLength(500)] public string? Body { get; set; }
+
+    /// <summary>Optional JSON payload — anything extra the UI may want.</summary>
+    public string? PayloadJson { get; set; }
+
+    /// <summary>Optional FKs for deep-linking from the dropdown into the
+    /// related submission / machine view.</summary>
+    public int? RelatedSubmissionId { get; set; }
+    public int? RelatedMachineId    { get; set; }
+
+    public DateTime  CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ReadAt    { get; set; }
+}
+
+/// <summary>
+/// String constants for <see cref="Notification.Kind"/>. New kinds get added
+/// to the bottom of this list; old ones never get removed so historical
+/// notifications keep rendering correctly.
+/// </summary>
+public static class NotificationKinds
+{
+    /// <summary>Operator submitted a NO-GO; recipient is the team's supervisor.</summary>
+    public const string SubmissionNoGo     = "submission.nogo";
+    /// <summary>Operator submitted a GO-BUT awaiting supervisor approval.</summary>
+    public const string SubmissionGoBut    = "submission.gobut";
+    /// <summary>Supervisor approved a GO-BUT; recipient is the operator.</summary>
+    public const string SubmissionApproved = "submission.approved";
+    /// <summary>Supervisor rejected; recipient is the operator.</summary>
+    public const string SubmissionRejected = "submission.rejected";
+    /// <summary>Mechanic completed a defect repair; recipient is the operator.</summary>
+    public const string DefectResolved     = "defect.resolved";
+
+    /// <summary>
+    /// A queued action drained from a mobile client lost the race with
+    /// somebody else's earlier action — e.g. two supervisors approve the
+    /// same submission offline, the second one's drain finds it already
+    /// signed and is told "another supervisor signed first".
+    ///
+    /// <para>Recipient is the LOSING actor (the one whose queued action
+    /// got rejected) so they know their offline work didn't take effect.
+    /// Before this kind existed, the queued row was silently dropped by
+    /// the 4xx polish in the SyncWorker drainer and the user had no way
+    /// to learn their decision was overridden.</para>
+    /// </summary>
+    public const string ConflictRejected   = "conflict.rejected";
+
+    /// <summary>
+    /// A mechanic completed the last open defect on an immobilised
+    /// machine. The machine is held in <c>AwaitingAdminClearance</c> until
+    /// an admin signs off — this notification fires to every admin so
+    /// someone picks it up promptly.
+    /// </summary>
+    public const string MachineAwaitingClearance = "machine.awaiting_clearance";
+
+    /// <summary>
+    /// Admin cleared a machine back into service. Recipient is the
+    /// mechanic who completed the last defect, so they know their work
+    /// has been signed off.
+    /// </summary>
+    public const string MachineCleared           = "machine.cleared";
 }
 
 // ─── Reusable icon library (managed by Admin, used by checklist items) ────────

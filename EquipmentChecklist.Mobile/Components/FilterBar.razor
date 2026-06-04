@@ -1,0 +1,299 @@
+@*
+    FilterBar — combined search input + date-range picker for list pages.
+
+    Plug-in pattern: each consumer owns its own `filter` field of type
+    <see cref="FilterBar.State"/>; the bar raises <c>OnChange</c> on every
+    keystroke / date tweak / preset / clear. The consumer recomputes its
+    Filtered collection and resets the pager to page 1.
+
+    Why one component (not two)?
+      * Search + date range almost always appear together on list pages —
+        consolidating keeps the layout band consistent.
+      * A consumer that only wants search (e.g. MyMachines, since machines
+        don't have a "happened on" date) sets ShowDateRange="false".
+
+    Sequencing notes:
+      * Search uses @oninput so the list narrows live with every character —
+        no debounce. The lists we filter are tens-to-low-hundreds of rows in
+        memory, so per-keystroke recomputation is cheap.
+      * Date pickers use @onchange (date inputs in WebView only commit on
+        blur / selection, not per-character — @oninput is unreliable there).
+      * The "To" date is widened to end-of-day so a user filtering 2026-02-15
+        to 2026-02-15 still includes a submission at 16:42 that day.
+*@
+
+<div class="fb">
+    <div class="fb-search">
+        <span class="fb-ico">🔍</span>
+        <input type="search"
+               class="fb-input"
+               placeholder="@Placeholder"
+               value="@_search"
+               @oninput="OnSearchInput" />
+        @if (!string.IsNullOrEmpty(_search))
+        {
+            <button type="button" class="fb-x" @onclick="ClearSearchAsync" title="Clear search">✕</button>
+        }
+    </div>
+
+    @if (ShowDateRange)
+    {
+        <div class="fb-dates">
+            <label class="fb-lbl">From</label>
+            <input type="date"
+                   class="fb-date"
+                   value="@(_from?.ToString("yyyy-MM-dd") ?? "")"
+                   @onchange="OnFromChange" />
+            <span class="fb-sep">→</span>
+            <label class="fb-lbl">To</label>
+            <input type="date"
+                   class="fb-date"
+                   value="@(_to?.ToString("yyyy-MM-dd") ?? "")"
+                   @onchange="OnToChange" />
+        </div>
+
+        @* Preset clicks are routed through named methods rather than inline
+           lambdas — the Razor 8 tokenizer has occasionally choked on string
+           literals inside @onclick="@(() => Method("x"))" attributes, and
+           bare method handlers are immune. *@
+        <div class="fb-presets">
+            <button type="button"
+                    class="fb-preset @(_activePreset == "today" ? "on" : "")"
+                    @onclick="PresetTodayAsync">Today</button>
+            <button type="button"
+                    class="fb-preset @(_activePreset == "7d" ? "on" : "")"
+                    @onclick="Preset7dAsync">7d</button>
+            <button type="button"
+                    class="fb-preset @(_activePreset == "30d" ? "on" : "")"
+                    @onclick="Preset30dAsync">30d</button>
+            <button type="button"
+                    class="fb-preset @(_activePreset == "month" ? "on" : "")"
+                    @onclick="PresetMonthAsync">This month</button>
+        </div>
+    }
+
+    @if (IsActive)
+    {
+        <button type="button" class="fb-clear" @onclick="ClearAllAsync">✕ Clear filters</button>
+    }
+</div>
+
+<style>
+    .fb {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+        padding: 10px 12px; margin-bottom: 16px;
+        background: #0d1729; border: 1px solid #1f2a3a; border-radius: 10px;
+    }
+
+    .fb-search {
+        position: relative; flex: 1 1 220px; min-width: 200px;
+        display: flex; align-items: center;
+    }
+    .fb-ico {
+        position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+        font-size: 13px; color: #64748b; pointer-events: none;
+    }
+    .fb-input {
+        width: 100%; background: #111c2e; border: 1px solid #243246;
+        color: #e5e7eb; padding: 8px 32px 8px 32px; border-radius: 8px;
+        font-size: 13px; font-family: inherit; outline: none;
+    }
+    .fb-input::placeholder { color: #64748b; }
+    .fb-input:focus { border-color: #0e9488; }
+    .fb-x {
+        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+        background: transparent; border: none; color: #94a3b8;
+        font-size: 12px; cursor: pointer; padding: 4px 6px; border-radius: 4px;
+    }
+    .fb-x:hover { background: #1a2638; color: #e5e7eb; }
+
+    .fb-dates {
+        display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+    }
+    .fb-lbl {
+        font-size: 10px; color: #94a3b8; letter-spacing: .4px; font-weight: 600;
+    }
+    .fb-date {
+        background: #111c2e; border: 1px solid #243246; color: #e5e7eb;
+        padding: 6px 8px; border-radius: 6px; font-size: 12px;
+        font-family: inherit; outline: none;
+        color-scheme: dark;
+    }
+    .fb-date:focus { border-color: #0e9488; }
+    .fb-sep { color: #475569; font-size: 12px; padding: 0 2px; }
+
+    .fb-presets { display: flex; gap: 4px; flex-wrap: wrap; }
+    .fb-preset {
+        background: transparent; border: 1px solid #243246; color: #94a3b8;
+        padding: 5px 10px; border-radius: 999px; font-size: 11px;
+        font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .fb-preset:hover { border-color: #0e9488; color: #cbd5e1; }
+    .fb-preset.on { background: #0e9488; color: #0a1726; border-color: #0e9488; }
+
+    .fb-clear {
+        background: transparent; border: 1px solid #7f1d1d; color: #fca5a5;
+        padding: 5px 10px; border-radius: 6px; font-size: 11px;
+        font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .fb-clear:hover { background: rgba(127,29,29,.18); }
+
+    /* Narrow phones: stack the date block under the search input so the
+       search field gets the full width and the dates stay legible. */
+    @@media (max-width: 540px) {
+        .fb { gap: 8px; }
+        .fb-search { flex-basis: 100%; }
+        .fb-dates  { flex-basis: 100%; }
+        .fb-presets { flex-basis: 100%; }
+    }
+</style>
+
+@code {
+    /// <summary>Placeholder shown in the search input. Pick something the
+    /// operator on each page will recognise — e.g. "Search machine,
+    /// operator…" on the Sign-Off Queue.</summary>
+    [Parameter] public string Placeholder { get; set; } = "Search…";
+
+    /// <summary>Set false to hide the date-range row + presets. Useful on
+    /// pages where the underlying records don't have a meaningful date
+    /// (e.g. machine roster).</summary>
+    [Parameter] public bool ShowDateRange { get; set; } = true;
+
+    /// <summary>Raised on every search keystroke, date change, preset click,
+    /// or clear. The consumer should recompute its Filtered list and reset
+    /// its pager to page 1.</summary>
+    [Parameter] public EventCallback<State> OnChange { get; set; }
+
+    private string    _search = "";
+    private DateTime? _from;
+    private DateTime? _to;
+    private string?   _activePreset;   // which preset chip is highlighted
+
+    private bool IsActive =>
+        !string.IsNullOrWhiteSpace(_search) || _from.HasValue || _to.HasValue;
+
+    private Task EmitAsync() => OnChange.InvokeAsync(new State(
+        Search: _search.Trim(),
+        From:   _from,
+        To:     _to));
+
+    // ── Search ─────────────────────────────────────────────────────────────
+    private async Task OnSearchInput(ChangeEventArgs e)
+    {
+        _search = e.Value?.ToString() ?? "";
+        await EmitAsync();
+    }
+
+    private async Task ClearSearchAsync()
+    {
+        _search = "";
+        await EmitAsync();
+    }
+
+    // ── Date range ─────────────────────────────────────────────────────────
+    private async Task OnFromChange(ChangeEventArgs e)
+    {
+        _from = DateTime.TryParse(e.Value?.ToString(), out var d)
+            ? d.Date
+            : (DateTime?)null;
+        _activePreset = null;   // manual edit cancels preset highlight
+        await EmitAsync();
+    }
+
+    private async Task OnToChange(ChangeEventArgs e)
+    {
+        // Push to end-of-day so the comparison `SubmittedAt <= To` includes
+        // submissions made any time on the selected day.
+        _to = DateTime.TryParse(e.Value?.ToString(), out var d)
+            ? d.Date.AddDays(1).AddTicks(-1)
+            : (DateTime?)null;
+        _activePreset = null;
+        await EmitAsync();
+    }
+
+    // ── Presets ────────────────────────────────────────────────────────────
+    // Named wrappers so the markup can use bare-method handlers
+    // (@onclick="PresetTodayAsync") rather than string-literal lambdas.
+    private Task PresetTodayAsync() => SetPresetAsync("today");
+    private Task Preset7dAsync()    => SetPresetAsync("7d");
+    private Task Preset30dAsync()   => SetPresetAsync("30d");
+    private Task PresetMonthAsync() => SetPresetAsync("month");
+
+    private async Task SetPresetAsync(string key)
+    {
+        // Re-clicking an active preset clears it — feels natural on touch.
+        if (_activePreset == key)
+        {
+            _activePreset = null;
+            _from = null;
+            _to   = null;
+            await EmitAsync();
+            return;
+        }
+
+        var today = DateTime.Today;
+        _activePreset = key;
+        switch (key)
+        {
+            case "today":
+                _from = today;
+                _to   = today.AddDays(1).AddTicks(-1);
+                break;
+            case "7d":
+                _from = today.AddDays(-6);
+                _to   = today.AddDays(1).AddTicks(-1);
+                break;
+            case "30d":
+                _from = today.AddDays(-29);
+                _to   = today.AddDays(1).AddTicks(-1);
+                break;
+            case "month":
+                _from = new DateTime(today.Year, today.Month, 1);
+                _to   = _from.Value.AddMonths(1).AddTicks(-1);
+                break;
+        }
+        await EmitAsync();
+    }
+
+    // ── Clear-all ──────────────────────────────────────────────────────────
+    private async Task ClearAllAsync()
+    {
+        _search       = "";
+        _from         = null;
+        _to           = null;
+        _activePreset = null;
+        await EmitAsync();
+    }
+
+    /// <summary>Payload raised by <see cref="OnChange"/>. A struct-like
+    /// record so consumers can pattern-match or read fields directly.</summary>
+    public record State(string Search, DateTime? From, DateTime? To)
+    {
+        public bool IsActive =>
+            !string.IsNullOrWhiteSpace(Search) || From.HasValue || To.HasValue;
+
+        /// <summary>Is the given timestamp inside the active window? Both
+        /// bounds are optional — null means "no constraint on that side".</summary>
+        public bool Includes(DateTime t)
+        {
+            if (From.HasValue && t < From.Value) return false;
+            if (To.HasValue   && t > To.Value)   return false;
+            return true;
+        }
+
+        /// <summary>True if any of the candidate strings contains the
+        /// search needle (case-insensitive). Used by every consumer page.</summary>
+        public bool Matches(params string?[] haystacks)
+        {
+            if (string.IsNullOrWhiteSpace(Search)) return true;
+            var needle = Search;
+            foreach (var h in haystacks)
+            {
+                if (!string.IsNullOrEmpty(h) &&
+                    h.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+    }
+}

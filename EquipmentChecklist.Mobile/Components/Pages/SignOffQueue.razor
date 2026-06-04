@@ -6,6 +6,7 @@
 @inject AuthService      Auth
 @inject ActionQueue      Actions
 @inject LocalCache       Cache
+@inject Audit            Audit
 @inject NavigationManager Nav
 @inject IJSRuntime       JS
 
@@ -18,6 +19,12 @@
     </div>
     <button class="ghost" @onclick="LoadAsync" disabled="@busy">↻ Refresh</button>
 </div>
+
+@* ───────────── SEARCH + DATE-RANGE BAR ─────────────
+   Searches across operator name, employee number, machine number / name.
+   Date range narrows by SubmittedAt. *@
+<FilterBar Placeholder="Search operator name, employee #, or machine…"
+           OnChange="OnFilterChanged" />
 
 @if (busy && queue is null)
 {
@@ -39,9 +46,17 @@ else if (queue is null || queue.Count == 0)
         <p>No submissions are waiting for your sign-off right now.</p>
     </div>
 }
+else if (Filtered.Count == 0)
+{
+    <div class="state">
+        <div class="big">🔍</div>
+        <h2>No matches</h2>
+        <p>No submissions match your search. Try clearing the filters or widening the date range.</p>
+    </div>
+}
 else
 {
-    <p class="count-line">@queue.Count submission(s) waiting</p>
+    <p class="count-line">@CountLine</p>
 
     <div class="queue-list">
         @foreach (var q in PagedRows)
@@ -95,7 +110,7 @@ else
     {
         <div class="pager">
             <span class="pager-info">
-                Showing @FirstRowIndex–@LastRowIndex of @queue.Count
+                Showing @FirstRowIndex–@LastRowIndex of @Filtered.Count
             </span>
             <div class="pager-btns">
                 <button class="pg" disabled="@(currentPage == 1)"
@@ -250,21 +265,57 @@ else
     private string error       = "";
     private int    currentPage = 1;
 
+    /// <summary>Search + date-range state owned by the <see cref="FilterBar"/>.</summary>
+    private FilterBar.State _bar = new(Search: "", From: null, To: null);
+
+    private void OnFilterChanged(FilterBar.State s)
+    {
+        _bar         = s;
+        currentPage  = 1;
+        StateHasChanged();
+    }
+
+    /// <summary>The visible queue after applying search + date range.</summary>
+    private List<SupervisorQueueItemDto> Filtered
+    {
+        get
+        {
+            if (queue is null) return new();
+            if (!_bar.IsActive) return queue;
+            return queue.Where(q =>
+                _bar.Includes(q.SubmittedAt) &&
+                _bar.Matches(q.OperatorName, q.OperatorEmployeeNumber,
+                             q.MachineNumber, q.MachineName))
+                .ToList();
+        }
+    }
+
+    /// <summary>"3 of 12 submission(s) waiting" when filters are active so
+    /// the supervisor can see they're looking at a slice, not the full set.</summary>
+    private string CountLine
+    {
+        get
+        {
+            var total = queue?.Count ?? 0;
+            if (_bar.IsActive)
+                return $"{Filtered.Count} of {total} submission(s) match";
+            return $"{total} submission(s) waiting";
+        }
+    }
+
     // ── Pager plumbing (mirrors Dashboard + MySubmissions) ──────────────────
     private int TotalPages =>
-        queue is null || queue.Count == 0
+        Filtered.Count == 0
             ? 1
-            : (int)Math.Ceiling(queue.Count / (double)PAGE_SIZE);
+            : (int)Math.Ceiling(Filtered.Count / (double)PAGE_SIZE);
 
     private IEnumerable<SupervisorQueueItemDto> PagedRows =>
-        queue is null
-            ? Enumerable.Empty<SupervisorQueueItemDto>()
-            : queue.Skip((currentPage - 1) * PAGE_SIZE).Take(PAGE_SIZE);
+        Filtered.Skip((currentPage - 1) * PAGE_SIZE).Take(PAGE_SIZE);
 
     private int FirstRowIndex =>
-        queue is null || queue.Count == 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+        Filtered.Count == 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
     private int LastRowIndex  =>
-        queue is null ? 0 : Math.Min(currentPage * PAGE_SIZE, queue.Count);
+        Math.Min(currentPage * PAGE_SIZE, Filtered.Count);
 
     /// <summary>
     /// Window-style page list: always show 1 + last + a window of 1 around the
@@ -408,6 +459,11 @@ else
             if (Connectivity.NetworkAccess != NetworkAccess.Internet)
             {
                 await Actions.EnqueueSignOffAsync(qa.SubmissionId, resolution, sig);
+                await Audit.LogAsync(
+                    action:     AuditActions.SubmissionSignedOff,
+                    targetType: "Submission",
+                    targetId:   qa.SubmissionId,
+                    payload:    new { resolution, deliveredVia = "queue" });
                 CloseQuickApprove();
                 return;
             }
@@ -421,6 +477,11 @@ else
                 qaBusy  = false;
                 return;
             }
+            await Audit.LogAsync(
+                action:     AuditActions.SubmissionSignedOff,
+                targetType: "Submission",
+                targetId:   qa.SubmissionId,
+                payload:    new { resolution, deliveredVia = "online" });
             CloseQuickApprove();
             await LoadAsync();          // refresh the queue
         }
@@ -428,6 +489,11 @@ else
         {
             // Network died mid-call — queue and close the modal.
             await Actions.EnqueueSignOffAsync(qa.SubmissionId, resolution, sig);
+            await Audit.LogAsync(
+                action:     AuditActions.SubmissionSignedOff,
+                targetType: "Submission",
+                targetId:   qa.SubmissionId,
+                payload:    new { resolution, deliveredVia = "queue_after_network_drop" });
             CloseQuickApprove();
         }
         catch (Exception ex)

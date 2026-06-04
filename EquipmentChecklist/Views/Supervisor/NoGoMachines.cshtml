@@ -3,48 +3,384 @@
 @{
     ViewData["Title"] = "NO-GO Machines";
     Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var pageNum    = (int)(ViewBag.Page ?? 1);
+    var totalPages = (int)(ViewBag.TotalPages ?? 1);
+    var totalCount = (int)(ViewBag.TotalCount ?? Model.Count);
+    var pageSize   = (int)(ViewBag.PageSize ?? 6);
+
+    // Acknowledgement model: a defect is "acknowledged" when a mechanic has
+    // claimed it (RepairStatus moved past Pending). Pending means no one has
+    // picked up the work yet — the chip stays amber so the supervisor can
+    // see at a glance which defects need chasing.
+    string AckLabel(DefectOrder d) => d.RepairStatus switch
+    {
+        RepairStatus.Pending       => "⏳ Not acknowledged",
+        RepairStatus.InProgress    => "✓ Acknowledged",
+        RepairStatus.AwaitingParts => "🧰 Awaiting parts",
+        _                          => d.RepairStatus.ToString()
+    };
+    string AckClass(DefectOrder d) => d.RepairStatus switch
+    {
+        RepairStatus.Pending       => "ack-pending",
+        RepairStatus.InProgress    => "ack-ok",
+        RepairStatus.AwaitingParts => "ack-parts",
+        _                          => "ack-ok"
+    };
 }
 
-<h2 style="margin-bottom:16px;font-size:20px">Immobilised Machines</h2>
+<div class="ngm-head">
+    <div>
+        <h2 class="page-title">🚫 Immobilised Machines</h2>
+        <p class="page-subtitle">
+            Equipment currently NO-GO. Mechanic acknowledgement and repair progress shown below.
+        </p>
+    </div>
+    @if (totalCount > 0)
+    {
+        <div class="ngm-stat">
+            <div class="ngm-stat-n">@totalCount</div>
+            <div class="ngm-stat-l">immobilised</div>
+        </div>
+    }
+</div>
 
-@if (!Model.Any())
+@if (!Model.Any() && totalCount == 0)
 {
-    <div style="text-align:center;padding:60px;color:var(--text-muted)">
-        <div style="font-size:56px;margin-bottom:12px">✅</div>
-        <h2 style="font-size:24px">All machines operational!</h2>
-        <p style="margin-top:8px">No machines are currently immobilised.</p>
+    <div class="ngm-empty">
+        <div class="ngm-empty-icon">✅</div>
+        <h3>All machines operational</h3>
+        <p>No machines are currently immobilised. Have a good shift.</p>
     </div>
 }
 else
 {
-    <div class="alert alert-danger" style="margin-bottom:20px">
-        🚫 <strong>@Model.Count machine(s) immobilised.</strong>
-        These machines must not be operated until repaired and cleared.
+    <div class="ngm-grid">
+        @foreach (var m in Model)
+        {
+            @* Defect orders we care about — exclude completed. Project the
+               full graph the card needs so we don't compute it twice in the
+               markup. *@
+            var openDefects = m.Submissions
+                .SelectMany(s => s.DefectOrders)
+                .Where(d => d.RepairStatus != RepairStatus.Completed)
+                .OrderByDescending(d => d.CreatedAt)
+                .ToList();
+
+            var latestSub = m.Submissions
+                .OrderByDescending(s => s.SubmittedAt)
+                .FirstOrDefault();
+
+            var oldestOpen = openDefects.Any()
+                ? openDefects.Min(d => d.CreatedAt)
+                : (DateTime?)null;
+
+            var unacked = openDefects.Count(d => d.RepairStatus == RepairStatus.Pending);
+
+            <div class="ngm-card">
+                @* ── Top strip ────────────────────────────────────── *@
+                <div class="ngm-card-top">
+                    <div>
+                        <div class="ngm-num">@m.MachineNumber</div>
+                        <div class="ngm-name">
+                            @m.MachineName
+                            @if (!string.IsNullOrEmpty(m.TypeName))
+                            {
+                                <span class="ngm-type"> · @m.TypeName</span>
+                            }
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0">
+                        <span class="ngm-badge">🚫 NO-GO</span>
+                        @if (m.AwaitingAdminClearance)
+                        {
+                            <span class="ngm-badge"
+                                  style="background:rgba(245,158,11,.18);color:#fbbf24;border-color:#f59e0b">
+                                ⏳ AWAITING ADMIN
+                            </span>
+                        }
+                    </div>
+                </div>
+
+                @* ── Reason + when ─────────────────────────────────── *@
+                <div class="ngm-reason">
+                    @if (!string.IsNullOrEmpty(m.ImmobilisedReason))
+                    {
+                        <span class="ngm-reason-text">@m.ImmobilisedReason</span>
+                    }
+                    else
+                    {
+                        <span class="ngm-reason-text muted">No reason recorded.</span>
+                    }
+                </div>
+
+                @* ── Meta strip — operator + age + counts ─────────── *@
+                <div class="ngm-meta">
+                    @if (latestSub != null)
+                    {
+                        <span class="ngm-meta-chip">
+                            👤 @(latestSub.Operator?.FullName ?? "—")
+                        </span>
+                    }
+                    @if (oldestOpen.HasValue)
+                    {
+                        var ageDays = (int)Math.Floor((DateTime.UtcNow - oldestOpen.Value).TotalDays);
+                        var ageLabel = ageDays switch
+                        {
+                            0 => "today",
+                            1 => "1 day down",
+                            _ => $"{ageDays} days down"
+                        };
+                        <span class="ngm-meta-chip @(ageDays >= 3 ? "warn" : "")">
+                            📅 @ageLabel
+                        </span>
+                    }
+                    <span class="ngm-meta-chip">
+                        🔧 @openDefects.Count defect@(openDefects.Count == 1 ? "" : "s")
+                    </span>
+                    @if (unacked > 0)
+                    {
+                        <span class="ngm-meta-chip danger">
+                            ⏳ @unacked unacknowledged
+                        </span>
+                    }
+                </div>
+
+                @* ── Per-defect detail ─────────────────────────────── *@
+                @if (openDefects.Any())
+                {
+                    <div class="ngm-defects">
+                        @foreach (var d in openDefects)
+                        {
+                            <div class="ngm-defect">
+                                <div class="ngm-defect-head">
+                                    <div class="ngm-defect-name">
+                                        @(d.SubmissionItem?.TemplateItem?.ItemName ?? d.DefectDescription)
+                                    </div>
+                                    <span class="ngm-ack @AckClass(d)">@AckLabel(d)</span>
+                                </div>
+                                <div class="ngm-defect-meta">
+                                    @if (!string.IsNullOrEmpty(d.AssignedMechanicId))
+                                    {
+                                        <span class="ngm-mech">
+                                            🧰 @(d.AssignedMechanic?.FullName ?? "Mechanic")
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="ngm-mech unassigned">
+                                            ❔ Unassigned
+                                        </span>
+                                    }
+                                    @if (!string.IsNullOrEmpty(d.PartRequired))
+                                    {
+                                        <span class="ngm-part">
+                                            🔩 @d.PartRequired@(string.IsNullOrEmpty(d.PartNumber) ? "" : $" ({d.PartNumber})")
+                                        </span>
+                                    }
+                                    <span class="ngm-when mono">
+                                        @d.CreatedAt.ToString("yyyy-MM-dd HH:mm")
+                                    </span>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
     </div>
 
-    @foreach (var m in Model)
+    @* ─── Pager ─────────────────────────────────────────────── *@
+    @if (totalPages > 1)
     {
-        <div class="immobilised-banner" style="flex-direction:column;align-items:start;gap:8px;margin-bottom:12px">
-            <div style="display:flex;justify-content:space-between;width:100%">
-                <div>
-                    <strong style="font-size:16px">@m.MachineNumber – @m.MachineName</strong>
-                    <p style="font-size:13px;margin-top:4px;color:#fca5a5">@m.ImmobilisedReason</p>
-                </div>
-                <span class="badge badge-nogo">🚫 NO-GO</span>
-            </div>
+        var window = 1;
+        var visible = new List<int>();
+        for (int p = 1; p <= totalPages; p++)
+        {
+            if (p == 1 || p == totalPages ||
+                (p >= pageNum - window && p <= pageNum + window))
+                visible.Add(p);
+            else if (p == pageNum - window - 1 || p == pageNum + window + 1)
+                visible.Add(-1);
+        }
+        string PageUrl(int p) => $"/Supervisor/NoGoMachines?page={p}";
+        int firstRow = (pageNum - 1) * pageSize + 1;
+        int lastRow  = Math.Min(pageNum * pageSize, totalCount);
 
-            @{
-                var defectOrders = m.Submissions
-                    .SelectMany(s => s.DefectOrders)
-                    .Where(d => d.RepairStatus != RepairStatus.Completed)
-                    .ToList();
-            }
-            @if (defectOrders.Any())
-            {
-                <div style="font-size:12px;color:#fca5a5">
-                    @defectOrders.Count open defect order(s) pending repair.
-                </div>
-            }
+        <div class="ngm-pager">
+            <span class="ngm-pager-info">
+                Page @pageNum of @totalPages
+                <span class="dot-sep">·</span>
+                @firstRow–@lastRow of @totalCount
+            </span>
+            <div class="ngm-pager-btns">
+                <a href="@PageUrl(Math.Max(1, pageNum - 1))"
+                   class="ngm-pg @(pageNum == 1 ? "disabled" : "")"
+                   title="Previous">‹ Prev</a>
+
+                @foreach (var p in visible)
+                {
+                    if (p == -1)
+                    {
+                        <span class="ngm-pg dots">…</span>
+                    }
+                    else
+                    {
+                        <a href="@PageUrl(p)"
+                           class="ngm-pg @(p == pageNum ? "on" : "")">@p</a>
+                    }
+                }
+
+                <a href="@PageUrl(Math.Min(totalPages, pageNum + 1))"
+                   class="ngm-pg @(pageNum == totalPages ? "disabled" : "")"
+                   title="Next">Next ›</a>
+            </div>
         </div>
     }
 }
+
+<style>
+    /* ── Page head ────────────────────────────────────────────── */
+    .ngm-head {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        margin-bottom:18px; flex-wrap:wrap; gap:14px;
+    }
+    .ngm-stat {
+        background:var(--steel-mid); border:1px solid #7f1d1d;
+        border-radius:10px; padding:10px 18px; text-align:center;
+        min-width:120px;
+    }
+    .ngm-stat-n { font-size:28px; font-weight:800; color:#ef4444; line-height:1; }
+    .ngm-stat-l { font-size:10px; color:var(--text-muted); letter-spacing:.6px;
+                  margin-top:4px; text-transform:uppercase; }
+
+    /* ── Empty state ──────────────────────────────────────────── */
+    .ngm-empty {
+        background:var(--steel-mid); border:1px solid var(--steel-border);
+        border-radius:12px; padding:60px 20px; text-align:center;
+        color:var(--text-muted);
+    }
+    .ngm-empty-icon { font-size:56px; margin-bottom:12px; }
+    .ngm-empty h3 { color:var(--text-primary); font-size:22px; margin:0 0 6px; }
+    .ngm-empty p { font-size:13px; margin:0; }
+
+    /* ── Card grid ────────────────────────────────────────────── */
+    .ngm-grid {
+        display:grid; grid-template-columns:repeat(auto-fill, minmax(420px, 1fr));
+        gap:16px;
+    }
+    @@media (max-width: 800px) {
+        .ngm-grid { grid-template-columns: 1fr; }
+    }
+    .ngm-card {
+        background:var(--steel-mid);
+        border:1px solid #1f2a3a;
+        border-left:4px solid #ef4444;
+        border-radius:10px;
+        padding:18px;
+        display:flex; flex-direction:column; gap:14px;
+        box-shadow:0 1px 3px rgba(0,0,0,.15);
+        transition:border-color .15s, transform .15s;
+    }
+    .ngm-card:hover { border-color:#7f1d1d; transform:translateY(-1px); }
+
+    .ngm-card-top {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        gap:12px;
+    }
+    .ngm-num   { font-size:20px; font-weight:800; font-family:var(--font-mono);
+                 color:var(--text-primary); }
+    .ngm-name  { font-size:13px; color:var(--text-muted); margin-top:2px; }
+    .ngm-type  { color:#94a3b8; font-style:italic; }
+    .ngm-badge {
+        background:rgba(239,68,68,.18); color:#fca5a5;
+        border:1px solid #ef4444; padding:4px 10px;
+        border-radius:5px; font-size:11px; font-weight:700;
+        letter-spacing:.6px; white-space:nowrap; flex-shrink:0;
+    }
+
+    .ngm-reason {
+        background:rgba(127,29,29,.18); border:1px solid #7f1d1d;
+        border-radius:8px; padding:10px 14px;
+        font-size:13px; color:#fca5a5; line-height:1.5;
+    }
+    .ngm-reason-text.muted { color:#94a3b8; font-style:italic; }
+
+    .ngm-meta {
+        display:flex; gap:6px; flex-wrap:wrap;
+    }
+    .ngm-meta-chip {
+        background:#0d1729; border:1px solid var(--steel-border);
+        padding:4px 9px; border-radius:5px;
+        font-size:11px; color:#cbd5e1;
+    }
+    .ngm-meta-chip.warn   { background:rgba(245,158,11,.12);
+                            border-color:#92400e; color:#fbbf24; }
+    .ngm-meta-chip.danger { background:rgba(239,68,68,.12);
+                            border-color:#7f1d1d; color:#fca5a5; }
+
+    /* ── Per-defect blocks ────────────────────────────────────── */
+    .ngm-defects {
+        display:flex; flex-direction:column; gap:8px;
+        margin-top:2px;
+    }
+    .ngm-defect {
+        background:#0d1729; border:1px solid #1a2638;
+        border-radius:8px; padding:10px 12px;
+    }
+    .ngm-defect-head {
+        display:flex; justify-content:space-between; align-items:flex-start;
+        gap:8px; margin-bottom:6px;
+    }
+    .ngm-defect-name {
+        font-size:13px; font-weight:600; color:var(--text-primary);
+    }
+    .ngm-ack {
+        font-size:10px; font-weight:700; letter-spacing:.4px;
+        padding:3px 8px; border-radius:4px; border:1px solid;
+        white-space:nowrap; flex-shrink:0;
+    }
+    .ngm-ack.ack-pending { color:#fbbf24; border-color:#92400e;
+                           background:rgba(245,158,11,.14); }
+    .ngm-ack.ack-ok      { color:#86efac; border-color:#166534;
+                           background:rgba(34,197,94,.10); }
+    .ngm-ack.ack-parts   { color:#7dd3fc; border-color:#0ea5e9;
+                           background:rgba(14,165,233,.10); }
+
+    .ngm-defect-meta {
+        display:flex; gap:10px; flex-wrap:wrap;
+        font-size:11px; color:var(--text-muted);
+    }
+    .ngm-mech            { color:#cbd5e1; }
+    .ngm-mech.unassigned { color:#fbbf24; }
+    .ngm-part            { color:#7dd3fc; }
+    .ngm-when            { color:#64748b; font-family:var(--font-mono); }
+    .mono                { font-family:var(--font-mono); }
+
+    /* ── Pager ────────────────────────────────────────────────── */
+    .ngm-pager {
+        margin-top:18px; padding:12px 16px;
+        background:var(--steel-mid); border:1px solid var(--steel-border);
+        border-radius:10px;
+        display:flex; justify-content:space-between; align-items:center;
+        flex-wrap:wrap; gap:10px;
+    }
+    .ngm-pager-info { font-size:11px; color:var(--text-muted); }
+    .ngm-pager-info .dot-sep { color:#475569; margin:0 4px; }
+    .ngm-pager-btns { display:flex; align-items:center; gap:4px;
+                      flex-wrap:wrap; }
+    .ngm-pg {
+        display:inline-flex; align-items:center; justify-content:center;
+        min-width:32px; padding:5px 10px;
+        border:1px solid var(--steel-border);
+        color:var(--text-primary); background:transparent;
+        border-radius:6px; font-size:12px; text-decoration:none;
+    }
+    .ngm-pg:hover:not(.disabled):not(.dots):not(.on)
+                       { background:#1a2638; border-color:var(--amber); }
+    .ngm-pg.on         { background:var(--amber); color:#0a1726;
+                         border-color:var(--amber); font-weight:700; }
+    .ngm-pg.disabled   { opacity:.35; pointer-events:none; }
+    .ngm-pg.dots       { border:none; cursor:default; color:#64748b;
+                         padding:5px 4px; min-width:auto; }
+</style>
