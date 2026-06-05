@@ -1,0 +1,95 @@
+@{
+    ViewData["Title"] = "Add backup admin";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="max-width:640px">
+    <a href="/Admin/Admins" class="btn btn-ghost" style="margin-bottom:16px">← Back to Admins</a>
+
+    @* ── Warning banner ───────────────────────────────────────────────────
+       This is the high-stakes page in the whole system. The banner sets
+       expectations BEFORE the form so the admin knows the weight of what
+       they're doing. The phrasing is deliberately blunt — vague warnings
+       get ignored. *@
+    <div class="alert alert-warning" style="margin-bottom:18px;display:flex;gap:14px;align-items:flex-start">
+        <span style="font-size:26px;flex-shrink:0">🛡</span>
+        <div>
+            <strong style="font-size:14px">You're about to grant full administrator access.</strong>
+            <p style="font-size:13px;margin:6px 0 0;line-height:1.6">
+                The new admin will be able to: create / delete employees, immobilise machines,
+                grant admin clearances, modify checklist templates, see every submission and PDF,
+                view the audit trail, and add or remove other admins. Only use this for a colleague
+                you've verified in person.
+            </p>
+        </div>
+    </div>
+
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:24px">
+        <h2 style="font-size:20px;margin:0 0 6px">New admin account</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:0 0 18px">
+            They'll be able to sign in immediately with the credentials below.
+        </p>
+
+        @if (!ViewData.ModelState.IsValid)
+        {
+            <div class="alert alert-danger" style="margin-bottom:14px">
+                @foreach (var error in ViewData.ModelState.Values.SelectMany(v => v.Errors))
+                {
+                    <div>@error.ErrorMessage</div>
+                }
+            </div>
+        }
+
+        <form method="post" action="/Admin/CreateAdmin">
+            @Html.AntiForgeryToken()
+
+            <div class="form-group">
+                <label class="form-label">Full Name</label>
+                <input type="text" name="fullName" class="form-control"
+                       placeholder="e.g. Thandi Mokoena" required autocomplete="off" />
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Employee Number</label>
+                <input type="text" name="employeeNumber" class="form-control"
+                       placeholder="e.g. ADM-0002" required autocomplete="off" />
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Email Address</label>
+                <input type="email" name="email" class="form-control"
+                       placeholder="thandi@belfast.co.za" required autocomplete="off" />
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Initial Password</label>
+                <input type="password" name="password" class="form-control"
+                       placeholder="Minimum 8 characters" required autocomplete="new-password" />
+                <small style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px;line-height:1.5">
+                    Share this in person, not over email or chat. The new admin should change it on first sign-in.
+                </small>
+            </div>
+
+            @* ── Confirmation gate ───────────────────────────────────────
+               Forces the admin to TYPE the phrase, not just click a button.
+               Stops accidental promotions from misclicks / browser auto-fill
+               more reliably than a "Yes I'm sure" modal. *@
+            <div class="form-group" style="margin-top:24px;padding-top:18px;border-top:1px dashed var(--steel-border)">
+                <label class="form-label" style="color:#fca5a5">
+                    Type <strong style="font-family:ui-monospace,monospace;background:rgba(239,68,68,.12);color:#fecaca;padding:2px 8px;border-radius:4px">GRANT ADMIN</strong> to confirm
+                </label>
+                <input type="text" name="confirmation" class="form-control"
+                       placeholder="GRANT ADMIN" required autocomplete="off"
+                       style="font-family:ui-monospace,monospace;letter-spacing:.5px" />
+                <small style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">
+                    Case-sensitive. Anything else cancels the promotion.
+                </small>
+            </div>
+
+            <div style="display:flex;gap:12px;margin-top:18px">
+                <button type="submit" class="btn btn-primary">Grant admin access</button>
+                <a href="/Admin/Admins" class="btn btn-ghost">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>

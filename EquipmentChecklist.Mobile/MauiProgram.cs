@@ -95,11 +95,18 @@ public static class MauiProgram
 #else
 		const string ApiBaseUrl = "https://localhost:55025/";
 #endif
+		// AuthFailureHandler is a transient DelegatingHandler that watches
+		// every API response for the server's "X-Auth-Failure: user_deactivated"
+		// header and triggers AuthService.HandleRemoteDeactivationAsync the
+		// moment it's seen. Must be Transient (HttpClient factory contract).
+		builder.Services.AddTransient<AuthFailureHandler>();
+
 		builder.Services.AddHttpClient<ApiClient>(c =>
 		{
 			c.BaseAddress = new Uri(ApiBaseUrl);
 			c.Timeout     = TimeSpan.FromSeconds(20);
 		})
+		.AddHttpMessageHandler<AuthFailureHandler>()
 #if DEBUG && ANDROID
 		// The ASP.NET Core dev HTTPS cert isn't trusted by Android's
 		// system store. In DEBUG only, accept anything so dev work isn't

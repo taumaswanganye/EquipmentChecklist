@@ -1,0 +1,98 @@
+@model List<EquipmentChecklist.Models.ApplicationUser>
+@{
+    ViewData["Title"] = "Admins";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    // Roster size is the headline number on this page — if it's "1", the
+    // mine has no backup admin and the next operator absence is going to
+    // be painful. The warning callout below reacts to this count.
+    var activeAdmins = Model.Where(a => a.IsActive).ToList();
+}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h2 style="font-size:20px;margin:0">Administrator accounts</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+            @activeAdmins.Count active · @Model.Count total
+        </p>
+    </div>
+    <a href="/Admin/CreateAdmin" class="btn btn-primary">+ Add backup admin</a>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+
+@if (activeAdmins.Count <= 1)
+{
+    <div class="alert alert-warning" style="margin-bottom:16px;display:flex;gap:12px;align-items:flex-start">
+        <span style="font-size:22px;flex-shrink:0">⚠</span>
+        <div>
+            <strong>You're the only active admin.</strong>
+            If you're out of the office or your account is locked, nobody
+            else can grant clearances, immobilise machines, or modify
+            templates. Add at least one backup admin before that becomes a
+            problem.
+        </div>
+    </div>
+}
+
+@if (Model.Count == 0)
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">🛡</div>
+        <p>No admins yet. The seed user is missing — sign in with the seeded admin then create one here.</p>
+    </div>
+}
+else
+{
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+            <thead style="background:var(--steel-dark)">
+                <tr>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">NAME</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">EMAIL</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">EMPLOYEE #</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">CREATED</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">STATUS</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var admin in Model)
+                {
+                    <tr style="border-top:1px solid var(--steel-border)">
+                        <td style="padding:12px 14px">
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <div style="width:32px;height:32px;border-radius:50%;background:var(--teal);color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">
+                                    @(string.Concat(admin.FullName.Split(' ').Take(2).Select(w => w.Length > 0 ? w[0].ToString() : "")))
+                                </div>
+                                <strong>@admin.FullName</strong>
+                            </div>
+                        </td>
+                        <td style="padding:12px 14px;color:var(--text-muted)">@admin.Email</td>
+                        <td style="padding:12px 14px;font-family:ui-monospace,monospace;font-size:12px">@admin.EmployeeNumber</td>
+                        <td style="padding:12px 14px;color:var(--text-muted);font-size:12px">@admin.CreatedAt.ToString("yyyy-MM-dd")</td>
+                        <td style="padding:12px 14px">
+                            @if (admin.IsActive)
+                            {
+                                <span style="display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;color:#22c55e;border:1px solid #22c55e;background:rgba(34,197,94,.08)">ACTIVE</span>
+                            }
+                            else
+                            {
+                                <span style="display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;color:#94a3b8;border:1px solid #475569;background:rgba(148,163,184,.08)">INACTIVE</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <p style="font-size:11px;color:var(--text-muted);margin-top:12px;line-height:1.6">
+        Every admin promotion is logged in
+        <a href="/Admin/Audit" style="color:var(--teal)">Audit Trail</a>
+        under the <code style="font-family:ui-monospace,monospace">admin.created</code> action,
+        with the actor (current admin) and target (new admin) recorded for SHE / DMR compliance.
+    </p>
+}

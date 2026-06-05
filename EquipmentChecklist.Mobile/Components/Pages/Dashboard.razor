@@ -6,7 +6,12 @@
 @inject AuthService      Auth
 @inject LocalCache       Cache
 @inject MineConfigService Mine
+@inject SubmissionQueue  Queue
+@inject ActionQueue      Actions
+@inject ApiHealth        Health
+@inject SyncWorker       Sync
 @inject NavigationManager Nav
+@implements IDisposable
 
 <div class="page-head">
     <div>
@@ -31,6 +36,18 @@
 @if (IsMechanicOnly)
 {
     <div class="stat-grid">
+        @* Pending-queue tile shows ONLY when we're offline AND there are
+           queued actions / submissions waiting. Tap to navigate into My
+           Submissions where each queued row carries the new "☁ pending
+           sync" chip alongside its real-status badge. *@
+        @if (ShowPendingTile)
+        {
+            <a class="stat queue stat-link" href="/submissions">
+                <div class="stat-label">☁ PENDING SYNC</div>
+                <div class="stat-value">@pendingCount</div>
+                <div class="stat-foot">@PendingHint</div>
+            </a>
+        }
         <div class="stat warn">
             <div class="stat-label">OPEN ASSIGNED</div>
             <div class="stat-value">@(mechStats?.OpenAssigned ?? 0)</div>
@@ -56,6 +73,18 @@
 else
 {
     <div class="stat-grid">
+        @* Same pending-queue tile as the mechanic branch above. The check
+           covers both SubmissionQueue (operator) and ActionQueue
+           (supervisor approvals etc.) so any role with pending work sees
+           it when offline. *@
+        @if (ShowPendingTile)
+        {
+            <a class="stat queue stat-link" href="/submissions">
+                <div class="stat-label">☁ PENDING SYNC</div>
+                <div class="stat-value">@pendingCount</div>
+                <div class="stat-foot">@PendingHint</div>
+            </a>
+        }
         <div class="stat info">
             <div class="stat-label">TOTAL MACHINES</div>
             <div class="stat-value">@(stats?.TotalMachines ?? 0)</div>
@@ -206,6 +235,30 @@ else
     .stat.nogo .stat-value { color:#ef4444; }
     .stat.warn .stat-value { color:#f97316; }
 
+    /* ── Pending-sync queue tile ─────────────────────────────────────────
+       Only renders when offline + pending items exist; uses the same amber
+       palette as the "☁ QUEUED" badge on the My Submissions table so the
+       operator sees one consistent visual language for "offline work that
+       hasn't synced yet". Slight breathing pulse on the left border calls
+       attention to the tile without being annoying. */
+    .stat.queue { border-top-color:#f59e0b;
+                  background:linear-gradient(180deg, rgba(245,158,11,.07) 0%, #111c2e 60%);
+                  border-left:3px solid #f59e0b;
+                  border-radius:0 10px 10px 0;
+                  animation:queue-pulse 2.4s ease-in-out infinite; }
+    .stat.queue .stat-label { color:#fbbf24; }
+    .stat.queue .stat-value { color:#fbbf24; }
+    .stat-foot              { font-size:10px; color:#94a3b8; margin-top:4px;
+                              letter-spacing:.4px; }
+    .stat-link              { text-decoration:none; color:inherit;
+                              display:block; transition:transform .15s; }
+    .stat-link:hover        { transform:translateY(-1px); }
+    .stat-link:active       { transform:translateY(0); }
+    @@keyframes queue-pulse {
+        0%, 100% { border-left-color:#f59e0b; }
+        50%      { border-left-color:#fbbf24; }
+    }
+
     .section-title { font-size:18px; font-weight:700; margin:0 0 12px; }
 
     .state { background:#111c2e; border:1px solid #1f2a3a; border-radius:10px; padding:50px 20px; text-align:center; color:#94a3b8; }
@@ -259,6 +312,35 @@ else
     private bool   busy   = true;
     private string error  = "";
     private int    currentPage = 1;
+
+    /// <summary>
+    /// Sum of SubmissionQueue + ActionQueue counts. Refreshed in
+    /// <see cref="OnQueueChanged"/> whenever either queue raises Changed,
+    /// and every time ApiHealth flips Online ↔ Offline so the tile snaps
+    /// in/out without waiting for the next polling tick.
+    /// </summary>
+    private int pendingCount;
+
+    /// <summary>
+    /// True when we should render the "☁ PENDING SYNC" tile. Two
+    /// conditions, both required:
+    ///   1. ApiHealth says we're NOT online — when the API is reachable
+    ///      the SyncWorker drains the queue within seconds anyway, so a
+    ///      visible tile would just flicker.
+    ///   2. There's at least one queued item. Without this we'd show an
+    ///      attention-grabbing tile that resolves to "0" — the opposite
+    ///      of helpful.
+    /// </summary>
+    private bool ShowPendingTile => !Health.IsOnline && pendingCount > 0;
+
+    /// <summary>
+    /// Friendly hint shown under the count. Singular vs plural matters for
+    /// readability on a small phone screen.
+    /// </summary>
+    private string PendingHint =>
+        pendingCount == 1
+            ? "1 item waiting to sync"
+            : $"{pendingCount} items waiting to sync";
 
     /// <summary>
     /// True when the signed-in user is a Mechanic with no other elevated role.
@@ -321,6 +403,23 @@ else
     {
         var token = await Auth.GetTokenAsync();
         if (string.IsNullOrEmpty(token)) { Nav.NavigateTo("/login", replace:true); return; }
+
+        // ── Queue + health subscriptions ─────────────────────────────────
+        // The pending-sync tile depends on three things changing over the
+        // lifetime of the dashboard page:
+        //   • SubmissionQueue.Changed → operator just submitted offline.
+        //   • ActionQueue.Changed     → supervisor / mechanic queued a
+        //                               sign-off, claim, or completion.
+        //   • ApiHealth.Changed       → connectivity flipped; the tile
+        //                               needs to appear/disappear without
+        //                               waiting for the next queue event.
+        // SyncWorker.DrainCompleted fires after the queue drains so the
+        // tile vanishes immediately once items are gone.
+        Queue.Changed       += OnQueueChanged;
+        Actions.Changed     += OnQueueChanged;
+        Health.Changed      += OnHealthChanged;
+        Sync.DrainCompleted += OnQueueChanged;
+        await RefreshPendingCountAsync();
 
         var email = Auth.CurrentUser?.Email;
 
@@ -469,4 +568,45 @@ else
         ChecklistStatus.Rejected          => ("rejected", "REJECTED"),
         _                                 => ("gobut",    "PENDING")
     };
+
+    // ── Pending-queue tile plumbing ──────────────────────────────────────
+
+    /// <summary>
+    /// Re-reads both queue counts and re-renders. Wrapped in a try because
+    /// SQLite reads CAN fail (file locked during a concurrent write, for
+    /// example) and a failure to count shouldn't take down the dashboard.
+    /// </summary>
+    private async Task RefreshPendingCountAsync()
+    {
+        try
+        {
+            var subs    = await Queue.CountAsync();
+            var actions = await Actions.CountAsync();
+            pendingCount = subs + actions;
+        }
+        catch
+        {
+            // Leave pendingCount at its previous value rather than zeroing
+            // it — a transient SQLite hiccup shouldn't make the tile vanish.
+        }
+    }
+
+    private void OnQueueChanged() => InvokeAsync(async () =>
+    {
+        await RefreshPendingCountAsync();
+        StateHasChanged();
+    });
+
+    private void OnHealthChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        // Unsubscribe — without this the singletons keep firing into the
+        // disposed page after the operator navigates away, and Blazor
+        // logs an "object disposed" exception on each event.
+        Queue.Changed       -= OnQueueChanged;
+        Actions.Changed     -= OnQueueChanged;
+        Health.Changed      -= OnHealthChanged;
+        Sync.DrainCompleted -= OnQueueChanged;
+    }
 }

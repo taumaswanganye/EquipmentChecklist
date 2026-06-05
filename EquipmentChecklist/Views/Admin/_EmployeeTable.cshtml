@@ -27,6 +27,7 @@ else
                 <th>Employee #</th>
                 <th>Email</th>
                 <th>Status</th>
+                <th style="text-align:right">Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -49,6 +50,50 @@ else
                         {
                             <span class="badge badge-pending">Inactive</span>
                         }
+                    </td>
+                    <td style="text-align:right;white-space:nowrap">
+                        @* Reset Password — small inline form per row.
+                           Anti-forgery is required because the controller is
+                           [ValidateAntiForgeryToken]. onsubmit confirm() so
+                           a slip-finger click can't reset by accident. *@
+                        <form method="post" action="/Admin/ResetEmployeePassword"
+                              style="display:inline-block;margin:0"
+                              onsubmit="return confirm('Reset @user.FullName\'s password and email it to @user.Email?');">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="userId" value="@user.Id" />
+                            <button type="submit" class="btn btn-ghost btn-sm"
+                                    title="Generate a new temporary password and email it to the user"
+                                    @(string.IsNullOrEmpty(user.Email) ? "disabled" : "")>
+                                🔑 Reset
+                            </button>
+                        </form>
+
+                        @* Toggle activation. The button label + confirm message
+                           flips based on current state so the verb matches the
+                           action the admin is about to take. *@
+                        <form method="post" action="/Admin/SetEmployeeActive"
+                              style="display:inline-block;margin:0 0 0 4px"
+                              onsubmit="return confirm('@(user.IsActive ? $"Deactivate {user.FullName}? They'll be signed out the next time their phone reaches the server, and offline sign-in will be blocked." : $"Reactivate {user.FullName}? They'll be able to sign in again immediately.")');">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="userId" value="@user.Id" />
+                            <input type="hidden" name="active" value="@(!user.IsActive)" />
+                            @if (user.IsActive)
+                            {
+                                <button type="submit" class="btn btn-ghost btn-sm"
+                                        style="color:#fca5a5"
+                                        title="Block this user from signing in (online and offline)">
+                                    🚫 Deactivate
+                                </button>
+                            }
+                            else
+                            {
+                                <button type="submit" class="btn btn-ghost btn-sm"
+                                        style="color:#86efac"
+                                        title="Allow this user to sign in again">
+                                    ✓ Reactivate
+                                </button>
+                            }
+                        </form>
                     </td>
                 </tr>
             }

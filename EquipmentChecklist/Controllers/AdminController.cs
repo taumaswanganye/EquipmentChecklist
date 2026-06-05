@@ -24,13 +24,15 @@ public class AdminController : Controller
     private readonly ReportsService               _reports;
     private readonly NotificationService          _notifications;
     private readonly AuditService                 _audit;
+    private readonly EmailService                 _email;
 
     public AdminController(ApplicationDbContext db,
                            UserManager<ApplicationUser> users,
                            IWebHostEnvironment env,
                            ReportsService reports,
                            NotificationService notifications,
-                           AuditService audit)
+                           AuditService audit,
+                           EmailService email)
     {
         _db            = db;
         _users         = users;
@@ -38,6 +40,7 @@ public class AdminController : Controller
         _reports       = reports;
         _notifications = notifications;
         _audit         = audit;
+        _email         = email;
     }
 
     // ── Image upload helper ───────────────────────────────────────────────────
@@ -410,6 +413,409 @@ public class AdminController : Controller
         await _users.AddToRoleAsync(user, role.ToString());
         TempData["Success"] = $"Employee {fullName} created.";
         return RedirectToAction("Employees");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  PASSWORD RESET (admin-initiated)
+    //
+    //  Operator forgot their password → admin clicks "Reset password" on
+    //  the Employees row → server generates a strong temp password, sets
+    //  it via Identity's standard token flow, and emails the user a clean
+    //  template message with the new credentials. The action is fully
+    //  auditable: AuditActions.UserPasswordReset is logged with the actor
+    //  (current admin) and target (user) so a security review can trace
+    //  every credential change.
+    //
+    //  Why temp-password-in-email (vs reset-link-token):
+    //    * Most operators are field staff with sketchy browser sessions —
+    //      a clickable link is friction; a typed password is what they
+    //      already know how to use.
+    //    * Audit trail captures the admin's intent regardless of which
+    //      method is used.
+    //    * SSL/TLS protects the email in transit; mailbox compromise
+    //      remains the same attack surface either way.
+    // ══════════════════════════════════════════════════════════════════════════
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ResetEmployeePassword(string userId)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            TempData["Error"] = "No user selected.";
+            return RedirectToAction("Employees");
+        }
+
+        var user = await _users.FindByIdAsync(userId);
+        if (user == null)
+        {
+            TempData["Error"] = "That user no longer exists.";
+            return RedirectToAction("Employees");
+        }
+
+        if (string.IsNullOrWhiteSpace(user.Email))
+        {
+            // We could still reset and hand the password over verbally —
+            // but the whole point of this action is "email it to them",
+            // so refusing here flags the data-cleanliness problem rather
+            // than papering over it.
+            TempData["Error"] =
+                $"{user.FullName} has no email address on file. Edit the employee first to add one.";
+            return RedirectToAction("Employees");
+        }
+
+        // Generate a strong-but-typeable temp password. Format:
+        //   Reset-{6 alphanumeric}-{4 digits}
+        // 18 characters, satisfies Identity's defaults (digit + 8+),
+        // memorable enough to be read out over a phone if email fails.
+        var tempPassword = GenerateTempPassword();
+
+        // Identity's "admin reset" pattern: get a token, then apply it.
+        // RemovePasswordAsync + AddPasswordAsync would also work and is
+        // less ceremonial, but the token flow exercises the same code path
+        // a real user-facing reset would, which catches Identity-config
+        // drift earlier.
+        var token  = await _users.GeneratePasswordResetTokenAsync(user);
+        var result = await _users.ResetPasswordAsync(user, token, tempPassword);
+        if (!result.Succeeded)
+        {
+            TempData["Error"] = "Could not reset password: "
+                + string.Join(" ", result.Errors.Select(e => e.Description));
+            return RedirectToAction("Employees");
+        }
+
+        // ── Email the new password ─────────────────────────────────────
+        // EmailService returns false when SMTP isn't configured or the
+        // send actually fails. We still consider the reset itself
+        // successful (the password IS changed); the admin just has to
+        // hand the temp password over in person instead.
+        var adminName = User?.Identity?.Name ?? "an administrator";
+        var emailSent = await _email.SendPasswordResetAsync(
+            toEmail:        user.Email,
+            toName:         user.FullName,
+            newPassword:    tempPassword,
+            resetByAdmin:   adminName);
+
+        // ── Audit trail ────────────────────────────────────────────────
+        // PayloadJson holds the target identity AND whether the email
+        // actually went out, so a later investigation knows whether to
+        // ask the user "did you receive an email" or "did the admin tell
+        // you the password verbally".
+        try
+        {
+            await _audit.LogAsync(
+                action:     AuditActions.UserPasswordReset,
+                targetType: "User",
+                targetId:   null,
+                payload:    new
+                {
+                    targetUserId = user.Id,
+                    targetEmail  = user.Email,
+                    targetName   = user.FullName,
+                    targetRole   = user.Role.ToString(),
+                    emailSent
+                });
+        }
+        catch { /* audit failure shouldn't block the operator flow */ }
+
+        TempData["Success"] = emailSent
+            ? $"Password reset for {user.FullName}. A new temporary password was emailed to {user.Email}."
+            : $"Password reset for {user.FullName}, but the email couldn't be sent. " +
+              $"Temporary password: {tempPassword} — share it with them in person.";
+        return RedirectToAction("Employees");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ACTIVATE / DEACTIVATE USER
+    //
+    //  Toggle a user's IsActive flag. The flag is the single source of
+    //  truth checked in three places:
+    //    1. SyncController.Login — rejects online sign-in for inactive
+    //       users, returning a 403 with a distinct error code so the
+    //       mobile client can show a friendly message and clear its
+    //       cached credentials.
+    //    2. JwtBearer OnTokenValidated — revalidates IsActive against
+    //       the DB on EVERY authenticated API request, so a deactivation
+    //       takes effect within seconds without waiting for the JWT to
+    //       expire on its own.
+    //    3. Mobile AuthService.OfflineSignInAsync — refuses offline
+    //       sign-in when the cached user has IsBlocked=true, which the
+    //       mobile picks up from the server's 403 response.
+    //
+    //  The admin can't deactivate themselves — locking the only admin
+    //  out of the system is a worse outcome than any individual
+    //  password-rotation incident.
+    // ══════════════════════════════════════════════════════════════════════════
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SetEmployeeActive(string userId, bool active)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            TempData["Error"] = "No user selected.";
+            return RedirectToAction("Employees");
+        }
+
+        var user = await _users.FindByIdAsync(userId);
+        if (user == null)
+        {
+            TempData["Error"] = "That user no longer exists.";
+            return RedirectToAction("Employees");
+        }
+
+        // ── Guardrail: an admin can't deactivate themselves. ──
+        // Losing access to your own account mid-session is one of the
+        // few mistakes that's nearly impossible to recover from without
+        // direct database access.
+        var currentAdminId = _users.GetUserId(User);
+        if (string.Equals(user.Id, currentAdminId, StringComparison.Ordinal) && !active)
+        {
+            TempData["Error"] = "You can't deactivate your own admin account.";
+            return RedirectToAction("Employees");
+        }
+
+        // Skip the round-trip if there's nothing to change. The DB write
+        // would be a no-op but we'd still write an audit row, which would
+        // pollute the trail.
+        if (user.IsActive == active)
+        {
+            TempData["Success"] = $"{user.FullName} is already {(active ? "active" : "deactivated")}.";
+            return RedirectToAction("Employees");
+        }
+
+        user.IsActive = active;
+
+        // ── Bump the security stamp ──
+        // Identity uses SecurityStamp for cookie session invalidation —
+        // changing it logs out any active web session for this user
+        // immediately. JWT sessions are revoked via the OnTokenValidated
+        // re-check that hits the database on every API call.
+        await _users.UpdateSecurityStampAsync(user);
+
+        var saveResult = await _users.UpdateAsync(user);
+        if (!saveResult.Succeeded)
+        {
+            TempData["Error"] = "Could not update the user: "
+                + string.Join(" ", saveResult.Errors.Select(e => e.Description));
+            return RedirectToAction("Employees");
+        }
+
+        // ── Audit trail ──
+        try
+        {
+            await _audit.LogAsync(
+                action:     active ? AuditActions.UserReactivated : AuditActions.UserDeactivated,
+                targetType: "User",
+                targetId:   null,
+                payload:    new
+                {
+                    targetUserId = user.Id,
+                    targetEmail  = user.Email,
+                    targetName   = user.FullName,
+                    targetRole   = user.Role.ToString()
+                });
+        }
+        catch { /* audit failure shouldn't block the operator flow */ }
+
+        TempData["Success"] = active
+            ? $"{user.FullName} reactivated. They can sign in again immediately."
+            : $"{user.FullName} deactivated. They'll be signed out next time their phone reaches the API, " +
+              $"and offline sign-in will refuse them on next attempt.";
+        return RedirectToAction("Employees");
+    }
+
+    /// <summary>
+    /// Build an admin-reset temporary password that satisfies the project's
+    /// Identity policy (≥8 chars, ≥1 digit) AND stays typeable enough that
+    /// an operator can re-enter it on a phone screen without misreading
+    /// look-alike glyphs. We deliberately skip the alphabet's
+    /// confusable characters (O/0, 1/l/I) so a fat-fingered "lower-case L"
+    /// can't be mistaken for a one or a capital i.
+    /// </summary>
+    private static string GenerateTempPassword()
+    {
+        const string letters = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz";
+        const string digits  = "23456789";
+
+        // Crypto-secure random source — System.Random isn't strong enough
+        // for credentials. RandomNumberGenerator is the .NET standard.
+        var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+
+        char Pick(string pool)
+        {
+            // GetInt32 is rejection-sampled internally so the modulo
+            // bias problem doesn't apply.
+            var idx = System.Security.Cryptography
+                .RandomNumberGenerator.GetInt32(pool.Length);
+            return pool[idx];
+        }
+
+        var middle  = string.Concat(Enumerable.Range(0, 6).Select(_ => Pick(letters)));
+        var tail    = string.Concat(Enumerable.Range(0, 4).Select(_ => Pick(digits)));
+        return $"Reset-{middle}-{tail}";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ADMIN MANAGEMENT
+    //
+    //  Adding a new admin is deliberately separated from the regular
+    //  CreateEmployee flow because:
+    //    1. Granting Admin = full system access. A confused tap in a
+    //       dropdown shouldn't ever promote someone by accident — the form
+    //       requires the operator to TYPE "GRANT ADMIN" verbatim before
+    //       the POST is accepted.
+    //    2. SHE / DMR audit trail needs to identify which admin promoted
+    //       which other admin, when, and from where. AuditService.LogAsync
+    //       captures actor + IP + UA automatically.
+    //    3. The list view of current admins makes it obvious how many
+    //       backup accounts exist — which is the whole point of this
+    //       feature ("the other admin isn't in the office").
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>Lists every active Admin user so an admin can see who else
+    /// can log in as Admin, with their last-sign-in time as a freshness
+    /// signal.</summary>
+    [HttpGet]
+    public async Task<IActionResult> Admins()
+    {
+        var adminRoleIds = await _db.Roles
+            .Where(r => r.Name == "Admin")
+            .Select(r => r.Id)
+            .ToListAsync();
+
+        // AspNetUserRoles is shadow-mapped in Identity — query through
+        // UserManager rather than the EF DbSet for portability across
+        // Identity versions.
+        var adminUsers = await _users.GetUsersInRoleAsync("Admin");
+
+        // Order admins newest first so a fresh "I just created this backup
+        // admin" entry surfaces at the top of the table.
+        var ordered = adminUsers
+            .OrderByDescending(u => u.CreatedAt)
+            .ToList();
+
+        return View(ordered);
+    }
+
+    /// <summary>Renders the Create Admin form. GET only — no state changes
+    /// here, so no anti-forgery dance required.</summary>
+    [HttpGet]
+    public IActionResult CreateAdmin() => View();
+
+    /// <summary>Creates a new user with the Admin role and writes an audit
+    /// row. Requires the operator to type a confirmation phrase so a
+    /// mis-click can't accidentally grant admin.</summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> CreateAdmin(
+        string fullName,
+        string employeeNumber,
+        string email,
+        string password,
+        string confirmation)
+    {
+        // ── Guardrail #1 — confirmation phrase ─────────────────────────
+        // The form requires the operator to type GRANT ADMIN verbatim.
+        // A misclick or stray Enter on the regular Employees form can't
+        // hit this endpoint because the route is distinct AND the input
+        // is required.
+        const string RequiredPhrase = "GRANT ADMIN";
+        if (!string.Equals(confirmation?.Trim(), RequiredPhrase, StringComparison.Ordinal))
+        {
+            ModelState.AddModelError("",
+                $"Type exactly {RequiredPhrase} (case-sensitive) to confirm you want to grant Admin access.");
+            return View();
+        }
+
+        // ── Guardrail #2 — input validation ────────────────────────────
+        if (string.IsNullOrWhiteSpace(fullName))
+        {
+            ModelState.AddModelError("", "Full name is required.");
+            return View();
+        }
+        if (string.IsNullOrWhiteSpace(employeeNumber))
+        {
+            ModelState.AddModelError("", "Employee number is required.");
+            return View();
+        }
+        if (string.IsNullOrWhiteSpace(email) ||
+            !email.Contains('@'))
+        {
+            ModelState.AddModelError("", "A valid email address is required.");
+            return View();
+        }
+        if (string.IsNullOrEmpty(password) || password.Length < 8)
+        {
+            ModelState.AddModelError("",
+                "Password must be at least 8 characters. Use a passphrase the operator can remember offline.");
+            return View();
+        }
+
+        // ── Guardrail #3 — no duplicate email ──────────────────────────
+        var existing = await _users.FindByEmailAsync(email);
+        if (existing != null)
+        {
+            ModelState.AddModelError("",
+                "An account with that email already exists. Use Employees → Edit to change their role instead.");
+            return View();
+        }
+
+        var user = new ApplicationUser
+        {
+            UserName       = email,
+            Email          = email,
+            FullName       = fullName.Trim(),
+            EmployeeNumber = employeeNumber.Trim(),
+            Role           = UserRole.Admin,
+            IsActive       = true,
+            EmailConfirmed = true
+        };
+
+        var result = await _users.CreateAsync(user, password);
+        if (!result.Succeeded)
+        {
+            ModelState.AddModelError("",
+                string.Join(" ", result.Errors.Select(e => e.Description)));
+            return View();
+        }
+
+        var roleResult = await _users.AddToRoleAsync(user, "Admin");
+        if (!roleResult.Succeeded)
+        {
+            // Rollback the user so we don't leave an orphan with no role
+            // (which is worse than a clean failure — they'd be able to
+            // sign in but see nothing).
+            await _users.DeleteAsync(user);
+            ModelState.AddModelError("",
+                "Account was created but Admin role couldn't be assigned. Try again.");
+            return View();
+        }
+
+        // ── Audit trail ─────────────────────────────────────────────────
+        // The actor (current admin) is taken from the HttpContext inside
+        // AuditService; we only need to supply the target + payload.
+        // PayloadJson is queryable via PG's jsonb so a later investigation
+        // can answer "show me every admin promotion in the last 90 days".
+        try
+        {
+            await _audit.LogAsync(
+                action:     AuditActions.AdminCreated,
+                targetType: "User",
+                targetId:   null,
+                payload:    new
+                {
+                    newAdminId    = user.Id,
+                    newAdminEmail = user.Email,
+                    newAdminName  = user.FullName,
+                    employeeNo    = user.EmployeeNumber
+                });
+        }
+        catch
+        {
+            // Audit write failure must not break the user creation. The
+            // user is already created and the role is assigned; the audit
+            // gap will surface in a separate alert if any.
+        }
+
+        TempData["Success"] =
+            $"Admin {fullName} created. They can sign in with {email} and reset their password from the login page.";
+        return RedirectToAction("Admins");
     }
 
     // ── Assignments ───────────────────────────────────────────────────────────

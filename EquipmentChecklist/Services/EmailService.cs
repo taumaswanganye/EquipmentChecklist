@@ -336,6 +336,130 @@ public class EmailService
         </html>
         """;
     }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  PASSWORD RESET
+    //
+    //  Sent when an admin resets a user's password from the Employees page.
+    //  The temp password is in the body — no link, no token, just the
+    //  credential — because (a) the recipient is often a mine operator who
+    //  doesn't have a reliable browser session anyway, and (b) the audit
+    //  trail already captures who reset whom for SHE / DMR purposes.
+    //
+    //  Security trade-off: a compromised mailbox = compromised account.
+    //  Standard pattern though — the alternative (token URL) has the same
+    //  property and adds friction for a workforce that already mistrusts
+    //  email links because of phishing training.
+    // ═════════════════════════════════════════════════════════════════════════
+    public async Task<bool> SendPasswordResetAsync(
+        string toEmail,
+        string toName,
+        string newPassword,
+        string resetByAdmin)
+    {
+        var smtp     = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
+        var port     = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
+        var user     = _cfg["Email:Username"] ?? "";
+        var pass     = _cfg["Email:Password"] ?? "";
+        var from     = _cfg["Email:From"]     ?? user;
+        var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
+
+        // If email isn't configured we still want the password reset to
+        // succeed locally — but we MUST tell the caller so the admin sees
+        // a "couldn't email — give the temp password verbally" message
+        // and can hand it over in person.
+        if (string.IsNullOrEmpty(user))
+        {
+            _log.LogWarning(
+                "Email not configured — password reset for {Email} succeeded locally but no email was sent. " +
+                "Admin must communicate the temp password manually.", toEmail);
+            return false;
+        }
+
+        var body = BuildPasswordResetHtml(toName, newPassword, resetByAdmin);
+
+        try
+        {
+            using var client       = new SmtpClient(smtp, port);
+            client.EnableSsl       = true;
+            client.Credentials     = new NetworkCredential(user, pass);
+
+            var msg = new MailMessage
+            {
+                From       = new MailAddress(from, fromName),
+                Subject    = $"[{_mine.Name}] Your password has been reset",
+                Body       = body,
+                IsBodyHtml = true,
+            };
+            msg.To.Add(new MailAddress(toEmail, toName));
+
+            await client.SendMailAsync(msg);
+            _log.LogInformation(
+                "Password-reset email sent to {Email} (initiated by {Admin})", toEmail, resetByAdmin);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex,
+                "Failed to send password-reset email to {Email}. The reset HAS been applied locally; " +
+                "the admin must communicate the temp password manually.", toEmail);
+            return false;
+        }
+    }
+
+    private string BuildPasswordResetHtml(string toName, string newPassword, string resetByAdmin)
+    {
+        // Single-column responsive table layout — old-school email HTML so
+        // it renders consistently in Outlook, Gmail, mobile clients. The
+        // password is in a monospace block with high contrast so it can't
+        // be misread when the user types it in (capital O vs zero, etc).
+        var mineName = string.IsNullOrEmpty(_mine.Name) ? "Equipment Checklist" : _mine.Name;
+        return $$"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family:Segoe UI,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                 style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">
+            <tr>
+              <td style="background:#0d1729;color:#ffffff;padding:18px 24px">
+                <div style="font-size:11px;letter-spacing:.6px;color:#94a3b8;text-transform:uppercase">{{mineName}}</div>
+                <div style="font-size:18px;font-weight:700;margin-top:4px">Your password has been reset</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px">
+                <p style="font-size:14px;color:#1f2937;margin:0 0 12px;line-height:1.6">
+                  Hi {{System.Net.WebUtility.HtmlEncode(toName)}},
+                </p>
+                <p style="font-size:14px;color:#1f2937;margin:0 0 18px;line-height:1.6">
+                  An administrator ({{System.Net.WebUtility.HtmlEncode(resetByAdmin)}}) reset your sign-in
+                  password for the {{mineName}} Equipment Checklist system. Use the
+                  temporary password below to sign in, and change it on first login.
+                </p>
+
+                <div style="background:#0d1729;color:#fbbf24;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+                            font-size:18px;font-weight:700;letter-spacing:1px;
+                            padding:14px 18px;border-radius:6px;text-align:center;margin:0 0 18px">
+                  {{newPassword}}
+                </div>
+
+                <p style="font-size:12px;color:#6b7280;margin:0 0 14px;line-height:1.6">
+                  <strong>Important:</strong> change this password the next time you sign in. Don't share
+                  it with anyone. If you didn't request a password reset, contact your supervisor or the
+                  IT team immediately — every admin-initiated reset is logged in the audit trail.
+                </p>
+
+                <p style="font-size:12px;color:#6b7280;margin:18px 0 0;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:14px">
+                  Reset performed at {{DateTime.UtcNow:yyyy-MM-dd HH:mm}} UTC.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </body>
+        </html>
+        """;
+    }
 }
 
 public class OrderLineItem

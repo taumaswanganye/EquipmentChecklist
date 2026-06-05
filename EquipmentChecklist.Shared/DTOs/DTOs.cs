@@ -442,6 +442,26 @@ public static class AuditActions
     public const string UserSignedInOffline   = "user.signin_offline";
     public const string UserSignedOut         = "user.signout";
     public const string UserBiometricUnlocked = "user.biometric_unlock";
+
+    // Privileged-user lifecycle.
+    // Tracked separately from generic user creation because granting Admin
+    // is high-stakes — the SHE / DMR audit trail needs to show who promoted
+    // whom and when, even if a later employee record is edited or removed.
+    public const string AdminCreated         = "admin.created";
+    public const string AdminDeactivated     = "admin.deactivated";
+
+    // Admin-initiated password reset. Distinct from a user-initiated reset
+    // so a security review can see which credential changes were performed
+    // ON BEHALF OF the user (admin override) vs BY the user themselves.
+    public const string UserPasswordReset    = "user.password_reset";
+
+    // Block / unblock by admin. When a user is deactivated, both the
+    // server-side JWT validator AND the mobile-side AuthService refuse
+    // further sign-ins, online or offline. Audit captures the actor +
+    // target so a later "why is this account locked" investigation has
+    // a clear trail.
+    public const string UserDeactivated      = "user.deactivated";
+    public const string UserReactivated      = "user.reactivated";
 }
 
 /// <summary>

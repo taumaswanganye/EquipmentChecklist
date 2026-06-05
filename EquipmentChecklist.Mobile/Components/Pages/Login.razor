@@ -172,13 +172,28 @@
         error = "";
         try
         {
-            var reply = await Api.LoginAsync(email.Trim(), password);
-            if (reply == null)
+            var result = await Api.LoginAsync(email.Trim(), password);
+
+            if (result.IsDeactivated)
+            {
+                // Admin has blocked this user. The ApiClient already
+                // called AuthService.HandleRemoteDeactivationAsync, which
+                // flipped the cached IsBlocked flag — so a follow-up
+                // offline-sign-in attempt with these same credentials
+                // would also fail.
+                error = result.ErrorMessage
+                    ?? "Your account has been deactivated. Contact your administrator.";
+                return;
+            }
+
+            if (!result.Succeeded)
             {
                 error = "Invalid email or password.";
                 return;
             }
-            await Auth.SignInAsync(reply, password, enableBiometrics: enableBio && bioAvailable);
+
+            await Auth.SignInAsync(result.Response!, password,
+                                   enableBiometrics: enableBio && bioAvailable);
             Nav.NavigateTo("/dashboard");
         }
         catch (HttpRequestException)
@@ -200,6 +215,14 @@
 
                 case OfflineSignInResult.WrongPassword:
                     error = "Invalid email or password.";
+                    return;
+
+                case OfflineSignInResult.BlockedByAdmin:
+                    // The cached user was flagged blocked by the server on
+                    // a previous online interaction. Until the operator
+                    // reconnects AND an admin reactivates them, offline
+                    // sign-in stays refused.
+                    error = "Your account has been deactivated. Contact your administrator.";
                     return;
             }
         }

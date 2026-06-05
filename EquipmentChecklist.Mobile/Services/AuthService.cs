@@ -38,6 +38,16 @@ public class AuthService
     /// SignalR connection so it doesn't reconnect with a stale token.</summary>
     public event Action? SignedOut;
 
+    /// <summary>
+    /// Fires once when the server confirms the current user has been
+    /// deactivated by an admin. The MainLayout subscribes to this to
+    /// show a "your account has been deactivated" toast and bounce the
+    /// app back to /login. The cached credentials are already cleared
+    /// by the time this fires, so an offline-sign-in retry will also
+    /// fail with BlockedByAdmin.
+    /// </summary>
+    public event Action? Deactivated;
+
     public bool IsSignedIn => CurrentUser != null && IsUnlocked;
 
     public AuthService(BiometricUnlock biometric, LocalCache cache)
@@ -149,6 +159,17 @@ public class AuthService
         var user = await _cache.FindUserAsync(email);
         if (user == null) return OfflineSignInResult.UserUnknown;
 
+        // ── Block-flag check ─────────────────────────────────────────────
+        // The server set this on a previous online interaction (login
+        // returned "user_deactivated" OR an authenticated call returned
+        // the X-Auth-Failure: user_deactivated header). Until the user
+        // reconnects with a successful sign-in (which clears the flag),
+        // offline credentials are refused. We check BEFORE the password
+        // verify so a deactivated user doesn't even get the satisfaction
+        // of a "right password but blocked" — they get "blocked" full stop.
+        if (user.IsBlocked)
+            return OfflineSignInResult.BlockedByAdmin;
+
         if (!LocalCache.VerifyPassword(password, user.PasswordHash))
             return OfflineSignInResult.WrongPassword;
 
@@ -181,6 +202,42 @@ public class AuthService
         AuthChanged?.Invoke();
         SignedIn?.Invoke();
         return OfflineSignInResult.Success;
+    }
+
+    /// <summary>
+    /// Called when the server tells us the current user has been
+    /// deactivated (either via the login response's "user_deactivated"
+    /// code, or the X-Auth-Failure: user_deactivated response header on
+    /// any authenticated call — see AuthFailureHandler).
+    ///
+    /// <para>This does three things in order:</para>
+    /// <list type="number">
+    ///   <item><description>Marks the cached user as blocked so a
+    ///   subsequent offline sign-in also fails.</description></item>
+    ///   <item><description>Wipes the JWT from SecureStorage so no
+    ///   stale-token API calls go out.</description></item>
+    ///   <item><description>Raises the <see cref="Deactivated"/> event
+    ///   so MainLayout can toast + navigate to /login.</description></item>
+    /// </list>
+    ///
+    /// <para>Idempotent — calling it multiple times with the same email
+    /// is harmless. ApiClient's failure handler triggers it once per
+    /// detected response so a burst of in-flight requests doesn't fire
+    /// the event a dozen times.</para>
+    /// </summary>
+    public async Task HandleRemoteDeactivationAsync(string? email = null)
+    {
+        // Prefer the explicit email arg (from the login response body)
+        // and fall back to CurrentUser when this is triggered mid-session
+        // by a 401/403 on an already-authenticated request.
+        var target = !string.IsNullOrWhiteSpace(email) ? email : CurrentUser?.Email;
+        if (!string.IsNullOrWhiteSpace(target))
+        {
+            try { await _cache.MarkUserBlockedAsync(target!); } catch { /* non-fatal */ }
+        }
+
+        await SignOutAsync();
+        Deactivated?.Invoke();
     }
 
     public Task SignOutAsync()
@@ -234,4 +291,8 @@ public enum OfflineSignInResult
     /// <summary>No cached profile for this email — first sign-in must be online.</summary>
     UserUnknown,
     WrongPassword,
+    /// <summary>The cached user is flagged IsBlocked — admin deactivated them
+    /// while online and we haven't been online since. Offline sign-in stays
+    /// refused until the user reconnects and an admin reactivates.</summary>
+    BlockedByAdmin,
 }

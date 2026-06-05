@@ -6,6 +6,7 @@
 @inject SyncWorker       Sync
 @inject ApiHealth        Health
 @inject LocalCache       Cache
+@inject ToastService     Toasts
 @inject NavigationManager Nav
 @implements IDisposable
 
@@ -346,9 +347,27 @@
         // health transition firing.
         Nav.LocationChanged += OnLocationChanged;
 
+        // Subscribe to admin-initiated deactivation. Fires when ApiClient
+        // or AuthService detects the server has blocked this user — we
+        // pop a red toast and bounce to /login (the JWT and CurrentUser
+        // are already cleared at that point).
+        Auth.Deactivated    += OnDeactivated;
+
         queuedCount = await Queue.CountAsync() + await Actions.CountAsync();
         await RefreshDaysSinceSyncAsync();
     }
+
+    private void OnDeactivated() => InvokeAsync(() =>
+    {
+        Toasts.Error(
+            "Your account has been deactivated by an administrator. " +
+            "Contact them to be re-enabled.",
+            durationMs: 8000);
+        // SignOutAsync has already run inside HandleRemoteDeactivationAsync;
+        // just navigate. `replace: true` so back-button doesn't return them
+        // to a half-broken page that thinks they're signed in.
+        Nav.NavigateTo("/login", replace: true);
+    });
 
     private void OnHealthChanged()
     {
@@ -423,6 +442,7 @@
         Actions.Changed     -= OnQueueChanged;
         Sync.DrainCompleted -= OnQueueChanged;
         Health.Changed      -= OnHealthChanged;
+        Auth.Deactivated    -= OnDeactivated;
         Nav.LocationChanged -= OnLocationChanged;
         Connectivity.ConnectivityChanged -= OnConnectivityChanged;
     }

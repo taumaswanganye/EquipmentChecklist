@@ -112,14 +112,35 @@ public class SyncController : ControllerBase
             return BadRequest(new { error = "Email and password are required." });
 
         var user = await _users.FindByEmailAsync(req.Email.Trim());
-        if (user == null || !user.IsActive)
+        if (user == null)
             return Unauthorized(new { error = "Invalid email or password." });
 
+        // ── Check the password BEFORE we leak deactivation status ──────
+        // If the password is wrong we still want a generic "invalid email
+        // or password" so an attacker can't enumerate which accounts exist
+        // or which are deactivated. Only AFTER a successful password
+        // check do we tell the legitimate user "your account is blocked",
+        // because they need to know to stop trying.
         var ok = await _signIn.CheckPasswordSignInAsync(user, req.Password, lockoutOnFailure: true);
         if (!ok.Succeeded)
             return Unauthorized(new { error = ok.IsLockedOut
                 ? "Account temporarily locked. Try again in a few minutes."
                 : "Invalid email or password." });
+
+        // ── Now: the password was correct. If the account is deactivated
+        // return a SPECIFIC code so the mobile client can branch:
+        //   * Display "your account has been deactivated"
+        //   * Clear cached credentials so offline sign-in also fails
+        //   * Refuse to issue a JWT — this user is blocked.
+        // Status 403 (not 401) is the conventional signal for "authenticated
+        // but forbidden", which is exactly the state here. The error code
+        // string is contractual — the mobile AuthService matches on it.
+        if (!user.IsActive)
+            return StatusCode(403, new
+            {
+                error = "Your account has been deactivated. Contact your administrator.",
+                code  = "user_deactivated"
+            });
 
         var roles      = await _users.GetRolesAsync(user);
         var (token, exp) = IssueJwt(user, roles);

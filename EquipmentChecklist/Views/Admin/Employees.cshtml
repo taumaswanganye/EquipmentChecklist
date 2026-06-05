@@ -20,8 +20,27 @@
             @Model.Count total · @admins.Count admin · @supervisors.Count supervisor · @mechanics.Count mechanic · @operators.Count operator
         </p>
     </div>
-    <a href="/Admin/CreateEmployee" class="btn btn-primary">+ Add Employee</a>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a href="/Admin/Admins" class="btn btn-ghost" title="Manage administrator accounts">
+            🛡 Manage admins
+        </a>
+        <a href="/Admin/CreateEmployee" class="btn btn-primary">+ Add Employee</a>
+    </div>
 </div>
+
+@* ── Success / error toasts ──────────────────────────────────────────────
+   Surfaced from TempData so post-redirect-get flows like
+   ResetEmployeePassword can show the outcome. The Error toast deliberately
+   uses pre-wrap so a multi-line message (when SMTP is down and the temp
+   password is included in the body) renders with its line breaks intact. *@
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
 
 @if (!Model.Any())
 {

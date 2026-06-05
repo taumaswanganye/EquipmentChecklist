@@ -188,12 +188,34 @@ public class LocalCache
             PasswordHash   = HashPassword(password),
             JwtToken       = jwt,
             JwtExpiresAt   = jwtExp,
-            LastSyncedAt   = DateTime.UtcNow
+            LastSyncedAt   = DateTime.UtcNow,
+            // A successful server sign-in means the user is NOT blocked,
+            // regardless of what we previously cached. This is the path
+            // by which "admin reactivated me" automatically clears the
+            // local block flag — no extra API call needed.
+            IsBlocked      = false
         });
         // The user row is the offline-signin credential. Mirroring here means
         // even an "operator opened the app, signed in, closed it before doing
         // anything" scenario survives a later Clear data.
         // KickBackup();  // ── DISABLED — persistent backup feature off, see PersistentBackup.cs
+    }
+
+    /// <summary>
+    /// Flip the IsBlocked flag on a cached user. Called by AuthService
+    /// the moment the server signals deactivation — either via the login
+    /// response's "user_deactivated" code OR the X-Auth-Failure header on
+    /// any authenticated call. After this, offline sign-in refuses the
+    /// same credentials with a "blocked by admin" error.
+    /// </summary>
+    public async Task MarkUserBlockedAsync(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return;
+        await EnsureInitAsync();
+        var key = NormalizeEmail(email);
+        await _db.ExecuteAsync(
+            "UPDATE cached_users SET IsBlocked = 1, JwtToken = NULL, JwtExpiresAt = NULL WHERE EmailKey = ?",
+            key);
     }
 
     public async Task<CachedUser?> FindUserAsync(string email)
@@ -801,6 +823,15 @@ public class LocalCache
         public string? JwtToken                { get; set; }
         public DateTime? JwtExpiresAt          { get; set; }
         public DateTime LastSyncedAt           { get; set; }
+        /// <summary>
+        /// True when the server has told us this user is deactivated
+        /// (response code "user_deactivated" on login OR X-Auth-Failure
+        /// header on any authenticated call). When true, AuthService
+        /// refuses both online and offline sign-in. Cleared when a fresh
+        /// online sign-in succeeds (because the server wouldn't issue a
+        /// token if the user were still blocked).
+        /// </summary>
+        public bool    IsBlocked              { get; set; }
     }
 
     [Table("cached_submissions")]

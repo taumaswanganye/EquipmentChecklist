@@ -117,6 +117,38 @@ builder.Services.AddAuthentication(opt =>
                 context.Token = token;
             }
             return Task.CompletedTask;
+        },
+
+        // ── Per-request deactivation check ──────────────────────────────
+        // After the JWT signature is validated, look up the user and
+        // refuse the request if they've been deactivated since the token
+        // was issued. This is what makes "admin deactivates user → user's
+        // next API call fails within seconds" work without waiting for
+        // the JWT to expire on its own.
+        //
+        // The cost is one DB read per authenticated API call. For our
+        // scale (a couple hundred operators on a mine) that's negligible
+        // and the security win is large. If this ever becomes a hot path,
+        // cache the IsActive flag in IMemoryCache with a 30s TTL.
+        OnTokenValidated = async context =>
+        {
+            var userManager = context.HttpContext.RequestServices
+                .GetRequiredService<UserManager<ApplicationUser>>();
+            var userId = context.Principal?.FindFirst(
+                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userId))
+            {
+                context.Fail("No user id in token");
+                return;
+            }
+            var user = await userManager.FindByIdAsync(userId);
+            if (user == null || !user.IsActive)
+            {
+                // Distinct response body so the mobile client can branch
+                // between "session expired" and "you've been blocked".
+                context.Response.Headers["X-Auth-Failure"] = "user_deactivated";
+                context.Fail("User is deactivated");
+            }
         }
     };
 });

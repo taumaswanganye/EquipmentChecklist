@@ -108,13 +108,67 @@ public class ApiClient
     }
 
     // ── Login ────────────────────────────────────────────────────────────────
-    public async Task<SyncLoginResponse?> LoginAsync(string email, string password)
+    /// <summary>
+    /// Sign-in result that lets the caller branch on the three meaningful
+    /// outcomes: success (with a JWT), refused (bad credentials), or
+    /// deactivated (the user existed and the password was right, but the
+    /// admin has blocked them).
+    /// </summary>
+    public record LoginResult(
+        SyncLoginResponse? Response,
+        bool               IsDeactivated,
+        string?            ErrorMessage)
+    {
+        public bool Succeeded => Response != null;
+    }
+
+    public async Task<LoginResult> LoginAsync(string email, string password)
     {
         var resp = await _http.PostAsJsonAsync("api/sync/login",
             new SyncLoginRequest { Email = email, Password = password });
-        if (!resp.IsSuccessStatusCode) return null;
-        return await resp.Content.ReadFromJsonAsync<SyncLoginResponse>();
+
+        if (resp.IsSuccessStatusCode)
+        {
+            var body = await resp.Content.ReadFromJsonAsync<SyncLoginResponse>();
+            return new LoginResult(body, false, null);
+        }
+
+        // ── 403 with code=user_deactivated → mark cache + propagate ─────
+        // SyncController.Login returns this specifically when the password
+        // is correct but the account is blocked. The mobile flips the
+        // cached user's IsBlocked flag so a subsequent offline sign-in
+        // also refuses them, even when totally offline.
+        if (resp.StatusCode == HttpStatusCode.Forbidden)
+        {
+            string? errorMessage = null;
+            bool isDeactivated  = false;
+            try
+            {
+                var body = await resp.Content.ReadFromJsonAsync<LoginErrorBody>();
+                if (body != null)
+                {
+                    errorMessage  = body.error;
+                    isDeactivated = string.Equals(body.code, "user_deactivated",
+                                                  StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch { /* malformed body — leave fields null */ }
+
+            if (isDeactivated)
+            {
+                // Fire-and-forget — AuthService will flip the cached
+                // IsBlocked flag, wipe the JWT, and raise its event.
+                _ = _auth.HandleRemoteDeactivationAsync(email);
+                return new LoginResult(null, true,
+                    errorMessage ?? "Your account has been deactivated. Contact your administrator.");
+            }
+        }
+
+        // Generic non-2xx — bad credentials, lockout, server error.
+        return new LoginResult(null, false, null);
     }
+
+    private record LoginErrorBody(string? error, string? code);
 
     public async Task<SyncUserDto?> MeAsync()
     {
