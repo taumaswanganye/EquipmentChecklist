@@ -148,6 +148,46 @@ builder.Services.AddAuthentication(opt =>
                 // between "session expired" and "you've been blocked".
                 context.Response.Headers["X-Auth-Failure"] = "user_deactivated";
                 context.Fail("User is deactivated");
+                return;
+            }
+
+            // ── Device allowlist check ────────────────────────────────
+            // Re-validate the device fingerprint on every authenticated
+            // call so an admin's "deactivate device" takes effect within
+            // seconds, not when the JWT expires. The header is the same
+            // one we required at login.
+            var fp = context.HttpContext.Request.Headers["X-Device-Fingerprint"].ToString();
+            if (string.IsNullOrWhiteSpace(fp))
+            {
+                context.Response.Headers["X-Auth-Failure"] = "device_missing_fingerprint";
+                context.Fail("Device fingerprint missing");
+                return;
+            }
+
+            var db = context.HttpContext.RequestServices
+                .GetRequiredService<EquipmentChecklist.Data.ApplicationDbContext>();
+            var device = await db.AllowedDevices
+                .Where(d => d.DeviceFingerprint == fp)
+                .Select(d => new { d.IsActive, d.AssignedUserId })
+                .FirstOrDefaultAsync();
+            if (device == null)
+            {
+                context.Response.Headers["X-Auth-Failure"] = "device_not_registered";
+                context.Fail("Device not registered");
+                return;
+            }
+            if (!device.IsActive)
+            {
+                context.Response.Headers["X-Auth-Failure"] = "device_revoked";
+                context.Fail("Device revoked");
+                return;
+            }
+            if (!string.IsNullOrEmpty(device.AssignedUserId) &&
+                !string.Equals(device.AssignedUserId, userId, StringComparison.Ordinal))
+            {
+                context.Response.Headers["X-Auth-Failure"] = "device_wrong_user";
+                context.Fail("Device assigned to a different user");
+                return;
             }
         }
     };
@@ -231,6 +271,50 @@ static async Task SeedRolesAndAdminAsync(WebApplication app)
     // (DROP COLUMN, DROP TABLE) gate it behind a feature flag or run it
     // manually from a deploy step.
     await cloudDb.Database.MigrateAsync();
+
+    // ── Out-of-band schema bootstrap ─────────────────────────────────────
+    // The MDM-lite AllowedDevices feature ships without a matching EF
+    // Designer.cs + ModelSnapshot pair, so EF's migration discovery
+    // skips its migration on a fresh DB even though the file exists. We
+    // run the same idempotent CREATE TABLE here directly so the table
+    // always exists by the time SyncController or the JWT validator
+    // queries it. Each statement is IF NOT EXISTS so it's safe to re-run
+    // on every boot, and broken into separate ExecuteSqlRawAsync calls
+    // so we don't depend on Npgsql multi-statement handling.
+    await cloudDb.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "AllowedDevices" (
+            "Id"                 serial PRIMARY KEY,
+            "DeviceFingerprint"  character varying(128) NOT NULL,
+            "Label"              character varying(100) NULL,
+            "Manufacturer"       character varying(80)  NULL,
+            "Model"              character varying(80)  NULL,
+            "Platform"           character varying(40)  NULL,
+            "OsVersion"          character varying(40)  NULL,
+            "AssignedUserId"     character varying(450) NULL,
+            "IsActive"           boolean                NOT NULL DEFAULT TRUE,
+            "ApprovedByAdminId"  character varying(450) NULL,
+            "CreatedAt"          timestamp with time zone NOT NULL,
+            "ApprovedAt"         timestamp with time zone NULL,
+            "LastSeenAt"         timestamp with time zone NULL,
+            "DeactivatedAt"      timestamp with time zone NULL,
+            "Notes"              character varying(500) NULL,
+            CONSTRAINT "FK_AllowedDevices_AspNetUsers_AssignedUserId"
+                FOREIGN KEY ("AssignedUserId")
+                REFERENCES "AspNetUsers" ("Id") ON DELETE SET NULL,
+            CONSTRAINT "FK_AllowedDevices_AspNetUsers_ApprovedByAdminId"
+                FOREIGN KEY ("ApprovedByAdminId")
+                REFERENCES "AspNetUsers" ("Id") ON DELETE SET NULL
+        );
+        """);
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_AllowedDevices_DeviceFingerprint\" " +
+        "ON \"AllowedDevices\" (\"DeviceFingerprint\");");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE INDEX IF NOT EXISTS \"IX_AllowedDevices_AssignedUserId\" " +
+        "ON \"AllowedDevices\" (\"AssignedUserId\");");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE INDEX IF NOT EXISTS \"IX_AllowedDevices_ApprovedByAdminId\" " +
+        "ON \"AllowedDevices\" (\"ApprovedByAdminId\");");
 
     // 2. Ensure Local SQLite DB is created
     await localDb.Database.EnsureCreatedAsync();

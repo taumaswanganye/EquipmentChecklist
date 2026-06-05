@@ -3,9 +3,10 @@
 @layout EquipmentChecklist.Mobile.Components.Layout.MinimalLayout
 @using EquipmentChecklist.Mobile.Services
 @using Microsoft.AspNetCore.Components.Web
-@inject ApiClient        Api
-@inject AuthService      Auth
-@inject BiometricUnlock  Bio
+@inject ApiClient         Api
+@inject AuthService       Auth
+@inject BiometricUnlock   Bio
+@inject DeviceFingerprint Fingerprint
 @inject NavigationManager Nav
 
 <div class="login-shell">
@@ -19,6 +20,19 @@
         @if (!string.IsNullOrEmpty(error))
         {
             <div class="alert">@error</div>
+        }
+
+        @* Device-not-authorised callout. Shows the operator their
+           fingerprint so they can read it out to the admin. The admin
+           pastes it into Admin → Devices → "Authorise a device". *@
+        @if (deviceProblem && !string.IsNullOrEmpty(localFingerprint))
+        {
+            <div class="device-block">
+                <strong>This device is not authorised.</strong>
+                <p>Show this code to your administrator so they can register your device:</p>
+                <div class="fp-box">@localFingerprint</div>
+                <p class="hint">After they've added it, tap Sign In again.</p>
+            </div>
         }
 
         <label>Email</label>
@@ -112,6 +126,23 @@
     .hint {
         font-size: 11px; color: #64748b; text-align: center; margin-top: 16px;
     }
+    .device-block {
+        background: #451a03; border: 1px solid #92400e;
+        color: #fde68a; padding: 14px;
+        border-radius: 8px; font-size: 13px;
+        margin-bottom: 14px;
+    }
+    .device-block strong { display:block; font-size:14px; color:#fef3c7; margin-bottom:6px; }
+    .device-block p     { margin: 4px 0; line-height: 1.5; }
+    .device-block .hint { color:#fbbf24; text-align:left; margin-top:8px; }
+    .fp-box {
+        font-family: ui-monospace, monospace;
+        background: #0a1726; color: #fbbf24;
+        padding: 10px 12px; border-radius: 6px;
+        font-size: 12px; word-break: break-all;
+        border: 1px dashed #f59e0b; margin: 6px 0;
+        letter-spacing: .5px;
+    }
 
     .bio-toggle {
         display:flex; align-items:center; gap:8px; cursor:pointer;
@@ -128,6 +159,13 @@
     private string error        = "";
     private bool   enableBio    = false;
     private bool   bioAvailable = false;
+
+    // Device-allowlist state. deviceProblem flips on when the server
+    // returns any device_* error code; localFingerprint is resolved
+    // eagerly so it's already on screen when the user opens the page —
+    // they can hand it over to the admin without retrying first.
+    private bool   deviceProblem;
+    private string localFingerprint = "";
 
     protected override async Task OnInitializedAsync()
     {
@@ -183,6 +221,19 @@
                 // would also fail.
                 error = result.ErrorMessage
                     ?? "Your account has been deactivated. Contact your administrator.";
+                return;
+            }
+
+            if (result.IsDeviceProblem)
+            {
+                // Server refused the device. Show the fingerprint
+                // (preferring the one the server echoed back) so the
+                // operator can give it to their admin to register.
+                deviceProblem    = true;
+                localFingerprint = !string.IsNullOrEmpty(result.DeviceFingerprint)
+                                        ? result.DeviceFingerprint!
+                                        : await Fingerprint.GetAsync();
+                error            = result.ErrorMessage ?? "This device isn't authorised.";
                 return;
             }
 

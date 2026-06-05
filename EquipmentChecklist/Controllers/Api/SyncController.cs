@@ -142,6 +142,49 @@ public class SyncController : ControllerBase
                 code  = "user_deactivated"
             });
 
+        // ── Device allowlist check ─────────────────────────────────────
+        // The mobile app sends its stable hardware fingerprint in the
+        // X-Device-Fingerprint header on EVERY request. Login refuses
+        // unknown / inactive devices with a distinct code so the mobile
+        // can render "this device is not authorised" and show the user
+        // the fingerprint to read out to their admin.
+        var fingerprint = HttpContext.Request.Headers["X-Device-Fingerprint"].ToString();
+        if (string.IsNullOrWhiteSpace(fingerprint))
+            return StatusCode(403, new
+            {
+                error = "This device hasn't sent its fingerprint. Update the mobile app.",
+                code  = "device_missing_fingerprint"
+            });
+
+        var device = await _db.AllowedDevices
+            .FirstOrDefaultAsync(d => d.DeviceFingerprint == fingerprint);
+        if (device == null)
+            return StatusCode(403, new
+            {
+                error       = "This device is not authorised. Show your administrator the device code below.",
+                code        = "device_not_registered",
+                fingerprint = fingerprint
+            });
+        if (!device.IsActive)
+            return StatusCode(403, new
+            {
+                error = "This device has been revoked by an administrator.",
+                code  = "device_revoked"
+            });
+        if (!string.IsNullOrEmpty(device.AssignedUserId) &&
+            !string.Equals(device.AssignedUserId, user.Id, StringComparison.Ordinal))
+            return StatusCode(403, new
+            {
+                error = "This device is assigned to a different user.",
+                code  = "device_wrong_user"
+            });
+
+        // Touch LastSeenAt so the admin's "last activity" column on the
+        // Devices page is meaningful. Fire-and-forget — a save failure
+        // here must not block sign-in.
+        device.LastSeenAt = DateTime.UtcNow;
+        try { await _db.SaveChangesAsync(); } catch { }
+
         var roles      = await _users.GetRolesAsync(user);
         var (token, exp) = IssueJwt(user, roles);
 

@@ -408,6 +408,75 @@ public static class NotificationKinds
     public const string MachineCleared           = "machine.cleared";
 }
 
+// ─── Device allowlisting (MDM-lite) ──────────────────────────────────────────
+/// <summary>
+/// One row per phone / tablet that's authorised to run the mobile app.
+///
+/// <para>Enforcement model:</para>
+/// <list type="bullet">
+///   <item><description>On first launch, the mobile app reads a stable
+///   hardware identifier (Android: Settings.Secure.ANDROID_ID; Windows:
+///   machine GUID) and POSTs it to <c>/api/sync/device/check</c>.</description></item>
+///   <item><description>If no <see cref="AllowedDevice"/> row matches AND
+///   <see cref="IsActive"/> is true, the mobile app shows its own
+///   fingerprint to the operator and blocks them from signing in. The
+///   operator phones the admin and reads out the fingerprint; the admin
+///   adds it via Admin → Devices.</description></item>
+///   <item><description>The login endpoint AND every authenticated call
+///   re-validate the device against this table, so a deactivation takes
+///   effect within seconds.</description></item>
+///   <item><description>Optional <see cref="AssignedUserId"/> ties a device
+///   to one specific user — if set, ONLY that user can sign in on that
+///   device. Useful for personal-issue phones.</description></item>
+/// </list>
+///
+/// <para>The fingerprint is not a secret in the cryptographic sense — an
+/// attacker on the device can forge it, and an attacker who steals the
+/// physical phone has both the fingerprint AND the user's offline-sign-in
+/// hash. The control protects against the "operator downloaded the APK
+/// onto their personal phone" scenario, not against a targeted device
+/// attack.</para>
+/// </summary>
+public class AllowedDevice
+{
+    public int Id { get; set; }
+
+    /// <summary>Stable hardware identifier reported by the mobile app.
+    /// Android: <c>Settings.Secure.ANDROID_ID</c>. Windows: machine GUID
+    /// from the registry. ~16–32 chars hex on either platform.</summary>
+    [Required, MaxLength(128)] public string DeviceFingerprint { get; set; } = "";
+
+    /// <summary>Admin-friendly name so the device list is navigable —
+    /// "Site Foreman's iPhone", "Spare 1 — Workshop", etc.</summary>
+    [MaxLength(100)] public string? Label { get; set; }
+
+    /// <summary>Reported by the mobile app on registration.</summary>
+    [MaxLength(80)] public string? Manufacturer { get; set; }
+    [MaxLength(80)] public string? Model        { get; set; }
+    [MaxLength(40)] public string? Platform     { get; set; }   // "Android" / "Windows"
+    [MaxLength(40)] public string? OsVersion    { get; set; }
+
+    /// <summary>Optional pin to a specific user. When set, only that user
+    /// can sign in on this device — useful for personal-issue phones. Null
+    /// = any allowed user can use the device.</summary>
+    [MaxLength(450)] public string? AssignedUserId { get; set; }
+    public ApplicationUser? AssignedUser { get; set; }
+
+    public bool IsActive { get; set; } = true;
+
+    /// <summary>Admin who approved the registration. Captured for audit.</summary>
+    [MaxLength(450)] public string? ApprovedByAdminId { get; set; }
+    public ApplicationUser? ApprovedByAdmin { get; set; }
+
+    public DateTime CreatedAt   { get; set; } = DateTime.UtcNow;
+    public DateTime? ApprovedAt { get; set; }
+    public DateTime? LastSeenAt { get; set; }
+    public DateTime? DeactivatedAt { get; set; }
+
+    /// <summary>Free-text admin notes ("replaced screen 2025-04-01").</summary>
+    [MaxLength(500)] public string? Notes { get; set; }
+}
+
 // ─── Reusable icon library (managed by Admin, used by checklist items) ────────
 public class IconLibraryItem
 {

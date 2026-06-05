@@ -653,6 +653,117 @@ public class AdminController : Controller
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //  DEVICE ALLOWLIST (MDM-lite)
+    //
+    //  Admin maintains the list of phones / tablets allowed to run the
+    //  mobile app. Enforcement is in two places on the server:
+    //    1. SyncController.Login refuses unknown or revoked devices.
+    //    2. JwtBearer.OnTokenValidated re-checks on every API call so a
+    //       revocation takes effect within seconds.
+    //
+    //  Mobile-side, the user sees the device fingerprint on a "device not
+    //  authorised" screen and reads it out to the admin to register here.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    [HttpGet]
+    public async Task<IActionResult> Devices()
+    {
+        var devices = await _db.AllowedDevices
+            .Include(d => d.AssignedUser)
+            .OrderByDescending(d => d.CreatedAt)
+            .ToListAsync();
+        return View(devices);
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> AddDevice()
+    {
+        // Operators dropdown for optional assignment. Only active users.
+        ViewBag.Users = await _db.Users
+            .Where(u => u.IsActive)
+            .OrderBy(u => u.FullName)
+            .Select(u => new { u.Id, u.FullName, u.Email, u.EmployeeNumber })
+            .ToListAsync();
+        return View();
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> AddDevice(
+        string deviceFingerprint,
+        string? label,
+        string? manufacturer,
+        string? model,
+        string? platform,
+        string? osVersion,
+        string? assignedUserId,
+        string? notes)
+    {
+        if (string.IsNullOrWhiteSpace(deviceFingerprint))
+        {
+            TempData["Error"] = "Device fingerprint is required.";
+            return RedirectToAction("AddDevice");
+        }
+
+        var fp = deviceFingerprint.Trim().ToLowerInvariant();
+        var existing = await _db.AllowedDevices.FirstOrDefaultAsync(d => d.DeviceFingerprint == fp);
+        if (existing != null)
+        {
+            TempData["Error"] =
+                "A device with that fingerprint is already registered" +
+                (existing.IsActive ? "" : " (revoked — reactivate it on the Devices page)") + ".";
+            return RedirectToAction("Devices");
+        }
+
+        var adminId = _users.GetUserId(User);
+        var device = new AllowedDevice
+        {
+            DeviceFingerprint = fp,
+            Label             = string.IsNullOrWhiteSpace(label) ? null : label.Trim(),
+            Manufacturer      = string.IsNullOrWhiteSpace(manufacturer) ? null : manufacturer.Trim(),
+            Model             = string.IsNullOrWhiteSpace(model)        ? null : model.Trim(),
+            Platform          = string.IsNullOrWhiteSpace(platform)     ? null : platform.Trim(),
+            OsVersion         = string.IsNullOrWhiteSpace(osVersion)    ? null : osVersion.Trim(),
+            AssignedUserId    = string.IsNullOrWhiteSpace(assignedUserId) ? null : assignedUserId.Trim(),
+            ApprovedByAdminId = adminId,
+            CreatedAt         = DateTime.UtcNow,
+            ApprovedAt        = DateTime.UtcNow,
+            IsActive          = true,
+            Notes             = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim()
+        };
+        _db.AllowedDevices.Add(device);
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = $"Device {device.Label ?? fp.Substring(0, 8) + "…"} authorised.";
+        return RedirectToAction("Devices");
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SetDeviceActive(int id, bool active)
+    {
+        var device = await _db.AllowedDevices.FindAsync(id);
+        if (device == null)
+        {
+            TempData["Error"] = "Device not found.";
+            return RedirectToAction("Devices");
+        }
+
+        if (device.IsActive == active)
+        {
+            TempData["Success"] = $"Device is already {(active ? "active" : "revoked")}.";
+            return RedirectToAction("Devices");
+        }
+
+        device.IsActive       = active;
+        device.DeactivatedAt  = active ? null : DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = active
+            ? $"Device reactivated — user can sign in again."
+            : $"Device revoked — user will be signed out the next time their device reaches the server.";
+        return RedirectToAction("Devices");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //  ADMIN MANAGEMENT
     //
     //  Adding a new admin is deliberately separated from the regular

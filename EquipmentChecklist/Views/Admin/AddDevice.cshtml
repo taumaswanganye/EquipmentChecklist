@@ -1,0 +1,105 @@
+@{
+    ViewData["Title"] = "Authorise a device";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div style="max-width:640px">
+    <a href="/Admin/Devices" class="btn btn-ghost" style="margin-bottom:16px">← Back to Devices</a>
+
+    <div class="alert alert-info" style="margin-bottom:18px;display:flex;gap:12px;align-items:flex-start">
+        <span style="font-size:22px;flex-shrink:0">📱</span>
+        <div>
+            <strong>How to get the device fingerprint:</strong>
+            <p style="font-size:13px;margin:6px 0 0;line-height:1.6">
+                Ask the user to open the mobile app. If their device isn't registered yet,
+                they'll see a "Device not authorised" screen with a long hex code — that's the
+                fingerprint. Paste it below.
+            </p>
+        </div>
+    </div>
+
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:24px">
+        <h2 style="font-size:18px;margin:0 0 18px">New device</h2>
+
+        <form method="post" action="/Admin/AddDevice">
+            @Html.AntiForgeryToken()
+
+            <div class="form-group">
+                <label class="form-label">Device fingerprint <span style="color:#ef4444">*</span></label>
+                <input type="text" name="deviceFingerprint" class="form-control"
+                       style="font-family:ui-monospace,monospace;letter-spacing:.3px"
+                       placeholder="e.g. f7e8d6a4c3b2..." required autocomplete="off" />
+                <small style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">
+                    The exact string shown on the user's "Device not authorised" screen.
+                </small>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Device label</label>
+                <input type="text" name="label" class="form-control"
+                       placeholder="e.g. Site Foreman's iPhone" autocomplete="off" />
+                <small style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">
+                    Optional but recommended — makes the device list searchable.
+                </small>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div class="form-group">
+                    <label class="form-label">Manufacturer</label>
+                    <input type="text" name="manufacturer" class="form-control"
+                           placeholder="Samsung, Apple, etc." autocomplete="off" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Model</label>
+                    <input type="text" name="model" class="form-control"
+                           placeholder="A14, iPhone 15, etc." autocomplete="off" />
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div class="form-group">
+                    <label class="form-label">Platform</label>
+                    <select name="platform" class="form-control">
+                        <option value="">— Select —</option>
+                        <option value="Android">Android</option>
+                        <option value="iOS">iOS</option>
+                        <option value="Windows">Windows</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">OS version</label>
+                    <input type="text" name="osVersion" class="form-control"
+                           placeholder="14, 17.2, etc." autocomplete="off" />
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Assign to user (optional)</label>
+                <select name="assignedUserId" class="form-control">
+                    <option value="">— Any allowed user can use this device —</option>
+                    @if (ViewBag.Users != null)
+                    {
+                        foreach (var u in ViewBag.Users)
+                        {
+                            <option value="@u.Id">@u.FullName · @u.Email · #@u.EmployeeNumber</option>
+                        }
+                    }
+                </select>
+                <small style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">
+                    Pin the device to one user when it's a personal-issue phone. Leave blank for shared devices.
+                </small>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Notes</label>
+                <textarea name="notes" class="form-control" rows="2"
+                          placeholder="e.g. Replaced screen 2025-04-01"></textarea>
+            </div>
+
+            <div style="display:flex;gap:12px;margin-top:18px">
+                <button type="submit" class="btn btn-primary">Authorise device</button>
+                <a href="/Admin/Devices" class="btn btn-ghost">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>

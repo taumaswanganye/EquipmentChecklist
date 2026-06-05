@@ -1,0 +1,118 @@
+@model List<EquipmentChecklist.Models.AllowedDevice>
+@{
+    ViewData["Title"] = "Authorised Devices";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var active  = Model.Where(d => d.IsActive).ToList();
+    var revoked = Model.Where(d => !d.IsActive).ToList();
+}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h2 style="font-size:20px;margin:0">Authorised Devices</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+            @active.Count active · @revoked.Count revoked · @Model.Count total
+        </p>
+    </div>
+    <a href="/Admin/AddDevice" class="btn btn-primary">+ Authorise a device</a>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
+
+@if (Model.Count == 0)
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">📱</div>
+        <p>No devices registered yet. When an operator launches the mobile app,
+            they'll see a "device not authorised" screen with their device fingerprint —
+            register it here to allow them in.</p>
+    </div>
+}
+else
+{
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+            <thead style="background:var(--steel-dark)">
+                <tr>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">DEVICE</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">FINGERPRINT</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">ASSIGNED TO</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">LAST SEEN</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">STATUS</th>
+                    <th style="text-align:right;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">ACTIONS</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var d in Model)
+                {
+                    <tr style="border-top:1px solid var(--steel-border)">
+                        <td style="padding:12px 14px">
+                            <strong>@(string.IsNullOrEmpty(d.Label) ? "Unnamed device" : d.Label)</strong>
+                            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+                                @d.Platform @d.OsVersion · @d.Manufacturer @d.Model
+                            </div>
+                        </td>
+                        <td style="padding:12px 14px;font-family:ui-monospace,monospace;font-size:11px;color:var(--text-muted)"
+                            title="@d.DeviceFingerprint">
+                            @(d.DeviceFingerprint.Length > 12 ? d.DeviceFingerprint.Substring(0, 12) + "…" : d.DeviceFingerprint)
+                        </td>
+                        <td style="padding:12px 14px">
+                            @if (d.AssignedUser != null)
+                            {
+                                <span>@d.AssignedUser.FullName</span>
+                                <div style="font-size:11px;color:var(--text-muted)">@d.AssignedUser.Email</div>
+                            }
+                            else
+                            {
+                                <span style="color:var(--text-muted);font-style:italic">Any user</span>
+                            }
+                        </td>
+                        <td style="padding:12px 14px;color:var(--text-muted);font-size:12px">
+                            @(d.LastSeenAt?.ToString("yyyy-MM-dd HH:mm") ?? "—")
+                        </td>
+                        <td style="padding:12px 14px">
+                            @if (d.IsActive)
+                            {
+                                <span style="display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;color:#22c55e;border:1px solid #22c55e;background:rgba(34,197,94,.08)">ACTIVE</span>
+                            }
+                            else
+                            {
+                                <span style="display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;color:#ef4444;border:1px solid #ef4444;background:rgba(239,68,68,.08)">REVOKED</span>
+                            }
+                        </td>
+                        <td style="padding:12px 14px;text-align:right;white-space:nowrap">
+                            @* The hidden value is rendered as a literal "true"/"false"
+                               string per branch rather than from `@(!d.IsActive)`. Razor's
+                               handling of bool inside an attribute value can swallow the
+                               token in unexpected cases, leaving model binding to default
+                               the bool to false — which made Reactivate behave like Revoke. *@
+                            <form method="post" action="/Admin/SetDeviceActive"
+                                  style="display:inline-block;margin:0"
+                                  onsubmit="return confirm('@(d.IsActive ? "Revoke this device? The user will be signed out the next time their phone reaches the server." : "Reactivate this device? The assigned user can sign in again.")');">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="id" value="@d.Id" />
+                                @if (d.IsActive)
+                                {
+                                    <input type="hidden" name="active" value="false" />
+                                    <button type="submit" class="btn btn-ghost btn-sm" style="color:#fca5a5">🚫 Revoke</button>
+                                }
+                                else
+                                {
+                                    <input type="hidden" name="active" value="true" />
+                                    <button type="submit" class="btn btn-ghost btn-sm" style="color:#86efac">✓ Reactivate</button>
+                                }
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}

@@ -70,15 +70,20 @@ else
 
                         @* Toggle activation. The button label + confirm message
                            flips based on current state so the verb matches the
-                           action the admin is about to take. *@
+                           action the admin is about to take. Hidden value is
+                           rendered as a literal "true"/"false" string per branch
+                           rather than from `@(!user.IsActive)` — Razor's handling
+                           of bool inside an attribute value can swallow the token
+                           in unexpected cases, which made Reactivate behave like
+                           Deactivate. *@
                         <form method="post" action="/Admin/SetEmployeeActive"
                               style="display:inline-block;margin:0 0 0 4px"
                               onsubmit="return confirm('@(user.IsActive ? $"Deactivate {user.FullName}? They'll be signed out the next time their phone reaches the server, and offline sign-in will be blocked." : $"Reactivate {user.FullName}? They'll be able to sign in again immediately.")');">
                             @Html.AntiForgeryToken()
                             <input type="hidden" name="userId" value="@user.Id" />
-                            <input type="hidden" name="active" value="@(!user.IsActive)" />
                             @if (user.IsActive)
                             {
+                                <input type="hidden" name="active" value="false" />
                                 <button type="submit" class="btn btn-ghost btn-sm"
                                         style="color:#fca5a5"
                                         title="Block this user from signing in (online and offline)">
@@ -87,6 +92,7 @@ else
                             }
                             else
                             {
+                                <input type="hidden" name="active" value="true" />
                                 <button type="submit" class="btn btn-ghost btn-sm"
                                         style="color:#86efac"
                                         title="Allow this user to sign in again">

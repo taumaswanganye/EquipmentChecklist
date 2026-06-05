@@ -23,6 +23,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<UserCredential>  UserCredentials  => Set<UserCredential>();
     public DbSet<Notification>    Notifications    => Set<Notification>();
     public DbSet<AuditEvent>      AuditEvents      => Set<AuditEvent>();
+    public DbSet<AllowedDevice>   AllowedDevices   => Set<AllowedDevice>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -93,6 +94,20 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
              .HasForeignKey(a => a.OperatorId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne(a => a.Supervisor).WithMany()
              .HasForeignKey(a => a.SupervisorId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // AllowedDevice — device allowlisting (MDM-lite).
+        // Fingerprint must be unique so the lookup-by-fingerprint at every
+        // API call is a single-row hit. AssignedUser and ApprovedByAdmin
+        // are SetNull on delete so deleting a user doesn't cascade-delete
+        // the device record — admins should explicitly revoke devices.
+        builder.Entity<AllowedDevice>(e =>
+        {
+            e.HasIndex(d => d.DeviceFingerprint).IsUnique();
+            e.HasOne(d => d.AssignedUser).WithMany()
+             .HasForeignKey(d => d.AssignedUserId).OnDelete(DeleteBehavior.SetNull);
+            e.HasOne(d => d.ApprovedByAdmin).WithMany()
+             .HasForeignKey(d => d.ApprovedByAdminId).OnDelete(DeleteBehavior.SetNull);
         });
 
         // Seed checklist templates for all 14 machine types

@@ -20,6 +20,11 @@ public static class MauiProgram
 
 		// ── App services ────────────────────────────────────────────
 		builder.Services.AddSingleton<BiometricUnlock>();
+		// MDM-lite device fingerprint resolver. Singleton because the
+		// platform read (Android.Provider.Settings.Secure.ANDROID_ID /
+		// Windows MachineGuid) is constant for the lifetime of the app
+		// process, and we cache it in SecureStorage too.
+		builder.Services.AddSingleton<DeviceFingerprint>();
 		builder.Services.AddSingleton<AuthService>();
 		// NOTE: PersistentBackup (cache mirror to public Documents) is
 		// temporarily NOT registered — its constructor was suspected of
@@ -100,12 +105,16 @@ public static class MauiProgram
 		// header and triggers AuthService.HandleRemoteDeactivationAsync the
 		// moment it's seen. Must be Transient (HttpClient factory contract).
 		builder.Services.AddTransient<AuthFailureHandler>();
+		// Stamps the X-Device-Fingerprint header on every outgoing request
+		// so the server's per-call device-allowlist check works.
+		builder.Services.AddTransient<DeviceFingerprintHandler>();
 
 		builder.Services.AddHttpClient<ApiClient>(c =>
 		{
 			c.BaseAddress = new Uri(ApiBaseUrl);
 			c.Timeout     = TimeSpan.FromSeconds(20);
 		})
+		.AddHttpMessageHandler<DeviceFingerprintHandler>()
 		.AddHttpMessageHandler<AuthFailureHandler>()
 #if DEBUG && ANDROID
 		// The ASP.NET Core dev HTTPS cert isn't trusted by Android's

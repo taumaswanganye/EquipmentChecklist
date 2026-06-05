@@ -109,14 +109,15 @@ public class ApiClient
 
     // ── Login ────────────────────────────────────────────────────────────────
     /// <summary>
-    /// Sign-in result that lets the caller branch on the three meaningful
-    /// outcomes: success (with a JWT), refused (bad credentials), or
-    /// deactivated (the user existed and the password was right, but the
-    /// admin has blocked them).
+    /// Sign-in result. Five branches covering every meaningful outcome
+    /// across user-state and device-state checks.
     /// </summary>
     public record LoginResult(
         SyncLoginResponse? Response,
         bool               IsDeactivated,
+        bool               IsDeviceProblem,
+        string?            DeviceProblemCode,
+        string?            DeviceFingerprint,
         string?            ErrorMessage)
     {
         public bool Succeeded => Response != null;
@@ -130,45 +131,46 @@ public class ApiClient
         if (resp.IsSuccessStatusCode)
         {
             var body = await resp.Content.ReadFromJsonAsync<SyncLoginResponse>();
-            return new LoginResult(body, false, null);
+            return new LoginResult(body, false, false, null, null, null);
         }
 
-        // ── 403 with code=user_deactivated → mark cache + propagate ─────
-        // SyncController.Login returns this specifically when the password
-        // is correct but the account is blocked. The mobile flips the
-        // cached user's IsBlocked flag so a subsequent offline sign-in
-        // also refuses them, even when totally offline.
+        // ── 403 branches ───────────────────────────────────────────────
+        // Body carries a `code` string the server set to identify which
+        // gate refused the request:
+        //   user_deactivated         — account blocked by admin
+        //   device_not_registered    — fingerprint isn't in AllowedDevices
+        //   device_revoked           — admin revoked this device
+        //   device_wrong_user        — device pinned to another user
+        //   device_missing_fingerprint — header wasn't sent (build issue)
         if (resp.StatusCode == HttpStatusCode.Forbidden)
         {
-            string? errorMessage = null;
-            bool isDeactivated  = false;
-            try
-            {
-                var body = await resp.Content.ReadFromJsonAsync<LoginErrorBody>();
-                if (body != null)
-                {
-                    errorMessage  = body.error;
-                    isDeactivated = string.Equals(body.code, "user_deactivated",
-                                                  StringComparison.OrdinalIgnoreCase);
-                }
-            }
-            catch { /* malformed body — leave fields null */ }
+            LoginErrorBody? body = null;
+            try { body = await resp.Content.ReadFromJsonAsync<LoginErrorBody>(); }
+            catch { /* malformed body — caller falls into generic branch */ }
 
-            if (isDeactivated)
+            var code = body?.code ?? "";
+            var msg  = body?.error;
+            var fp   = body?.fingerprint;
+
+            if (string.Equals(code, "user_deactivated", StringComparison.OrdinalIgnoreCase))
             {
-                // Fire-and-forget — AuthService will flip the cached
-                // IsBlocked flag, wipe the JWT, and raise its event.
                 _ = _auth.HandleRemoteDeactivationAsync(email);
-                return new LoginResult(null, true,
-                    errorMessage ?? "Your account has been deactivated. Contact your administrator.");
+                return new LoginResult(null, true, false, null, null,
+                    msg ?? "Your account has been deactivated. Contact your administrator.");
+            }
+
+            if (code.StartsWith("device_", StringComparison.OrdinalIgnoreCase))
+            {
+                return new LoginResult(null, false, true, code, fp,
+                    msg ?? "This device isn't authorised to use the app.");
             }
         }
 
         // Generic non-2xx — bad credentials, lockout, server error.
-        return new LoginResult(null, false, null);
+        return new LoginResult(null, false, false, null, null, null);
     }
 
-    private record LoginErrorBody(string? error, string? code);
+    private record LoginErrorBody(string? error, string? code, string? fingerprint);
 
     public async Task<SyncUserDto?> MeAsync()
     {
