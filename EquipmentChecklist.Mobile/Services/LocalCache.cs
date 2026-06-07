@@ -87,6 +87,7 @@ public class LocalCache
             Id                = m.Id,
             MachineNumber     = m.MachineNumber,
             MachineName       = m.MachineName,
+            TypeCode          = m.Type,
             TypeDisplay       = m.TypeDisplay,
             Description       = m.Description,
             IsImmobilised     = m.IsImmobilised,
@@ -119,6 +120,7 @@ public class LocalCache
             Id                = r.Id,
             MachineNumber     = r.MachineNumber,
             MachineName       = r.MachineName,
+            Type              = r.TypeCode,
             TypeDisplay       = r.TypeDisplay,
             Description       = r.Description,
             IsImmobilised     = r.IsImmobilised,
@@ -179,21 +181,25 @@ public class LocalCache
         var emailKey = NormalizeEmail(user.Email);
         await _db.InsertOrReplaceAsync(new CachedUser
         {
-            EmailKey       = emailKey,
-            UserId         = user.Id,
-            FullName       = user.FullName,
-            EmployeeNumber = user.EmployeeNumber,
-            Email          = user.Email,
-            RolesJson      = JsonSerializer.Serialize(user.Roles ?? Array.Empty<string>()),
-            PasswordHash   = HashPassword(password),
-            JwtToken       = jwt,
-            JwtExpiresAt   = jwtExp,
-            LastSyncedAt   = DateTime.UtcNow,
+            EmailKey         = emailKey,
+            UserId           = user.Id,
+            FullName         = user.FullName,
+            EmployeeNumber   = user.EmployeeNumber,
+            Email            = user.Email,
+            RolesJson        = JsonSerializer.Serialize(user.Roles ?? Array.Empty<string>()),
+            // Fresh competency snapshot every successful sign-in. Empty
+            // list serialises as "[]" — the gate then blocks every
+            // machine because no entry will match.
+            CompetenciesJson = JsonSerializer.Serialize(user.Competencies ?? new List<CompetencySummaryDto>()),
+            PasswordHash     = HashPassword(password),
+            JwtToken         = jwt,
+            JwtExpiresAt     = jwtExp,
+            LastSyncedAt     = DateTime.UtcNow,
             // A successful server sign-in means the user is NOT blocked,
             // regardless of what we previously cached. This is the path
             // by which "admin reactivated me" automatically clears the
             // local block flag — no extra API call needed.
-            IsBlocked      = false
+            IsBlocked        = false
         });
         // The user row is the offline-signin credential. Mirroring here means
         // even an "operator opened the app, signed in, closed it before doing
@@ -225,6 +231,64 @@ public class LocalCache
         return await _db.Table<CachedUser>()
             .Where(u => u.EmailKey == key)
             .FirstOrDefaultAsync();
+    }
+
+    /// <summary>
+    /// Local mirror of the server's CompetencyService.IsCompetentAsync.
+    /// Reads the cached user's CompetenciesJson and looks for a non-expired
+    /// entry matching the machine type. Admins bypass (we treat any role
+    /// containing "Admin" as a global allow — the server does the same).
+    /// </summary>
+    public async Task<bool> IsCompetentAsync(string? operatorEmail, int machineTypeCode)
+    {
+        if (string.IsNullOrWhiteSpace(operatorEmail)) return false;
+        var user = await FindUserAsync(operatorEmail);
+        if (user == null) return false;
+
+        // Admin role bypass — keeps parity with the server gate.
+        try
+        {
+            var roles = JsonSerializer.Deserialize<string[]>(user.RolesJson) ?? Array.Empty<string>();
+            if (roles.Contains("Admin")) return true;
+        }
+        catch { }
+
+        try
+        {
+            var list = JsonSerializer.Deserialize<List<CompetencySummaryDto>>(user.CompetenciesJson)
+                       ?? new List<CompetencySummaryDto>();
+            var now = DateTime.UtcNow;
+            return list.Any(c => c.MachineType == machineTypeCode && c.ExpiresAt > now);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Returns the soonest-expiring competency date for a given machine
+    /// type, or null if the operator isn't currently competent on it.
+    /// Used by the "blocked" gate screen to tell the operator when their
+    /// competency last expired.
+    /// </summary>
+    public async Task<DateTime?> GetCompetencyExpiryAsync(string? operatorEmail, int machineTypeCode)
+    {
+        if (string.IsNullOrWhiteSpace(operatorEmail)) return null;
+        var user = await FindUserAsync(operatorEmail);
+        if (user == null) return null;
+        try
+        {
+            var list = JsonSerializer.Deserialize<List<CompetencySummaryDto>>(user.CompetenciesJson)
+                       ?? new List<CompetencySummaryDto>();
+            return list.Where(c => c.MachineType == machineTypeCode)
+                       .Select(c => (DateTime?)c.ExpiresAt)
+                       .Max();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -792,6 +856,10 @@ public class LocalCache
         [PrimaryKey] public int Id { get; set; }
         public string  MachineNumber     { get; set; } = "";
         public string  MachineName       { get; set; } = "";
+        /// <summary>MachineType enum value as int. Used by the
+        /// competency pre-block on machine tap — matches against the
+        /// operator's cached Competencies entries.</summary>
+        public int     TypeCode          { get; set; }
         public string  TypeDisplay       { get; set; } = "";
         public string? Description       { get; set; }
         public bool    IsImmobilised     { get; set; }
@@ -823,6 +891,14 @@ public class LocalCache
         public string? JwtToken                { get; set; }
         public DateTime? JwtExpiresAt          { get; set; }
         public DateTime LastSyncedAt           { get; set; }
+        /// <summary>
+        /// JSON-serialised List&lt;CompetencySummaryDto&gt; — the operator's
+        /// current competencies with their expiry dates. Re-fetched on
+        /// every successful login + every /me poll. Empty list = operator
+        /// has no current competencies; the mobile gate blocks them on
+        /// every machine.
+        /// </summary>
+        public string  CompetenciesJson        { get; set; } = "[]";
         /// <summary>
         /// True when the server has told us this user is deactivated
         /// (response code "user_deactivated" on login OR X-Auth-Failure

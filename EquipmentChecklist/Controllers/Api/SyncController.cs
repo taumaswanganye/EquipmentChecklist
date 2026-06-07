@@ -43,6 +43,7 @@ public class SyncController : ControllerBase
     private readonly PdfService                     _pdf;
     private readonly NotificationService             _notifications;
     private readonly AuditService                    _audit;
+    private readonly CompetencyService               _competency;
     private readonly ILogger<SyncController>        _log;
 
     public SyncController(ApplicationDbContext db,
@@ -54,6 +55,7 @@ public class SyncController : ControllerBase
                           PdfService pdf,
                           NotificationService notifications,
                           AuditService audit,
+                          CompetencyService competency,
                           ILogger<SyncController> log)
     {
         _db    = db;
@@ -65,6 +67,7 @@ public class SyncController : ControllerBase
         _email = email;
         _pdf   = pdf;
         _notifications = notifications;
+        _competency = competency;
         _log   = log;
     }
 
@@ -214,6 +217,17 @@ public class SyncController : ControllerBase
             payloadJson:      null,
             occurredAtClient: DateTime.UtcNow);
 
+        // Resolve competencies once and reuse — they're small and the
+        // mobile uses them to gate machine selection without a follow-up
+        // round trip.
+        var competencies = await _competency.GetCurrentSummaryAsync(user.Id);
+        var competencyDtos = competencies
+            .Select(c => new CompetencySummaryDto
+            {
+                MachineType = (int)c.MachineType,
+                ExpiresAt   = c.ExpiresAt
+            }).ToList();
+
         return Ok(new SyncLoginResponse
         {
             Token     = token,
@@ -224,7 +238,8 @@ public class SyncController : ControllerBase
                 FullName       = user.FullName,
                 Email          = user.Email ?? "",
                 EmployeeNumber = user.EmployeeNumber,
-                Roles          = roles.ToArray()
+                Roles          = roles.ToArray(),
+                Competencies   = competencyDtos
             }
         });
     }
@@ -239,13 +254,25 @@ public class SyncController : ControllerBase
         var user = await CurrentUser();
         if (user == null) return Unauthorized();
         var roles = await _users.GetRolesAsync(user);
+
+        // Fresh competency snapshot — /me is called periodically by the
+        // mobile so the cached competencies stay current.
+        var competencies = await _competency.GetCurrentSummaryAsync(user.Id);
+        var competencyDtos = competencies
+            .Select(c => new CompetencySummaryDto
+            {
+                MachineType = (int)c.MachineType,
+                ExpiresAt   = c.ExpiresAt
+            }).ToList();
+
         return Ok(new SyncUserDto
         {
             Id             = user.Id,
             FullName       = user.FullName,
             Email          = user.Email ?? "",
             EmployeeNumber = user.EmployeeNumber,
-            Roles          = roles.ToArray()
+            Roles          = roles.ToArray(),
+            Competencies   = competencyDtos
         });
     }
 
@@ -269,6 +296,7 @@ public class SyncController : ControllerBase
             Id                = a.Machine.Id,
             MachineNumber     = a.Machine.MachineNumber,
             MachineName       = a.Machine.MachineName,
+            Type              = (int)a.Machine.Type,
             TypeDisplay       = a.Machine.TypeDisplay(),
             Description       = a.Machine.Description,
             IsImmobilised     = a.Machine.IsImmobilised,
@@ -363,6 +391,55 @@ public class SyncController : ControllerBase
         var assigned = await _db.MachineAssignments.AnyAsync(a =>
             a.MachineId == req.MachineId && a.OperatorId == user.Id && a.IsActive);
         if (!assigned) return Forbid();
+
+        // ── Competency gate (MHSA Section 22(a)) ───────────────────────
+        // Look up the machine type so we can verify the operator holds a
+        // current, non-revoked competency for it. Admins bypass inside
+        // IsCompetentAsync.
+        var machine = await _db.Machines
+            .Where(m => m.Id == req.MachineId)
+            .Select(m => new { m.Type, m.MachineNumber })
+            .FirstOrDefaultAsync();
+        if (machine == null)
+            return BadRequest(new { error = "Machine not found." });
+
+        var competent = await _competency.IsCompetentAsync(user.Id, machine.Type);
+        if (!competent)
+        {
+            // Audit the BLOCKED event distinctly from the soft "attempted"
+            // one the mobile fires — together they show whether the mobile
+            // gate is doing its job (we should see few blocked events if
+            // the operator's phone is up to date).
+            try
+            {
+                await _audit.LogAsync(
+                    actor:            new AuditService.ActorContext(
+                        UserId:    user.Id,
+                        Name:      user.FullName,
+                        Email:     user.Email,
+                        Role:      "Operator",
+                        DeviceKind:HttpContext.Request.Headers["User-Agent"].ToString()
+                                       .Contains("Android", StringComparison.OrdinalIgnoreCase) ? "android" : "web",
+                        IpAddress: HttpContext.Connection.RemoteIpAddress?.ToString()),
+                    action:           AuditActions.SubmissionBlockedNoCompetency,
+                    targetType:       "Machine",
+                    targetId:         req.MachineId,
+                    payloadJson:      System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        machineNumber = machine.MachineNumber,
+                        machineType   = machine.Type.ToString()
+                    }),
+                    occurredAtClient: DateTime.UtcNow);
+            }
+            catch { /* audit failure must not block the response */ }
+
+            return StatusCode(403, new
+            {
+                error       = "You don't hold a current competency for this machine type.",
+                code        = "no_competency",
+                machineType = machine.Type.ToString()
+            });
+        }
 
         var dto = new SubmitChecklistDto
         {

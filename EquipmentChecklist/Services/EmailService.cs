@@ -15,8 +15,8 @@ public class EmailService
         ILogger<EmailService> log,
         Microsoft.Extensions.Options.IOptions<MineSettings> mine)
     {
-        _cfg  = cfg;
-        _log  = log;
+        _cfg = cfg;
+        _log = log;
         _mine = mine.Value;
     }
 
@@ -29,12 +29,12 @@ public class EmailService
         string orderRef,
         byte[]? partsOrderPdf = null)
     {
-        var smtp      = _cfg["Email:SmtpHost"]    ?? "smtp.gmail.com";
-        var port      = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
-        var user      = _cfg["Email:Username"]    ?? "";
-        var pass      = _cfg["Email:Password"]    ?? "";
-        var from      = _cfg["Email:From"]        ?? user;
-        var fromName  = _cfg["Email:FromName"]    ?? "Belfast Equipment System";
+        var smtp = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
+        var port = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
+        var user = _cfg["Email:Username"] ?? "";
+        var pass = _cfg["Email:Password"] ?? "";
+        var from = _cfg["Email:From"] ?? user;
+        var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
         var managerEmail = _cfg["Email:ManagerEmail"];
 
         if (string.IsNullOrEmpty(user))
@@ -53,20 +53,20 @@ public class EmailService
         """));
 
         var mechanicBody = BuildMechanicEmailHtml(toName, orderRef, rows, items.Count);
-        var managerBody  = BuildManagerEmailHtml(toName, orderRef, rows, items.Count);
+        var managerBody = BuildManagerEmailHtml(toName, orderRef, rows, items.Count);
 
         try
         {
-            using var client       = new SmtpClient(smtp, port);
-            client.EnableSsl       = true;
-            client.Credentials     = new NetworkCredential(user, pass);
+            using var client = new SmtpClient(smtp, port);
+            client.EnableSsl = true;
+            client.Credentials = new NetworkCredential(user, pass);
 
             // ── Email 1: confirmation to mechanic ─────────────────────────────
             var mechMsg = new MailMessage
             {
-                From       = new MailAddress(from, fromName),
-                Subject    = $"[Belfast] Parts Order #{orderRef} – {items.Count} item(s) submitted",
-                Body       = mechanicBody,
+                From = new MailAddress(from, fromName),
+                Subject = $"[Belfast] Parts Order #{orderRef} – {items.Count} item(s) submitted",
+                Body = mechanicBody,
                 IsBodyHtml = true,
             };
             mechMsg.To.Add(new MailAddress(toEmail, toName));
@@ -79,9 +79,9 @@ public class EmailService
             {
                 var mgrMsg = new MailMessage
                 {
-                    From       = new MailAddress(from, fromName),
-                    Subject    = $"[Belfast] PARTS ORDER REQUIRED – {items.Count} item(s)  |  Ref #{orderRef}",
-                    Body       = managerBody,
+                    From = new MailAddress(from, fromName),
+                    Subject = $"[Belfast] PARTS ORDER REQUIRED – {items.Count} item(s)  |  Ref #{orderRef}",
+                    Body = managerBody,
                     IsBodyHtml = true,
                 };
                 mgrMsg.To.Add(managerEmail);
@@ -89,7 +89,7 @@ public class EmailService
                 // Attach PDF if provided
                 if (partsOrderPdf != null && partsOrderPdf.Length > 0)
                 {
-                    var stream     = new MemoryStream(partsOrderPdf);
+                    var stream = new MemoryStream(partsOrderPdf);
                     var attachment = new Attachment(stream, $"PartsOrder_{orderRef}.pdf",
                                                     MediaTypeNames.Application.Pdf);
                     mgrMsg.Attachments.Add(attachment);
@@ -174,12 +174,12 @@ public class EmailService
         int defectCount,
         string supervisorName)
     {
-        var smtp     = _cfg["Email:SmtpHost"]    ?? "smtp.gmail.com";
-        var port     = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
-        var user     = _cfg["Email:Username"]    ?? "";
-        var pass     = _cfg["Email:Password"]    ?? "";
-        var from     = _cfg["Email:From"]        ?? user;
-        var fromName = _cfg["Email:FromName"]    ?? "Belfast Equipment System";
+        var smtp = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
+        var port = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
+        var user = _cfg["Email:Username"] ?? "";
+        var pass = _cfg["Email:Password"] ?? "";
+        var from = _cfg["Email:From"] ?? user;
+        var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
 
         if (string.IsNullOrEmpty(user))
         {
@@ -198,15 +198,15 @@ public class EmailService
 
         try
         {
-            using var client   = new SmtpClient(smtp, port);
-            client.EnableSsl   = true;
+            using var client = new SmtpClient(smtp, port);
+            client.EnableSsl = true;
             client.Credentials = new NetworkCredential(user, pass);
 
             var msg = new MailMessage
             {
-                From       = new MailAddress(from, fromName),
-                Subject    = $"[Belfast] NO-GO · {machineNumber} rejected — {defectCount} defect(s) assigned to you",
-                Body       = body,
+                From = new MailAddress(from, fromName),
+                Subject = $"[Belfast] NO-GO · {machineNumber} rejected — {defectCount} defect(s) assigned to you",
+                Body = body,
                 IsBodyHtml = true,
             };
             msg.To.Add(new MailAddress(mechanicEmail, mechanicName));
@@ -357,11 +357,11 @@ public class EmailService
         string newPassword,
         string resetByAdmin)
     {
-        var smtp     = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
-        var port     = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
-        var user     = _cfg["Email:Username"] ?? "";
-        var pass     = _cfg["Email:Password"] ?? "";
-        var from     = _cfg["Email:From"]     ?? user;
+        var smtp = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
+        var port = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
+        var user = _cfg["Email:Username"] ?? "";
+        var pass = _cfg["Email:Password"] ?? "";
+        var from = _cfg["Email:From"] ?? user;
         var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
 
         // If email isn't configured we still want the password reset to
@@ -380,15 +380,15 @@ public class EmailService
 
         try
         {
-            using var client       = new SmtpClient(smtp, port);
-            client.EnableSsl       = true;
-            client.Credentials     = new NetworkCredential(user, pass);
+            using var client = new SmtpClient(smtp, port);
+            client.EnableSsl = true;
+            client.Credentials = new NetworkCredential(user, pass);
 
             var msg = new MailMessage
             {
-                From       = new MailAddress(from, fromName),
-                Subject    = $"[{_mine.Name}] Your password has been reset",
-                Body       = body,
+                From = new MailAddress(from, fromName),
+                Subject = $"[{_mine.Name}] Your password has been reset",
+                Body = body,
                 IsBodyHtml = true,
             };
             msg.To.Add(new MailAddress(toEmail, toName));
@@ -458,6 +458,179 @@ public class EmailService
           </table>
         </body>
         </html>
+        """;
+    }
+
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  COMPETENCY RENEWAL EMAILS (MHSA Section 22(a))
+    //
+    //  Two flavours, dispatched by CompetencyExpiryWorker:
+    //    SendCompetencyExpiringAsync — 30-day and 7-day warnings
+    //    SendCompetencyExpiredAsync  — day-of-expiry + weekly nag
+    //
+    //  Recipients come from a list built by the worker — operator + their
+    //  supervisor + mine manager + SHE officer per the admin's scoping
+    //  choices. The same body is sent to everyone with the recipient name
+    //  in the salutation (the worker calls this method once per recipient).
+    // ═════════════════════════════════════════════════════════════════════════
+    public async Task<bool> SendCompetencyExpiringAsync(
+        string toEmail,
+        string toName,
+        string operatorName,
+        string machineType,
+        string? certificateNumber,
+        DateTime expiresAt,
+        int daysRemaining)
+    {
+        var subject = $"[{_mine.Name}] Competency expiring in {daysRemaining} day{(daysRemaining == 1 ? "" : "s")} — {operatorName} on {machineType}";
+        var body    = BuildCompetencyExpiringHtml(
+            toName, operatorName, machineType, certificateNumber, expiresAt, daysRemaining);
+        return await SendBrandedAsync(toEmail, toName, subject, body);
+    }
+
+    public async Task<bool> SendCompetencyExpiredAsync(
+        string toEmail,
+        string toName,
+        string operatorName,
+        string machineType,
+        string? certificateNumber,
+        DateTime expiredAt)
+    {
+        var subject = $"[{_mine.Name}] EXPIRED competency — {operatorName} on {machineType}";
+        var body    = BuildCompetencyExpiredHtml(
+            toName, operatorName, machineType, certificateNumber, expiredAt);
+        return await SendBrandedAsync(toEmail, toName, subject, body);
+    }
+
+    /// <summary>Common send wrapper. Reads SMTP config + handles the
+    /// "email not configured" no-op the same way the existing methods
+    /// do.</summary>
+    private async Task<bool> SendBrandedAsync(
+        string toEmail, string toName, string subject, string htmlBody)
+    {
+        var smtp = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
+        var port = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
+        var user = _cfg["Email:Username"] ?? "";
+        var pass = _cfg["Email:Password"] ?? "";
+        var from = _cfg["Email:From"]     ?? user;
+        var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
+
+        if (string.IsNullOrEmpty(user))
+        {
+            _log.LogWarning("Email not configured — skipping send to {Email}", toEmail);
+            return false;
+        }
+
+        try
+        {
+            using var client = new SmtpClient(smtp, port);
+            client.EnableSsl = true;
+            client.Credentials = new NetworkCredential(user, pass);
+
+            var msg = new MailMessage
+            {
+                From       = new MailAddress(from, fromName),
+                Subject    = subject,
+                Body       = htmlBody,
+                IsBodyHtml = true
+            };
+            msg.To.Add(new MailAddress(toEmail, toName));
+
+            await client.SendMailAsync(msg);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Failed to send {Subject} to {Email}", subject, toEmail);
+            return false;
+        }
+    }
+
+    private string BuildCompetencyExpiringHtml(
+        string toName, string operatorName, string machineType,
+        string? cert, DateTime expiresAt, int daysRemaining)
+    {
+        var mineName = string.IsNullOrEmpty(_mine.Name) ? "Equipment Checklist" : _mine.Name;
+        // Soft amber colour scheme so the recipient distinguishes a
+        // reminder from a hard alert (which uses red below).
+        return $$"""
+        <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+        <body style="font-family:Segoe UI,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                 style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">
+            <tr><td style="background:#92400e;color:#fef3c7;padding:16px 22px">
+              <div style="font-size:11px;letter-spacing:.6px;text-transform:uppercase">{{mineName}}</div>
+              <div style="font-size:18px;font-weight:700;margin-top:4px">Competency expiring in {{daysRemaining}} day{{(daysRemaining == 1 ? "" : "s")}}</div>
+            </td></tr>
+            <tr><td style="padding:22px 22px 8px">
+              <p style="font-size:14px;color:#1f2937;margin:0 0 10px">Hi {{System.Net.WebUtility.HtmlEncode(toName)}},</p>
+              <p style="font-size:14px;color:#1f2937;margin:0 0 14px;line-height:1.6">
+                The competency below is approaching its expiry date and needs to be renewed.
+                Once it expires, the operator will be blocked from submitting pre-shift checklists
+                on this machine type — on both the mobile app and the web.
+              </p>
+              <table style="width:100%;border-collapse:collapse;font-size:13px;margin:0 0 14px">
+                <tr><td style="padding:6px 0;color:#6b7280;width:40%">Operator</td><td style="font-weight:600">{{System.Net.WebUtility.HtmlEncode(operatorName)}}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280">Machine type</td><td style="font-weight:600">{{System.Net.WebUtility.HtmlEncode(machineType)}}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280">Certificate</td><td style="font-family:ui-monospace,monospace">{{System.Net.WebUtility.HtmlEncode(cert ?? "—")}}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280">Expires</td><td style="font-weight:600;color:#92400e">{{expiresAt:yyyy-MM-dd}}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280">Days remaining</td><td style="font-weight:600;color:#92400e">{{daysRemaining}}</td></tr>
+              </table>
+              <p style="font-size:12px;color:#6b7280;margin:0 0 18px;line-height:1.6">
+                The renewed certificate must be loaded into the system by an administrator on
+                <strong>Admin → Competencies</strong>. The previous record is auto-revoked when the
+                new one is saved.
+              </p>
+            </td></tr>
+            <tr><td style="padding:12px 22px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:11px;color:#6b7280">
+              {{(_mine.ComplianceText ?? "")}}
+            </td></tr>
+          </table>
+        </body></html>
+        """;
+    }
+
+    private string BuildCompetencyExpiredHtml(
+        string toName, string operatorName, string machineType,
+        string? cert, DateTime expiredAt)
+    {
+        var mineName = string.IsNullOrEmpty(_mine.Name) ? "Equipment Checklist" : _mine.Name;
+        // Hard red — this is a compliance event, not a reminder.
+        return $$"""
+        <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+        <body style="font-family:Segoe UI,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                 style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">
+            <tr><td style="background:#7f1d1d;color:#fee2e2;padding:16px 22px">
+              <div style="font-size:11px;letter-spacing:.6px;text-transform:uppercase">{{mineName}} · Compliance</div>
+              <div style="font-size:18px;font-weight:700;margin-top:4px">Competency expired</div>
+            </td></tr>
+            <tr><td style="padding:22px 22px 8px">
+              <p style="font-size:14px;color:#1f2937;margin:0 0 10px">Hi {{System.Net.WebUtility.HtmlEncode(toName)}},</p>
+              <p style="font-size:14px;color:#1f2937;margin:0 0 14px;line-height:1.6">
+                The competency below has <strong>expired</strong>. The operator is now blocked from
+                submitting pre-shift checklists on this machine type. MHSA Section 22(a) requires
+                operators to be competent to perform the work — this control prevents an
+                unauthorised submission and is recorded in the audit trail.
+              </p>
+              <table style="width:100%;border-collapse:collapse;font-size:13px;margin:0 0 14px">
+                <tr><td style="padding:6px 0;color:#6b7280;width:40%">Operator</td><td style="font-weight:600">{{System.Net.WebUtility.HtmlEncode(operatorName)}}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280">Machine type</td><td style="font-weight:600">{{System.Net.WebUtility.HtmlEncode(machineType)}}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280">Certificate</td><td style="font-family:ui-monospace,monospace">{{System.Net.WebUtility.HtmlEncode(cert ?? "—")}}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280">Expired</td><td style="font-weight:600;color:#7f1d1d">{{expiredAt:yyyy-MM-dd}}</td></tr>
+              </table>
+              <p style="font-size:12px;color:#6b7280;margin:0 0 6px;line-height:1.6">
+                <strong>Next steps:</strong> the operator must produce a renewed certificate to the
+                administrator, who registers it on <strong>Admin → Competencies → @operator</strong>.
+                Until that happens, the operator cannot perform pre-shift checks on this machine type.
+              </p>
+            </td></tr>
+            <tr><td style="padding:12px 22px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:11px;color:#6b7280">
+              {{(_mine.ComplianceText ?? "")}}
+            </td></tr>
+          </table>
+        </body></html>
         """;
     }
 }

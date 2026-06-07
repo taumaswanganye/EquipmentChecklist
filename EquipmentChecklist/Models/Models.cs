@@ -408,6 +408,131 @@ public static class NotificationKinds
     public const string MachineCleared           = "machine.cleared";
 }
 
+// ─── Application setting (DB-backed config) ──────────────────────────────────
+/// <summary>
+/// One row per key/value setting that used to live in <c>appsettings.json</c>.
+/// Moves operational config (mine name, manager email, SMTP host) into the
+/// database so an admin can change them at runtime without redeploying,
+/// while audit-logging every change.
+///
+/// <para>What stays in <c>appsettings.json</c>:</para>
+/// <list type="bullet">
+///   <item><description><b>ConnectionStrings</b> — bootstrap chicken-and-egg.</description></item>
+///   <item><description><b>Jwt:Key</b> — cryptographic secret. DB compromise
+///   would also be JWT-key compromise; keep it on the host instead.</description></item>
+///   <item><description><b>Email:Password</b> — SMTP secret. Same reasoning.
+///   Stored masked in DB if set there too, but appsettings wins.</description></item>
+/// </list>
+/// </summary>
+public class AppSetting
+{
+    public int Id { get; set; }
+
+    /// <summary>Dotted key, e.g. <c>Mine.Name</c>, <c>Email.SmtpHost</c>.
+    /// The category prefix doubles as a sidebar grouping hint.</summary>
+    [Required, MaxLength(120)] public string Key { get; set; } = "";
+
+    [Required, MaxLength(60)]  public string Category { get; set; } = "General";
+
+    /// <summary>Current value. Stored as text; consumers parse to int / bool
+    /// as needed. Null means "not set" — caller falls back to the
+    /// IConfiguration value (the original appsettings.json).</summary>
+    public string? Value { get; set; }
+
+    /// <summary>Default value used when the row is first seeded — also shown
+    /// as a "reset to default" hint in the admin UI.</summary>
+    public string? DefaultValue { get; set; }
+
+    /// <summary>Human-readable explanation rendered on the edit form.</summary>
+    [MaxLength(500)] public string? Description { get; set; }
+
+    /// <summary>True for credentials / API keys / anything that should be
+    /// password-masked in the admin UI and excluded from audit payloads.</summary>
+    public bool IsSecret { get; set; }
+
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    [MaxLength(450)] public string? UpdatedById { get; set; }
+    public ApplicationUser? UpdatedBy { get; set; }
+}
+
+// ─── Operator competency (MHSA Section 22(a)) ────────────────────────────────
+/// <summary>
+/// One row per (operator, machine type, certificate issuance).
+///
+/// <para>Status of an operator on a machine type is derived: the operator
+/// is competent on type T iff there's at least one row for (OperatorId=op,
+/// MachineType=T) with <c>IsActive=true</c> AND <c>ExpiresAt &gt; NOW()</c>.</para>
+///
+/// <para>Append-only: old rows are kept (revoked, expired, replaced) so an
+/// MHSA inspector can answer "was this operator competent on this machine
+/// on date X?" by looking at historical rows. A renewal creates a NEW row
+/// pointing at the renewed certificate, never overwrites the old one.</para>
+///
+/// <para>Scan PDF is stored inline as bytea following the same pattern as
+/// the defect-photo / audio columns — single-query retrieval, no separate
+/// blob store to manage. Typical certificate scan is 100–800 KB.</para>
+/// </summary>
+public class OperatorCompetency
+{
+    public int Id { get; set; }
+
+    [Required, MaxLength(450)] public string OperatorId { get; set; } = "";
+    public ApplicationUser Operator { get; set; } = null!;
+
+    public MachineType MachineType { get; set; }
+
+    /// <summary>Certificate identifier as printed on the licence.</summary>
+    [MaxLength(80)] public string? CertificateNumber { get; set; }
+
+    /// <summary>Issuing authority — TETA, MQA, internal training school, etc.</summary>
+    [MaxLength(120)] public string? IssuedBy { get; set; }
+
+    public DateTime IssuedAt  { get; set; }
+    public DateTime ExpiresAt { get; set; }
+
+    /// <summary>
+    /// Scanned certificate. Same storage approach as defect-photo / audio
+    /// — bytea column, served back by a controller action with the right
+    /// Content-Type so the admin can view the original document.
+    /// </summary>
+    public byte[]? ScanData { get; set; }
+    [MaxLength(50)]  public string? ScanContentType { get; set; }
+    [MaxLength(255)] public string? ScanFileName    { get; set; }
+
+    /// <summary>
+    /// True when this is the active record. Admin can revoke (sets to false)
+    /// without deleting so the history stays intact. Revoked rows never
+    /// satisfy the competency check even if their expiry is still in the
+    /// future.
+    /// </summary>
+    public bool IsActive { get; set; } = true;
+
+    [MaxLength(500)] public string? Notes { get; set; }
+
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>Admin who entered the certificate. Denormalised display
+    /// name stored on the AuditEvent — the FK here is for filtering.</summary>
+    [MaxLength(450)] public string? AddedByAdminId { get; set; }
+    public ApplicationUser? AddedByAdmin { get; set; }
+
+    /// <summary>Admin who revoked the certificate, if revoked.</summary>
+    [MaxLength(450)] public string? RevokedByAdminId { get; set; }
+    public ApplicationUser? RevokedByAdmin { get; set; }
+    public DateTime? RevokedAt { get; set; }
+    [MaxLength(300)] public string? RevocationReason { get; set; }
+
+    // ── Reminder debouncing ──────────────────────────────────────────────
+    // Set by the daily CompetencyExpiryWorker the first time each band's
+    // email is sent. Re-running the worker the same day, week, or month
+    // doesn't re-send because the columns are non-null.
+    public DateTime? Reminder30DaysSentAt { get; set; }
+    public DateTime? Reminder7DaysSentAt  { get; set; }
+    public DateTime? ExpiryNoticeSentAt   { get; set; }
+}
+
 // ─── Device allowlisting (MDM-lite) ──────────────────────────────────────────
 /// <summary>
 /// One row per phone / tablet that's authorised to run the mobile app.

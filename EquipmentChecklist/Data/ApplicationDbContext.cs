@@ -23,7 +23,9 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<UserCredential>  UserCredentials  => Set<UserCredential>();
     public DbSet<Notification>    Notifications    => Set<Notification>();
     public DbSet<AuditEvent>      AuditEvents      => Set<AuditEvent>();
-    public DbSet<AllowedDevice>   AllowedDevices   => Set<AllowedDevice>();
+    public DbSet<AllowedDevice>      AllowedDevices      => Set<AllowedDevice>();
+    public DbSet<OperatorCompetency> OperatorCompetencies => Set<OperatorCompetency>();
+    public DbSet<AppSetting>         AppSettings         => Set<AppSetting>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -94,6 +96,31 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
              .HasForeignKey(a => a.OperatorId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne(a => a.Supervisor).WithMany()
              .HasForeignKey(a => a.SupervisorId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // AppSetting — runtime-editable configuration. Key is unique so
+        // a single GetByKey lookup is a covering-index hit.
+        builder.Entity<AppSetting>(e =>
+        {
+            e.HasIndex(s => s.Key).IsUnique();
+            e.HasOne(s => s.UpdatedBy).WithMany()
+             .HasForeignKey(s => s.UpdatedById).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // OperatorCompetency — append-only competency history per
+        // (operator, machine type). All FKs SetNull on delete so a user
+        // delete doesn't cascade-wipe the audit history that an MHSA
+        // inspector may need years later.
+        builder.Entity<OperatorCompetency>(e =>
+        {
+            e.HasIndex(c => new { c.OperatorId, c.MachineType, c.IsActive });
+            e.HasIndex(c => c.ExpiresAt);
+            e.HasOne(c => c.Operator).WithMany()
+             .HasForeignKey(c => c.OperatorId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(c => c.AddedByAdmin).WithMany()
+             .HasForeignKey(c => c.AddedByAdminId).OnDelete(DeleteBehavior.SetNull);
+            e.HasOne(c => c.RevokedByAdmin).WithMany()
+             .HasForeignKey(c => c.RevokedByAdminId).OnDelete(DeleteBehavior.SetNull);
         });
 
         // AllowedDevice — device allowlisting (MDM-lite).

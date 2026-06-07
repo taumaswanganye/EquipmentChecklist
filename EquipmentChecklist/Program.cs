@@ -28,7 +28,12 @@ builder.Services.AddSession(options =>
 });
 
 builder.Services.AddScoped<ChecklistService>();
+builder.Services.AddScoped<CompetencyService>();
 builder.Services.AddScoped<PdfService>();
+// DB-backed config — singleton because the in-memory cache survives
+// requests. Reads fall back to IConfiguration so bootstrap-essential keys
+// (ConnectionStrings, Jwt:Key) still work on a brand-new DB.
+builder.Services.AddSingleton<ConfigurationService>();
 builder.Services.AddScoped<EmailService>();
 builder.Services.AddScoped<NotificationService>();
 // KPI dashboard payload for /Admin/Reports. Scoped because it depends on
@@ -205,6 +210,11 @@ builder.Services.AddAuthorization(opt =>
 // ── App services ──────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ChecklistService>();
 builder.Services.AddHostedService<SyncService>();
+// Daily MHSA-Section-22(a) renewal-reminder dispatcher. Runs at 06:00 UTC
+// (08:00 SAST), walks active competencies, and fires the 30 / 7 / 0 day
+// notifications to operator + supervisor + mine manager + SHE officer per
+// the addresses configured in Mine: and Email: settings.
+builder.Services.AddHostedService<CompetencyExpiryWorker>();
 
 builder.Services.AddControllersWithViews();
 builder.Services.AddEndpointsApiExplorer();
@@ -316,11 +326,94 @@ static async Task SeedRolesAndAdminAsync(WebApplication app)
         "CREATE INDEX IF NOT EXISTS \"IX_AllowedDevices_ApprovedByAdminId\" " +
         "ON \"AllowedDevices\" (\"ApprovedByAdminId\");");
 
+    // Operator competencies — append-only licence register. Same
+    // bootstrap pattern as AllowedDevices because there's no Designer +
+    // snapshot pair. IF NOT EXISTS makes re-runs harmless.
+    await cloudDb.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "OperatorCompetencies" (
+            "Id"                    serial PRIMARY KEY,
+            "OperatorId"            character varying(450) NOT NULL,
+            "MachineType"           integer                NOT NULL,
+            "CertificateNumber"     character varying(80)  NULL,
+            "IssuedBy"              character varying(120) NULL,
+            "IssuedAt"              timestamp with time zone NOT NULL,
+            "ExpiresAt"             timestamp with time zone NOT NULL,
+            "ScanData"              bytea                  NULL,
+            "ScanContentType"       character varying(50)  NULL,
+            "ScanFileName"          character varying(255) NULL,
+            "IsActive"              boolean                NOT NULL DEFAULT TRUE,
+            "Notes"                 character varying(500) NULL,
+            "CreatedAt"             timestamp with time zone NOT NULL,
+            "AddedByAdminId"        character varying(450) NULL,
+            "RevokedByAdminId"      character varying(450) NULL,
+            "RevokedAt"             timestamp with time zone NULL,
+            "RevocationReason"      character varying(300) NULL,
+            "Reminder30DaysSentAt"  timestamp with time zone NULL,
+            "Reminder7DaysSentAt"   timestamp with time zone NULL,
+            "ExpiryNoticeSentAt"    timestamp with time zone NULL,
+            CONSTRAINT "FK_OperatorCompetencies_AspNetUsers_OperatorId"
+                FOREIGN KEY ("OperatorId")
+                REFERENCES "AspNetUsers" ("Id") ON DELETE RESTRICT,
+            CONSTRAINT "FK_OperatorCompetencies_AspNetUsers_AddedByAdminId"
+                FOREIGN KEY ("AddedByAdminId")
+                REFERENCES "AspNetUsers" ("Id") ON DELETE SET NULL,
+            CONSTRAINT "FK_OperatorCompetencies_AspNetUsers_RevokedByAdminId"
+                FOREIGN KEY ("RevokedByAdminId")
+                REFERENCES "AspNetUsers" ("Id") ON DELETE SET NULL
+        );
+        """);
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE INDEX IF NOT EXISTS \"IX_OperatorCompetencies_OperatorId_MachineType_IsActive\" " +
+        "ON \"OperatorCompetencies\" (\"OperatorId\", \"MachineType\", \"IsActive\");");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE INDEX IF NOT EXISTS \"IX_OperatorCompetencies_ExpiresAt\" " +
+        "ON \"OperatorCompetencies\" (\"ExpiresAt\");");
+
+    // ── AppSettings — runtime config rows ─────────────────────────────
+    // Same out-of-band bootstrap pattern. The unique index on Key makes
+    // ConfigurationService.GetAsync sub-millisecond.
+    await cloudDb.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "AppSettings" (
+            "Id"            serial PRIMARY KEY,
+            "Key"           character varying(120) NOT NULL,
+            "Category"      character varying(60)  NOT NULL,
+            "Value"         text                   NULL,
+            "DefaultValue"  text                   NULL,
+            "Description"   character varying(500) NULL,
+            "IsSecret"      boolean                NOT NULL DEFAULT FALSE,
+            "CreatedAt"     timestamp with time zone NOT NULL,
+            "UpdatedAt"     timestamp with time zone NOT NULL,
+            "UpdatedById"   character varying(450) NULL,
+            CONSTRAINT "FK_AppSettings_AspNetUsers_UpdatedById"
+                FOREIGN KEY ("UpdatedById")
+                REFERENCES "AspNetUsers" ("Id") ON DELETE SET NULL
+        );
+        """);
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_AppSettings_Key\" " +
+        "ON \"AppSettings\" (\"Key\");");
+
+    // ── Seed default AppSettings rows ─────────────────────────────────
+    // Copy whatever's currently in IConfiguration into the DB, with
+    // category labels + descriptions so the admin UI is meaningful. Each
+    // SeedAsync skips when the row already exists, so re-runs are no-ops
+    // and admin customisations aren't overwritten.
+    await SeedAppSettingsAsync(scope.ServiceProvider);
+
     // 2. Ensure Local SQLite DB is created
     await localDb.Database.EnsureCreatedAsync();
 
     // 3. Seed default admin user
-    const string adminEmail = "admin@belfast.co.za";
+    // Email + password now come from the AppSettings table (seeded just
+    // above) so admins can change them at runtime. Fallback constants
+    // cover the first-ever boot case where SeedAppSettingsAsync hasn't
+    // committed yet — same defaults the seeder uses.
+    var configService = scope.ServiceProvider
+        .GetRequiredService<EquipmentChecklist.Services.ConfigurationService>();
+    var adminEmail    = await configService.GetAsync("Auth.SeededAdminEmail")
+                        ?? "admin@belfast.co.za";
+    var adminPassword = await configService.GetAsync("Auth.SeededAdminPassword")
+                        ?? "Admin@123";
     if (await userManager.FindByEmailAsync(adminEmail) == null)
     {
         var admin = new ApplicationUser
@@ -332,7 +425,7 @@ static async Task SeedRolesAndAdminAsync(WebApplication app)
             Role = UserRole.Admin,
             EmailConfirmed = true
         };
-        await userManager.CreateAsync(admin, "Admin@123");
+        await userManager.CreateAsync(admin, adminPassword);
         await userManager.AddToRoleAsync(admin, "Admin");
     }
 
@@ -365,6 +458,76 @@ static async Task SyncMasterDataToLocalAsync(ApplicationDbContext cloudDb, Local
 
         await localDb.SaveChangesAsync();
     }
+}
+
+/// <summary>
+/// Copy every operationally-editable config value into the AppSettings
+/// table. Idempotent — re-runs skip rows that already exist so admin
+/// customisations aren't overwritten. Reads the current values from
+/// IConfiguration (= appsettings.json) and uses those as the defaults.
+///
+/// <para>What's NOT seeded here:</para>
+/// <list type="bullet">
+///   <item><description><c>ConnectionStrings</c> — bootstrap, must stay in
+///   appsettings.json or we can't even open the DB to read them.</description></item>
+///   <item><description><c>Jwt:Key</c> — cryptographic secret. DB compromise
+///   would equal JWT-key compromise. Keep it host-side.</description></item>
+///   <item><description><c>Email:Password</c> — SMTP password. Seeded but
+///   flagged IsSecret so the admin UI masks it.</description></item>
+/// </list>
+/// </summary>
+static async Task SeedAppSettingsAsync(IServiceProvider services)
+{
+    var cfg    = services.GetRequiredService<IConfiguration>();
+    var config = services.GetRequiredService<EquipmentChecklist.Services.ConfigurationService>();
+
+    // ── Mine identity ────────────────────────────────────────────────
+    await config.SeedAsync("Mine.Name",            "Mine",  cfg["Mine:Name"]            ?? "Belfast Coal Mine",
+        "Full display name shown in headers + PDFs + emails.");
+    await config.SeedAsync("Mine.ShortName",       "Mine",  cfg["Mine:ShortName"]       ?? "BELFAST",
+        "Short label for sidebar / report titles.");
+    await config.SeedAsync("Mine.Tagline",         "Mine",  cfg["Mine:Tagline"]         ?? "Pre-Shift Inspection Checklist",
+        "Sub-headline shown in the splash + PDF cover.");
+    await config.SeedAsync("Mine.ComplianceText",  "Mine",  cfg["Mine:ComplianceText"]  ?? "MHSA / DMR / CPS Level 8/9 Compliant",
+        "Footer compliance text on PDFs and emails.");
+    await config.SeedAsync("Mine.MineManagerEmail","Mine",  cfg["Mine:MineManagerEmail"],
+        "Mine manager — gets competency renewal reminders.");
+    await config.SeedAsync("Mine.SheOfficerEmail", "Mine",  cfg["Mine:SheOfficerEmail"],
+        "SHE officer — gets competency renewal reminders + compliance events.");
+
+    // ── Email (SMTP) ─────────────────────────────────────────────────
+    await config.SeedAsync("Email.SmtpHost",     "Email", cfg["Email:SmtpHost"] ?? "smtp.gmail.com",
+        "Outbound SMTP host. Defaults to Gmail's submission relay.");
+    await config.SeedAsync("Email.SmtpPort",     "Email", cfg["Email:SmtpPort"] ?? "587",
+        "SMTP port. 587 = STARTTLS submission (recommended), 465 = SMTPS.");
+    await config.SeedAsync("Email.Username",     "Email", cfg["Email:Username"],
+        "SMTP authentication username — usually the same as From.");
+    await config.SeedAsync("Email.Password",     "Email", cfg["Email:Password"],
+        "SMTP authentication password / app-password. Masked in the admin UI.",
+        isSecret: true);
+    await config.SeedAsync("Email.From",         "Email", cfg["Email:From"],
+        "Sender address shown on every outbound email.");
+    await config.SeedAsync("Email.FromName",     "Email", cfg["Email:FromName"] ?? "Belfast Equipment System",
+        "Sender display name. Becomes the bold 'from' in inbox previews.");
+    await config.SeedAsync("Email.ManagerEmail", "Email", cfg["Email:ManagerEmail"],
+        "Maintenance manager — receives copies of parts-order PDFs.");
+    await config.SeedAsync("Email.AdminEmail",   "Email", cfg["Email:AdminEmail"],
+        "Admin / IT support email — surfaced on the login screen when sign-in fails.");
+
+    // ── Fido2 / WebAuthn ─────────────────────────────────────────────
+    await config.SeedAsync("Fido2.ServerDomain", "Security", cfg["Fido2:ServerDomain"] ?? "localhost",
+        "The relying-party domain WebAuthn assertions are issued against.");
+    await config.SeedAsync("Fido2.ServerName",   "Security", cfg["Fido2:ServerName"]   ?? "Equipment Checklist",
+        "Friendly RP name shown in the operator's biometric-enrolment dialog.");
+    await config.SeedAsync("Fido2.Origins",      "Security", string.Join(";", cfg.GetSection("Fido2:Origins").Get<string[]>() ?? new[] { "https://localhost:5001" }),
+        "Allowed origins for WebAuthn assertions (semicolon-separated).");
+
+    // ── Auth seed ────────────────────────────────────────────────────
+    await config.SeedAsync("Auth.SeededAdminEmail",    "Security", "admin@belfast.co.za",
+        "Email address of the seeded administrator created on first boot.");
+    await config.SeedAsync("Auth.SeededAdminPassword", "Security", "Admin@123",
+        "Initial password of the seeded administrator. Change it on first login.",
+        isSecret: true);
 }
 
 static async Task SeedChecklistTemplatesAsync(ApplicationDbContext db)

@@ -1,0 +1,126 @@
+@model List<EquipmentChecklist.Services.CompetencyService.RosterRow>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Operator Competencies";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    // Counts for the page header chips.
+    var withGaps     = Model.Count(r => r.Expired.Count > 0 || r.ExpiringIn30.Count > 0);
+    var fullyCovered = Model.Count(r => r.Expired.Count == 0 && r.ExpiringIn30.Count == 0 && r.Current.Count > 0);
+    var noCerts      = Model.Count(r => r.Current.Count == 0 && r.Expired.Count == 0);
+
+    // Display label helper for the chips below.
+    string Label(MachineType t) => t switch
+    {
+        MachineType.ADT                  => "ADT",
+        MachineType.ArticulatedWaterTruck=> "AWT",
+        MachineType.DieselBowser         => "Diesel Bowser",
+        MachineType.Drills               => "Drills",
+        MachineType.Excavator            => "Excavator",
+        MachineType.FEL                  => "FEL",
+        MachineType.Forklift             => "Forklift",
+        MachineType.Grader               => "Grader",
+        MachineType.LDV                  => "LDV",
+        MachineType.SRVWaterBowser       => "SRV/WB",
+        MachineType.TrackDozer           => "Track Dozer",
+        MachineType.RDT                  => "RDT",
+        MachineType.TruckMountedCrane    => "TMC",
+        MachineType.TLB                  => "TLB",
+        _                                => t.ToString()
+    };
+}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h2 style="font-size:20px;margin:0">Operator Competencies</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+            MHSA Section 22(a) — operator must be competent to operate the machine.
+            @Model.Count operators · @fullyCovered fully covered · @withGaps with renewal gaps · @noCerts uncertified
+        </p>
+    </div>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
+
+@if (Model.Count == 0)
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">🎓</div>
+        <p>No active employees yet. Add operators on the Employees page first.</p>
+    </div>
+}
+else
+{
+    <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+            <thead style="background:var(--steel-dark)">
+                <tr>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">OPERATOR</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">EMPLOYEE #</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">CURRENT COMPETENCIES</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">EXPIRING ≤30D</th>
+                    <th style="text-align:left;padding:12px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">EXPIRED</th>
+                    <th style="padding:12px 14px"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in Model)
+                {
+                    <tr style="border-top:1px solid var(--steel-border)">
+                        <td style="padding:12px 14px">
+                            <strong>@row.FullName</strong>
+                            <div style="font-size:11px;color:var(--text-muted)">@row.Email · @row.Role</div>
+                        </td>
+                        <td style="padding:12px 14px;font-family:ui-monospace,monospace;font-size:12px;color:var(--text-muted)">
+                            @row.EmployeeNumber
+                        </td>
+                        <td style="padding:12px 14px">
+                            @if (row.Current.Count == 0)
+                            {
+                                <span style="font-size:11px;font-style:italic;color:var(--text-muted)">— none —</span>
+                            }
+                            else
+                            {
+                                @foreach (var t in row.Current)
+                                {
+                                    <span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;color:#86efac;border:1px solid #166534;background:rgba(34,197,94,.08)">@Label(t)</span>
+                                }
+                            }
+                        </td>
+                        <td style="padding:12px 14px">
+                            @foreach (var t in row.ExpiringIn30)
+                            {
+                                <span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;color:#fbbf24;border:1px solid #b45309;background:rgba(245,158,11,.08)">@Label(t)</span>
+                            }
+                        </td>
+                        <td style="padding:12px 14px">
+                            @foreach (var t in row.Expired)
+                            {
+                                <span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;color:#fca5a5;border:1px solid #b91c1c;background:rgba(239,68,68,.08)">@Label(t)</span>
+                            }
+                        </td>
+                        <td style="padding:12px 14px;text-align:right;white-space:nowrap">
+                            <a href="/Admin/OperatorCompetency/@row.OperatorId" class="btn btn-ghost btn-sm">
+                                📜 View / Add
+                            </a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <p style="font-size:11px;color:var(--text-muted);margin-top:12px;line-height:1.6">
+        Every add / renewal / revocation is captured in the
+        <a href="/Admin/Audit" style="color:var(--teal)">audit trail</a>.
+        Operators with expired competencies for a machine type are blocked from
+        submitting checklists on that type — on the phone AND on the web.
+    </p>
+}

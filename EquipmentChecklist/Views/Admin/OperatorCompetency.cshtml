@@ -1,0 +1,182 @@
+@model List<EquipmentChecklist.Models.OperatorCompetency>
+@using EquipmentChecklist.Models
+@{
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var op = (EquipmentChecklist.Models.ApplicationUser)ViewBag.Operator;
+    ViewData["Title"] = $"Competencies · {op.FullName}";
+
+    // Build a default issued-at = today and expires-at = today + 2 years
+    // so the form is pre-populated with sensible values.
+    var defaultIssued  = DateTime.UtcNow.Date;
+    var defaultExpires = defaultIssued.AddYears(2);
+}
+
+<a href="/Admin/Competencies" class="btn btn-ghost" style="margin-bottom:16px">← Back to Competencies</a>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h2 style="font-size:20px;margin:0">@op.FullName</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+            @op.Email · @op.EmployeeNumber · @op.Role
+        </p>
+    </div>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
+
+@* ────────────── ADD / RENEW FORM ────────────── *@
+<div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:22px;margin-bottom:22px">
+    <h3 style="font-size:16px;margin:0 0 4px">Add / renew a competency</h3>
+    <p style="font-size:12px;color:var(--text-muted);margin:0 0 16px">
+        Entering a competency for a machine type the operator is already licensed for
+        will <strong>renew</strong> it — the previous record is auto-revoked and stays
+        on the history below.
+    </p>
+
+    <form method="post" action="/Admin/AddCompetency" enctype="multipart/form-data">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="operatorId" value="@op.Id" />
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            <div class="form-group">
+                <label class="form-label">Machine type <span style="color:#ef4444">*</span></label>
+                <select name="machineType" class="form-control" required>
+                    <option value="">— Select —</option>
+                    @foreach (MachineType t in Enum.GetValues<MachineType>())
+                    {
+                        <option value="@((int)t)">@MachineDisplayExtensions.MachineTypeLabels[t]</option>
+                    }
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Certificate number</label>
+                <input type="text" name="certificateNumber" class="form-control"
+                       placeholder="e.g. TETA/CN-12345" autocomplete="off" />
+            </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+            <div class="form-group">
+                <label class="form-label">Issued by</label>
+                <input type="text" name="issuedBy" class="form-control"
+                       placeholder="TETA, MQA, in-house, etc." autocomplete="off" />
+            </div>
+            <div class="form-group">
+                <label class="form-label">Issued at <span style="color:#ef4444">*</span></label>
+                <input type="date" name="issuedAt" class="form-control"
+                       value="@defaultIssued.ToString("yyyy-MM-dd")" required />
+            </div>
+            <div class="form-group">
+                <label class="form-label">Expires at <span style="color:#ef4444">*</span></label>
+                <input type="date" name="expiresAt" class="form-control"
+                       value="@defaultExpires.ToString("yyyy-MM-dd")" required />
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Scanned certificate (PDF or image)</label>
+            <input type="file" name="scan" class="form-control"
+                   accept="application/pdf,image/png,image/jpeg" />
+            <small style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">
+                Optional but strongly recommended. Up to 8 MB. The original document is what an MHSA inspector asks to see.
+            </small>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Notes</label>
+            <textarea name="notes" class="form-control" rows="2"
+                      placeholder="e.g. Class restriction: night-shift only"></textarea>
+        </div>
+
+        <div style="display:flex;gap:12px">
+            <button type="submit" class="btn btn-primary">Save competency</button>
+        </div>
+    </form>
+</div>
+
+@* ────────────── HISTORY ────────────── *@
+<div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;overflow:hidden">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--steel-border)">
+        <h3 style="font-size:15px;margin:0">History</h3>
+        <p style="font-size:11px;color:var(--text-muted);margin:2px 0 0">
+            Every record is kept — revoked / superseded rows stay so inspector questions
+            about past dates can be answered.
+        </p>
+    </div>
+    @if (Model.Count == 0)
+    {
+        <div style="text-align:center;padding:40px;color:var(--text-muted)">
+            <p style="margin:0">No competencies on record yet.</p>
+        </div>
+    }
+    else
+    {
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead style="background:var(--steel-dark)">
+                <tr>
+                    <th style="text-align:left;padding:10px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">MACHINE TYPE</th>
+                    <th style="text-align:left;padding:10px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">CERTIFICATE</th>
+                    <th style="text-align:left;padding:10px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">ISSUED</th>
+                    <th style="text-align:left;padding:10px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">EXPIRES</th>
+                    <th style="text-align:left;padding:10px 14px;color:var(--text-muted);font-size:11px;letter-spacing:.6px;font-weight:600">STATUS</th>
+                    <th style="text-align:right;padding:10px 14px"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var c in Model)
+                {
+                    var now = DateTime.UtcNow;
+                    var (label, color) = c switch
+                    {
+                        var x when !x.IsActive            => ("REVOKED",     "#fca5a5"),
+                        var x when x.ExpiresAt <= now     => ("EXPIRED",     "#fca5a5"),
+                        var x when x.ExpiresAt <= now.AddDays(30) => ("EXPIRING SOON", "#fbbf24"),
+                        _                                 => ("ACTIVE",      "#86efac")
+                    };
+                    <tr style="border-top:1px solid var(--steel-border)">
+                        <td style="padding:10px 14px"><strong>@c.MachineType</strong></td>
+                        <td style="padding:10px 14px;font-family:ui-monospace,monospace;font-size:12px">
+                            @(c.CertificateNumber ?? "—")
+                            @if (!string.IsNullOrEmpty(c.IssuedBy))
+                            {
+                                <div style="font-size:10px;color:var(--text-muted);font-family:inherit">@c.IssuedBy</div>
+                            }
+                        </td>
+                        <td style="padding:10px 14px;color:var(--text-muted)">@c.IssuedAt.ToString("yyyy-MM-dd")</td>
+                        <td style="padding:10px 14px;color:var(--text-muted)">@c.ExpiresAt.ToString("yyyy-MM-dd")</td>
+                        <td style="padding:10px 14px">
+                            <span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;color:@color;border:1px solid @color;background:rgba(255,255,255,.04)">@label</span>
+                            @if (!c.IsActive && !string.IsNullOrEmpty(c.RevocationReason))
+                            {
+                                <div style="font-size:10px;color:var(--text-muted);margin-top:2px;font-style:italic">@c.RevocationReason</div>
+                            }
+                        </td>
+                        <td style="padding:10px 14px;text-align:right;white-space:nowrap">
+                            @if (c.ScanData != null && c.ScanData.Length > 0)
+                            {
+                                <a href="/Admin/CompetencyScan/@c.Id" target="_blank" class="btn btn-ghost btn-sm">📄 View scan</a>
+                            }
+                            @if (c.IsActive)
+                            {
+                                <form method="post" action="/Admin/RevokeCompetency"
+                                      style="display:inline-block;margin:0 0 0 4px"
+                                      onsubmit="return confirm('Revoke this competency? The operator will no longer be able to submit on @c.MachineType.');">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="id" value="@c.Id" />
+                                    <button type="submit" class="btn btn-ghost btn-sm" style="color:#fca5a5">🚫 Revoke</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>

@@ -5,7 +5,55 @@
 @inject ApiClient        Api
 @inject AuthService      Auth
 @inject LocalCache       Cache
+@inject ToastService     Toasts
+@inject HapticService    Haptics
 @inject NavigationManager Nav
+
+@* ─────────────────────────────────────────────────────────────────────
+   COMPETENCY-BLOCK MODAL (MHSA Section 22(a))
+
+   Pops when the operator taps a machine they don't hold a current
+   competency for. Full-screen overlay forces them to acknowledge the
+   reason before they can interact with anything else — toasts were too
+   easy to miss on Android System WebView.
+   ───────────────────────────────────────────────────────────────────── *@
+@if (blockedMachine is not null)
+{
+    <div class="block-backdrop" @onclick="DismissBlocked">
+        <div class="block-card" @onclick:stopPropagation="true">
+            <div class="block-icon">🛑</div>
+            <h2 class="block-title">Not authorised</h2>
+            <p class="block-body">
+                You're not currently competent on <strong>@blockedMachine.TypeDisplay</strong>.
+            </p>
+            <div class="block-detail">
+                <div class="block-row">
+                    <span class="block-k">Machine</span>
+                    <span class="block-v mono">@blockedMachine.MachineNumber · @blockedMachine.MachineName</span>
+                </div>
+                @if (blockedLastExpiry.HasValue)
+                {
+                    <div class="block-row">
+                        <span class="block-k">Last certificate</span>
+                        <span class="block-v">expired @blockedLastExpiry.Value.ToLocalTime().ToString("yyyy-MM-dd")</span>
+                    </div>
+                }
+                else
+                {
+                    <div class="block-row">
+                        <span class="block-k">Certificate</span>
+                        <span class="block-v">— none on file —</span>
+                    </div>
+                }
+            </div>
+            <p class="block-foot">
+                Contact your administrator to register a current licence.
+                Every block is logged in the audit trail.
+            </p>
+            <button class="block-btn" @onclick="DismissBlocked">OK</button>
+        </div>
+    </div>
+}
 
 @* ───────────── STAT CARDS ───────────── *@
 <div class="stat-grid">
@@ -189,6 +237,60 @@ else
 }
 
 <style>
+    /* ── Competency-block modal ─────────────────────────────────────────
+       Full-screen red-toned dialog. Backdrop covers everything (incl. the
+       drawer) so the operator can't navigate around it without dismissing. */
+    .block-backdrop {
+        position: fixed; inset: 0; z-index: 200;
+        background: rgba(2, 6, 23, .82);
+        display: flex; align-items: center; justify-content: center;
+        padding: 18px;
+        animation: block-fade .15s ease-out;
+    }
+    .block-card {
+        background: #0d1729; color: #e5e7eb;
+        border: 1px solid #7f1d1d;
+        border-top: 4px solid #ef4444;
+        border-radius: 14px;
+        max-width: 460px; width: 100%;
+        padding: 26px 22px 22px;
+        text-align: center;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, .55);
+        animation: block-pop .18s cubic-bezier(.2, .8, .3, 1.05);
+    }
+    .block-icon  { font-size: 44px; margin-bottom: 4px; }
+    .block-title {
+        font-size: 19px; font-weight: 800;
+        color: #fecaca; letter-spacing: .3px;
+        margin: 4px 0 10px;
+    }
+    .block-body  { font-size: 14px; color: #e5e7eb; line-height: 1.6; margin: 0 0 16px; }
+    .block-detail {
+        text-align: left; background: #111c2e;
+        border: 1px solid #1f2a3a; border-radius: 8px;
+        padding: 10px 12px; margin-bottom: 14px;
+    }
+    .block-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 12px; }
+    .block-row + .block-row { border-top: 1px solid #1a2638; }
+    .block-k   { color: #94a3b8; }
+    .block-v   { color: #fcd34d; font-weight: 600; }
+    .mono      { font-family: ui-monospace, monospace; }
+    .block-foot {
+        font-size: 11px; color: #94a3b8;
+        line-height: 1.55; margin: 0 0 16px;
+    }
+    .block-btn {
+        background: #ef4444; color: #0a1726;
+        border: none; border-radius: 8px;
+        padding: 11px 28px; font-size: 14px; font-weight: 700;
+        cursor: pointer; font-family: inherit;
+        min-width: 140px;
+    }
+    .block-btn:hover { background: #f87171; }
+    .block-btn:active { transform: translateY(1px); }
+    @@keyframes block-fade { from { opacity: 0; } to { opacity: 1; } }
+    @@keyframes block-pop  { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
     /* Stat cards */
     .stat-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:20px; }
     @@media (max-width:1100px) { .stat-grid { grid-template-columns:repeat(3,1fr); } }
@@ -407,10 +509,46 @@ else
         finally { busy = false; StateHasChanged(); }
     }
 
-    private void Open(SyncMachineSummaryDto m)
+    // ── Block-modal state ─────────────────────────────────────────────
+    // When the gate fires, populate these and the modal markup at the
+    // bottom of the page renders. blockedMachine != null is the toggle.
+    // We hold the full DTO so the modal can show machine name + number
+    // + type without having to look them up again.
+    private SyncMachineSummaryDto? blockedMachine;
+    private DateTime?              blockedLastExpiry;
+
+    private async Task Open(SyncMachineSummaryDto m)
     {
         if (m.IsImmobilised || !m.HasTemplate) return;
+
+        // ── Competency gate (MHSA Section 22(a)) ──────────────────────
+        // Check the cached competencies before navigating into the
+        // checklist form. Without this the operator could fill in 30
+        // items, sign, hit submit, and only THEN find out they're not
+        // authorised — wastes a few minutes and looks janky. Pre-block
+        // shows the reason screen immediately.
+        var email = Auth.CurrentUser?.Email;
+        var competent = await Cache.IsCompetentAsync(email, m.Type);
+        if (!competent)
+        {
+            // Pop the modal — toasts on Android System WebView can be
+            // missed or dismissed too quickly when the operator is
+            // already looking at the kit. A full-screen blocking dialog
+            // forces the message to be read.
+            blockedMachine    = m;
+            blockedLastExpiry = await Cache.GetCompetencyExpiryAsync(email, m.Type);
+            Haptics.Warning();
+            StateHasChanged();
+            return;
+        }
+
         Nav.NavigateTo($"/checklist/{m.Id}");
+    }
+
+    private void DismissBlocked()
+    {
+        blockedMachine    = null;
+        blockedLastExpiry = null;
     }
 
     private static (string Cls, string Label) StatusBadge(ChecklistStatus s) => s switch

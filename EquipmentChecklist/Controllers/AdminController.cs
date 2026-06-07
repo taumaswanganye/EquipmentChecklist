@@ -25,6 +25,7 @@ public class AdminController : Controller
     private readonly NotificationService          _notifications;
     private readonly AuditService                 _audit;
     private readonly EmailService                 _email;
+    private readonly CompetencyService            _competency;
 
     public AdminController(ApplicationDbContext db,
                            UserManager<ApplicationUser> users,
@@ -32,7 +33,8 @@ public class AdminController : Controller
                            ReportsService reports,
                            NotificationService notifications,
                            AuditService audit,
-                           EmailService email)
+                           EmailService email,
+                           CompetencyService competency)
     {
         _db            = db;
         _users         = users;
@@ -41,6 +43,7 @@ public class AdminController : Controller
         _notifications = notifications;
         _audit         = audit;
         _email         = email;
+        _competency    = competency;
     }
 
     // ── Image upload helper ───────────────────────────────────────────────────
@@ -761,6 +764,230 @@ public class AdminController : Controller
             ? $"Device reactivated — user can sign in again."
             : $"Device revoked — user will be signed out the next time their device reaches the server.";
         return RedirectToAction("Devices");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  OPERATOR COMPETENCY (MHSA Section 22(a))
+    //
+    //  Per-operator licence register. Append-only — revoked / expired /
+    //  replaced rows are kept so an inspector can answer historical
+    //  questions ("was John competent on this haul truck on 14 March?").
+    //  Single source of truth for the rules lives in CompetencyService;
+    //  these actions just do CRUD + redirect.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>Roster view — one row per active operator with their
+    /// current / expiring / expired chips per machine type.</summary>
+    [HttpGet]
+    public async Task<IActionResult> Competencies()
+    {
+        var rows = await _competency.GetRosterAsync();
+        return View(rows);
+    }
+
+    /// <summary>Per-operator detail — full history of their certificates
+    /// + form to add a new one.</summary>
+    [HttpGet]
+    public async Task<IActionResult> OperatorCompetency(string id)
+    {
+        var op = await _users.FindByIdAsync(id);
+        if (op == null) return NotFound();
+
+        var history = await _competency.GetForOperatorAsync(id);
+        ViewBag.Operator = op;
+        return View(history);
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> AddCompetency(
+        string operatorId,
+        int    machineType,
+        string? certificateNumber,
+        string? issuedBy,
+        DateTime issuedAt,
+        DateTime expiresAt,
+        string? notes,
+        IFormFile? scan)
+    {
+        if (string.IsNullOrWhiteSpace(operatorId))
+        {
+            TempData["Error"] = "Operator is required.";
+            return RedirectToAction("Competencies");
+        }
+
+        var op = await _users.FindByIdAsync(operatorId);
+        if (op == null)
+        {
+            TempData["Error"] = "Operator not found.";
+            return RedirectToAction("Competencies");
+        }
+
+        // Sanity guard: machine type must be a defined enum value.
+        if (!Enum.IsDefined(typeof(MachineType), machineType))
+        {
+            TempData["Error"] = "Invalid machine type.";
+            return RedirectToAction("OperatorCompetency", new { id = operatorId });
+        }
+
+        if (expiresAt <= issuedAt)
+        {
+            TempData["Error"] = "Expiry must be after issue date.";
+            return RedirectToAction("OperatorCompetency", new { id = operatorId });
+        }
+
+        // Read scan bytes if provided. We store inline (bytea) to match
+        // the existing defect-photo / audio storage pattern — one query
+        // pulls the whole record + scan together.
+        byte[]? scanBytes = null;
+        string? scanContentType = null;
+        string? scanFileName    = null;
+        if (scan != null && scan.Length > 0)
+        {
+            const long maxBytes = 8 * 1024 * 1024; // 8 MB cap on cert scans
+            if (scan.Length > maxBytes)
+            {
+                TempData["Error"] = "Certificate scan must be under 8 MB.";
+                return RedirectToAction("OperatorCompetency", new { id = operatorId });
+            }
+            using var ms = new MemoryStream();
+            await scan.CopyToAsync(ms);
+            scanBytes       = ms.ToArray();
+            scanContentType = string.IsNullOrEmpty(scan.ContentType)
+                                ? "application/octet-stream"
+                                : scan.ContentType;
+            scanFileName    = scan.FileName;
+        }
+
+        // Detect a renewal: if there's an existing active competency for
+        // the same operator + machine type, this new one renews it. The
+        // OLD row is revoked (its IsActive flips to false) so the freshest
+        // valid row is the source of truth. Audit notes the renewal
+        // distinctly from a fresh add.
+        var existingActive = await _db.OperatorCompetencies
+            .Where(c => c.OperatorId == operatorId
+                     && c.MachineType == (MachineType)machineType
+                     && c.IsActive)
+            .ToListAsync();
+
+        var adminId = _users.GetUserId(User);
+        foreach (var prev in existingActive)
+        {
+            prev.IsActive         = false;
+            prev.RevokedByAdminId = adminId;
+            prev.RevokedAt        = DateTime.UtcNow;
+            prev.RevocationReason = "Superseded by renewal";
+        }
+
+        var row = new OperatorCompetency
+        {
+            OperatorId        = operatorId,
+            MachineType       = (MachineType)machineType,
+            CertificateNumber = string.IsNullOrWhiteSpace(certificateNumber) ? null : certificateNumber.Trim(),
+            IssuedBy          = string.IsNullOrWhiteSpace(issuedBy) ? null : issuedBy.Trim(),
+            IssuedAt          = DateTime.SpecifyKind(issuedAt,  DateTimeKind.Utc),
+            ExpiresAt         = DateTime.SpecifyKind(expiresAt, DateTimeKind.Utc),
+            ScanData          = scanBytes,
+            ScanContentType   = scanContentType,
+            ScanFileName      = scanFileName,
+            Notes             = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim(),
+            CreatedAt         = DateTime.UtcNow,
+            AddedByAdminId    = adminId,
+            IsActive          = true
+        };
+        _db.OperatorCompetencies.Add(row);
+        await _db.SaveChangesAsync();
+
+        // Audit — distinguish first-time-add from renewal so the trail
+        // tells the story over time.
+        try
+        {
+            await _audit.LogAsync(
+                action:     existingActive.Count > 0 ? AuditActions.CompetencyRenewed : AuditActions.CompetencyAdded,
+                targetType: "OperatorCompetency",
+                targetId:   row.Id,
+                payload:    new
+                {
+                    operatorId,
+                    operatorName  = op.FullName,
+                    machineType   = ((MachineType)machineType).ToString(),
+                    certificate   = certificateNumber,
+                    issuedBy,
+                    issuedAt      = row.IssuedAt,
+                    expiresAt     = row.ExpiresAt,
+                    supersededIds = existingActive.Select(p => p.Id).ToArray()
+                });
+        }
+        catch { /* audit failure must not block the operator flow */ }
+
+        TempData["Success"] = existingActive.Count > 0
+            ? $"Renewed {op.FullName}'s competency on {(MachineType)machineType}. Expires {row.ExpiresAt:yyyy-MM-dd}."
+            : $"Added competency for {op.FullName} on {(MachineType)machineType}. Expires {row.ExpiresAt:yyyy-MM-dd}.";
+        return RedirectToAction("OperatorCompetency", new { id = operatorId });
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> RevokeCompetency(int id, string? reason)
+    {
+        var row = await _db.OperatorCompetencies
+            .Include(c => c.Operator)
+            .FirstOrDefaultAsync(c => c.Id == id);
+        if (row == null)
+        {
+            TempData["Error"] = "Competency not found.";
+            return RedirectToAction("Competencies");
+        }
+
+        if (!row.IsActive)
+        {
+            TempData["Success"] = "Competency was already revoked.";
+            return RedirectToAction("OperatorCompetency", new { id = row.OperatorId });
+        }
+
+        var adminId = _users.GetUserId(User);
+        row.IsActive         = false;
+        row.RevokedByAdminId = adminId;
+        row.RevokedAt        = DateTime.UtcNow;
+        row.RevocationReason = string.IsNullOrWhiteSpace(reason) ? "Revoked by admin" : reason.Trim();
+        await _db.SaveChangesAsync();
+
+        try
+        {
+            await _audit.LogAsync(
+                action:     AuditActions.CompetencyRevoked,
+                targetType: "OperatorCompetency",
+                targetId:   row.Id,
+                payload:    new
+                {
+                    operatorId   = row.OperatorId,
+                    operatorName = row.Operator?.FullName,
+                    machineType  = row.MachineType.ToString(),
+                    certificate  = row.CertificateNumber,
+                    reason       = row.RevocationReason
+                });
+        }
+        catch { }
+
+        TempData["Success"] = $"Competency revoked. The operator can no longer submit for {row.MachineType}.";
+        return RedirectToAction("OperatorCompetency", new { id = row.OperatorId });
+    }
+
+    /// <summary>Serve the scanned certificate PDF / image back to the
+    /// admin so they can re-verify what's on file.</summary>
+    [HttpGet]
+    public async Task<IActionResult> CompetencyScan(int id)
+    {
+        var row = await _db.OperatorCompetencies
+            .Where(c => c.Id == id)
+            .Select(c => new { c.ScanData, c.ScanContentType, c.ScanFileName })
+            .FirstOrDefaultAsync();
+        if (row?.ScanData == null || row.ScanData.Length == 0)
+            return NotFound();
+
+        // Inline so the browser previews the PDF in a tab rather than
+        // forcing a download — admins usually just want to skim and close.
+        Response.Headers["Content-Disposition"] =
+            $"inline; filename=\"{row.ScanFileName ?? "competency.pdf"}\"";
+        return File(row.ScanData, row.ScanContentType ?? "application/pdf");
     }
 
     // ══════════════════════════════════════════════════════════════════════════

@@ -127,6 +127,27 @@ public class SyncUserDto
     public string   Email          { get; set; } = "";
     public string   EmployeeNumber { get; set; } = "";
     public string[] Roles          { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Operator's current competencies — one entry per machine type they're
+    /// licensed for, with the soonest-expiring date. Mobile uses this to
+    /// pre-block at machine selection so an unauthorised operator never
+    /// even opens the form. Empty array = no current competencies.
+    /// </summary>
+    public List<CompetencySummaryDto> Competencies { get; set; } = new();
+}
+
+/// <summary>
+/// One row per (machine type, expires-at) for an operator's current
+/// competencies. The mobile decides "can John open the checklist for
+/// machine 14?" by looking up machine 14's type and checking if there's
+/// a non-expired matching row in here.
+/// </summary>
+public class CompetencySummaryDto
+{
+    /// <summary>The MachineType enum value (int).</summary>
+    public int      MachineType { get; set; }
+    public DateTime ExpiresAt   { get; set; }
 }
 
 public class SyncMachineSummaryDto
@@ -134,6 +155,10 @@ public class SyncMachineSummaryDto
     public int     Id              { get; set; }
     public string  MachineNumber   { get; set; } = "";
     public string  MachineName     { get; set; } = "";
+    /// <summary>MachineType enum value (int) — used by the mobile to
+    /// match the machine against the operator's cached competencies for
+    /// the pre-block gate.</summary>
+    public int     Type            { get; set; }
     public string  TypeDisplay     { get; set; } = "";
     public string? Description     { get; set; }
     public bool    IsImmobilised   { get; set; }
@@ -462,6 +487,19 @@ public static class AuditActions
     // a clear trail.
     public const string UserDeactivated      = "user.deactivated";
     public const string UserReactivated      = "user.reactivated";
+
+    // Operator competency (MHSA Section 22(a)). Six events covering the
+    // licence lifecycle. The "blocked" / "attempted" pair distinguishes
+    // server-side enforcement (rare — operator's phone had the gate but
+    // they synced anyway) from mobile-side enforcement (operator opened
+    // the machine on the phone and was stopped at the form). Together
+    // they paint a picture of compliance behaviour over time.
+    public const string CompetencyAdded                    = "competency.added";
+    public const string CompetencyRevoked                  = "competency.revoked";
+    public const string CompetencyRenewed                  = "competency.renewed";
+    public const string CompetencyExpired                  = "competency.expired";
+    public const string SubmissionBlockedNoCompetency      = "submission.blocked_no_competency";
+    public const string SubmissionAttemptedNoCompetency    = "submission.attempted_no_competency";
 }
 
 /// <summary>

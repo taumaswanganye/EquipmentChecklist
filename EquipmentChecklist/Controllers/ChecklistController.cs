@@ -16,16 +16,19 @@ public class ChecklistController : Controller
     private readonly ChecklistService             _svc;
     private readonly UserManager<ApplicationUser> _users;
     private readonly PdfService                   _pdf;
+    private readonly CompetencyService            _competency;
 
     public ChecklistController(ApplicationDbContext db,
                                ChecklistService svc,
                                UserManager<ApplicationUser> users,
-                               PdfService pdf)
+                               PdfService pdf,
+                               CompetencyService competency)
     {
-        _db    = db;
-        _svc   = svc;
-        _users = users;
-        _pdf   = pdf;
+        _db          = db;
+        _svc         = svc;
+        _users       = users;
+        _pdf         = pdf;
+        _competency  = competency;
     }
 
     // Operator Dashboard - only operators see their assigned machines
@@ -69,6 +72,32 @@ public class ChecklistController : Controller
         if (machine == null) { TempData["Error"] = "Machine not found."; return RedirectToAction("Index"); }
         if (machine.IsImmobilised) { TempData["Error"] = $"Machine {machine.MachineNumber} is immobilised."; return RedirectToAction("Index"); }
 
+        // ── Competency gate (MHSA Section 22(a)) ──────────────────────
+        // Same check as on Submit, but here it fires BEFORE the form is
+        // rendered so an unauthorised operator never sees the 30 items.
+        // We pass structured TempData keys (CompetencyBlocked + the
+        // metadata) so the Index view can render a popup modal with the
+        // specifics rather than a generic alert.
+        if (!await _competency.IsCompetentAsync(userId, machine.Type))
+        {
+            // Look up the freshest competency (active or expired) for
+            // this machine type so the popup can tell the operator when
+            // their last cert expired. Null = they've never had one.
+            var lastExpiry = await _db.OperatorCompetencies
+                .Where(c => c.OperatorId == userId && c.MachineType == machine.Type)
+                .OrderByDescending(c => c.ExpiresAt)
+                .Select(c => (DateTime?)c.ExpiresAt)
+                .FirstOrDefaultAsync();
+
+            TempData["CompetencyBlocked"]            = "1";
+            TempData["CompetencyBlockedMachineType"] = machine.Type.ToString();
+            TempData["CompetencyBlockedMachineNum"]  = machine.MachineNumber;
+            TempData["CompetencyBlockedMachineName"] = machine.MachineName;
+            TempData["CompetencyBlockedLastExpiry"]  = lastExpiry?.ToString("yyyy-MM-dd") ?? "";
+
+            return RedirectToAction("Index");
+        }
+
         if (machine.Template != null)
             machine.Template.Items = machine.Template.Items.OrderBy(i => i.SortOrder).ToList();
 
@@ -98,6 +127,38 @@ public class ChecklistController : Controller
         }
 
         var userId = _users.GetUserId(User)!;
+
+        // ── Competency gate (MHSA Section 22(a)) ──────────────────────
+        // Look up the machine's type and verify the operator holds a
+        // current competency. Admins bypass inside IsCompetentAsync.
+        var machine = await _db.Machines.AsNoTracking()
+            .Where(m => m.Id == dto.MachineId)
+            .Select(m => new { m.Type, m.MachineNumber })
+            .FirstOrDefaultAsync();
+        if (machine == null)
+        {
+            TempData["Error"] = "Machine not found.";
+            return RedirectToAction("Start", new { machineId = dto.MachineId });
+        }
+        if (!await _competency.IsCompetentAsync(userId, machine.Type))
+        {
+            // Surface the same popup modal Index uses when the operator
+            // is gated at machine selection. Cheaper than re-implementing
+            // the same warning UI in the Start view.
+            var lastExpiry = await _db.OperatorCompetencies
+                .Where(c => c.OperatorId == userId && c.MachineType == machine.Type)
+                .OrderByDescending(c => c.ExpiresAt)
+                .Select(c => (DateTime?)c.ExpiresAt)
+                .FirstOrDefaultAsync();
+
+            TempData["CompetencyBlocked"]            = "1";
+            TempData["CompetencyBlockedMachineType"] = machine.Type.ToString();
+            TempData["CompetencyBlockedMachineNum"]  = machine.MachineNumber;
+            TempData["CompetencyBlockedMachineName"] = "(submission refused)";
+            TempData["CompetencyBlockedLastExpiry"]  = lastExpiry?.ToString("yyyy-MM-dd") ?? "";
+            return RedirectToAction("Index");
+        }
+
         try
         {
             var submission = await _svc.ProcessSubmissionAsync(dto, userId);
