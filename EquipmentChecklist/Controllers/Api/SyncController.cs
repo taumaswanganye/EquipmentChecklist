@@ -91,16 +91,21 @@ public class SyncController : ControllerBase
     // ══════════════════════════════════════════════════════════════════════════
     [HttpGet("mine")]
     [AllowAnonymous]
-    public ActionResult<MineDto> MineConfig(
-        [FromServices] Microsoft.Extensions.Options.IOptions<MineSettings> mine)
+    public async Task<ActionResult<MineDto>> MineConfig(
+        [FromServices] ConfigurationService config,
+        [FromServices] Microsoft.Extensions.Options.IOptions<MineSettings> mineFallback)
     {
-        var m = mine.Value;
+        // DB-backed first; appsettings fallback covers a brand-new deploy
+        // where SeedAppSettingsAsync hasn't committed yet, plus dev runs
+        // where the DB is offline. The MineSettings IOptions hangs around
+        // as the safety net.
+        var fallback = mineFallback.Value;
         return Ok(new MineDto
         {
-            Name           = m.Name,
-            ShortName      = m.ShortName,
-            Tagline        = m.Tagline,
-            ComplianceText = m.ComplianceText
+            Name           = await config.GetAsync("Mine.Name")           ?? fallback.Name,
+            ShortName      = await config.GetAsync("Mine.ShortName")      ?? fallback.ShortName,
+            Tagline        = await config.GetAsync("Mine.Tagline")        ?? fallback.Tagline,
+            ComplianceText = await config.GetAsync("Mine.ComplianceText") ?? fallback.ComplianceText
         });
     }
 

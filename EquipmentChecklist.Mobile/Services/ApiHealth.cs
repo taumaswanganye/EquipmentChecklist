@@ -28,6 +28,16 @@ public class ApiHealth : IDisposable
     /// <summary>How often we re-check the server when the device has internet.</summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(20);
 
+    /// <summary>How often we ALSO pull /me to refresh the cached user's
+    /// profile + competencies. Far less aggressive than the ping interval
+    /// because the data changes infrequently (admin adds a cert) AND we
+    /// don't want every ping to authenticate. Five minutes is a sensible
+    /// balance — adds at most 5 minutes of staleness to "admin granted my
+    /// competency, when does my phone notice."</summary>
+    private static readonly TimeSpan MeRefreshInterval = TimeSpan.FromMinutes(5);
+
+    private DateTime _lastMeRefresh = DateTime.MinValue;
+
     /// <summary>Initial state is <c>false</c> until the first ping succeeds.</summary>
     private bool _apiReachable;
     private bool _disposed;
@@ -108,6 +118,32 @@ public class ApiHealth : IDisposable
                 {
                     try { await _cache.BumpLastSyncedAsync(email); }
                     catch { /* cache write failures shouldn't kill the health loop */ }
+
+                    // Throttled /me refresh — picks up competencies added or
+                    // revoked by the admin since this operator's last
+                    // sign-in. Without it the only way for a freshly-granted
+                    // competency to reach the phone would be a sign-out +
+                    // sign-in, which operators don't do mid-shift.
+                    if (DateTime.UtcNow - _lastMeRefresh >= MeRefreshInterval &&
+                        _auth.IsSignedIn)
+                    {
+                        try
+                        {
+                            var me = await _api.MeAsync();
+                            if (me != null && !string.IsNullOrEmpty(me.Email))
+                            {
+                                await _cache.UpdateCompetenciesAsync(me.Email, me.Competencies);
+                                _lastMeRefresh = DateTime.UtcNow;
+                            }
+                        }
+                        catch
+                        {
+                            // /me can fail for many reasons (token expiry,
+                            // server hiccup). Don't push _lastMeRefresh on
+                            // failure — that way we retry on the very next
+                            // tick instead of waiting another 5 min.
+                        }
+                    }
                 }
             }
         }

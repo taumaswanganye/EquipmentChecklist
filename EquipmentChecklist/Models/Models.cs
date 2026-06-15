@@ -406,6 +406,20 @@ public static class NotificationKinds
     /// has been signed off.
     /// </summary>
     public const string MachineCleared           = "machine.cleared";
+
+    /// <summary>
+    /// Operator's competency for a machine type is approaching expiry
+    /// (within 30 days). Recipient is the operator themselves so the
+    /// mobile bell badge bumps even if the operator doesn't read email.
+    /// </summary>
+    public const string CompetencyExpiring       = "competency.expiring";
+
+    /// <summary>
+    /// Operator's competency for a machine type has expired today. They
+    /// can no longer submit on that machine type. Recipient is the
+    /// operator.
+    /// </summary>
+    public const string CompetencyExpired        = "competency.expired";
 }
 
 // ─── Application setting (DB-backed config) ──────────────────────────────────

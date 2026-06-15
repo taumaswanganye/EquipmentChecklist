@@ -25,6 +25,70 @@
         "[" + string.Join(",", series.Select(p => "\"" + p.Date.ToString("yyyy-MM-dd") + "\"")) + "]";
     string CountsJson(IEnumerable<TrendPoint> series) =>
         "[" + string.Join(",", series.Select(p => p.Count.ToString())) + "]";
+
+    // ── Friendly machine-type labels ───────────────────────────────────
+    // Enum members like SRVWaterBowser / TruckMountedCrane don't read well
+    // raw — translate to the short labels operators actually use, matching
+    // the SQL view and the mobile app's chip labels.
+    string TypeLabel(MachineType t) => t switch {
+        MachineType.ADT                   => "ADT",
+        MachineType.ArticulatedWaterTruck => "Artic. Water Truck",
+        MachineType.DieselBowser          => "Diesel Bowser",
+        MachineType.Drills                => "Drills",
+        MachineType.Excavator             => "Excavator",
+        MachineType.FEL                   => "FEL",
+        MachineType.Forklift              => "Forklift",
+        MachineType.Grader                => "Grader",
+        MachineType.LDV                   => "LDV",
+        MachineType.SRVWaterBowser        => "SRV / Water Bowser",
+        MachineType.TrackDozer            => "Track Dozer",
+        MachineType.RDT                   => "RDT",
+        MachineType.TruckMountedCrane     => "Truck-Mounted Crane",
+        MachineType.TLB                   => "TLB",
+        _                                 => t.ToString()
+    };
+
+    // ── Severity chip colour for the renewal queue ─────────────────────
+    // Same five-band palette as Power BI Page 5 — keep the hex values in
+    // sync so screenshots from either surface match exactly.
+    string StatusBadgeBg(string s) => s switch {
+        "Revoked"      => "#475569",   // slate
+        "Expired"      => "#ef4444",   // red
+        "Expiring 7d"  => "#f59e0b",   // amber
+        "Expiring 30d" => "#fbbf24",   // gold
+        _              => "#22c55e"    // green (Valid)
+    };
+    string StatusBadgeFg(string s) => s switch {
+        "Revoked" or "Expired" or "Expiring 7d" => "#ffffff",
+        _                                       => "#0d1729"
+    };
+
+    // ── Audit-category colour for the donut + chips ───────────────────
+    string CategoryColour(string c) => c switch {
+        "Configuration" => "#0e9488",   // teal
+        "Admin policy"  => "#8b5cf6",   // violet
+        "User access"   => "#06b6d4",   // cyan
+        "Competency"    => "#f59e0b",   // amber
+        _               => "#94a3b8"    // muted
+    };
+
+    // ── Pre-compute chart-data JS literals ─────────────────────────────
+    // Razor @section Scripts compiles as a separate closure that doesn't
+    // have access to the local functions declared above. We resolve the
+    // labels/colours here in the top block (where TypeLabel + CategoryColour
+    // ARE in scope), then the script section just embeds the resulting
+    // string literals.
+    string competencyTypeLabelsJs = "[" + string.Join(",", dashboard.Competency.ByMachineType
+        .Select(r => "\"" + TypeLabel(r.MachineType).Replace("\"", "\\\"") + "\"")) + "]";
+    string competencyTypeCountsJs = "[" + string.Join(",", dashboard.Competency.ByMachineType
+        .Select(r => r.Active.ToString())) + "]";
+
+    string configCatLabelsJs = "[" + string.Join(",", dashboard.ConfigAudit.ByCategory
+        .Select(c => "\"" + c.Category + "\"")) + "]";
+    string configCatCountsJs = "[" + string.Join(",", dashboard.ConfigAudit.ByCategory
+        .Select(c => c.Count.ToString())) + "]";
+    string configCatColorsJs = "[" + string.Join(",", dashboard.ConfigAudit.ByCategory
+        .Select(c => "\"" + CategoryColour(c.Category) + "\"")) + "]";
 }
 
 @* ───────────── PAGE HEAD ───────────── *@
@@ -210,6 +274,291 @@
         </p>
     </div>
 </div>
+
+@* ═════════════════════════════════════════════════════════════════════
+   OPERATOR COMPETENCY HEALTH  (mirrors Power BI Page 5)
+   ─────────────────────────────────────────────────────────────────────
+   Section header + 4 KPI cards + machine-type donut + renewal queue.
+   Section is hidden entirely when no competency rows exist at all —
+   a freshly-installed mine without any certificates loaded shouldn't
+   see "0% compliant"; that's misleading. ════════════════════════════════ *@
+@{
+    var comp = dashboard.Competency;
+}
+@if (comp.OperatorsWithAny > 0 || comp.RenewalsDue30d > 0 || comp.LapsedCertificates > 0)
+{
+    <div style="margin-top:36px;padding-bottom:10px;border-bottom:1px solid var(--steel-border)">
+        <h2 style="font-size:18px;margin:0">🎓 Operator Competency Health</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+            MHSA Section 22(a) — every operator must hold a valid certificate for the machine type they're running.
+            Mirrors the Operator Competency page of the Power BI dashboard.
+        </p>
+    </div>
+
+    @* ── KPI cards (4 across) ───────────────────────────────────────── *@
+    <div class="stat-grid" style="margin-top:18px;margin-bottom:22px">
+        @{
+            var compClass = comp.CompliancePct >= 98 ? "go"
+                          : comp.CompliancePct >= 90 ? "gobut"
+                          : "nogo";
+        }
+        <div class="stat-card @compClass">
+            <div class="stat-label">Compliance %</div>
+            <div class="stat-value">@comp.CompliancePct.ToString("0.0")%</div>
+            <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">
+                @comp.OperatorsFullyValid of @comp.OperatorsWithAny operators fully valid
+            </div>
+        </div>
+        <div class="stat-card" style="border-top:3px solid #f59e0b">
+            <div class="stat-label">Expiring (7d)</div>
+            <div class="stat-value" style="color:#fbbf24">@comp.OperatorsExpiring7</div>
+            <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">operators with imminent renewals</div>
+        </div>
+        <div class="stat-card nogo">
+            <div class="stat-label">Operators lapsed</div>
+            <div class="stat-value">@(comp.OperatorsExpired + comp.OperatorsRevoked)</div>
+            <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">
+                @comp.OperatorsExpired expired · @comp.OperatorsRevoked revoked
+            </div>
+        </div>
+        <div class="stat-card info">
+            <div class="stat-label">Renewals due (30d)</div>
+            <div class="stat-value">@comp.RenewalsDue30d</div>
+            <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">certificates in the pipeline</div>
+        </div>
+    </div>
+
+    <div class="chart-row">
+        @* ── Bench depth by machine type (donut + legend table) ───────── *@
+        <div class="chart-card">
+            <div class="chart-head">
+                <h3>Bench depth by machine type</h3>
+                <p>Currently-active certificates across the fleet, by machine class.</p>
+            </div>
+            @if (!comp.ByMachineType.Any())
+            {
+                <p style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center">No active certificates on file.</p>
+            }
+            else
+            {
+                @* Fixed-height wrapper so Chart.js (responsive +
+                   maintainAspectRatio: false) sizes the canvas to a stable
+                   200px instead of recursively growing it to match the
+                   parent .chart-card (which also contains the legend table
+                   below — a classic infinite-grow trap). *@
+                <div style="position:relative;height:200px">
+                    <canvas id="chartCompetencyTypes"></canvas>
+                </div>
+                <table class="data-table" style="margin-top:14px">
+                    <thead>
+                        <tr>
+                            <th>Machine type</th>
+                            <th style="text-align:right">Active</th>
+                            <th style="text-align:right">Valid</th>
+                            <th style="text-align:right">30d</th>
+                            <th style="text-align:right">7d</th>
+                            <th style="text-align:right">Expired</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in comp.ByMachineType)
+                        {
+                            <tr>
+                                <td><strong>@TypeLabel(row.MachineType)</strong></td>
+                                <td style="text-align:right;font-family:var(--font-mono)">@row.Active</td>
+                                <td style="text-align:right;color:#22c55e;font-weight:600">@row.Valid</td>
+                                <td style="text-align:right;color:#fbbf24">@(row.Expiring30 > 0 ? row.Expiring30.ToString() : "–")</td>
+                                <td style="text-align:right;color:#f59e0b;font-weight:600">@(row.Expiring7 > 0 ? row.Expiring7.ToString() : "–")</td>
+                                <td style="text-align:right;color:@(row.Expired > 0 ? "var(--red-nogo)" : "var(--text-muted)");font-weight:600">@(row.Expired > 0 ? row.Expired.ToString() : "–")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+
+        @* ── Renewal queue (top 25) ───────────────────────────────────── *@
+        <div class="chart-card">
+            <div class="chart-head">
+                <h3>Renewal queue (next 30 days)</h3>
+                <p>Action list — every active certificate expiring soon, oldest first.</p>
+            </div>
+            @if (!comp.Queue.Any())
+            {
+                <p style="color:#22c55e;font-size:12px;padding:20px;text-align:center">
+                    ✅ Every active certificate is valid for more than 30 days. No renewal action needed.
+                </p>
+            }
+            else
+            {
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Operator</th>
+                            <th>Machine</th>
+                            <th style="text-align:right">Expires</th>
+                            <th style="text-align:center">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in comp.Queue)
+                        {
+                            <tr>
+                                <td>
+                                    <strong>@r.OperatorName</strong>
+                                    <div style="font-size:11px;color:var(--text-muted)">#@r.EmployeeNumber</div>
+                                </td>
+                                <td>
+                                    @TypeLabel(r.MachineType)
+                                    @if (!string.IsNullOrEmpty(r.CertificateNumber))
+                                    {
+                                        <div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono)">@r.CertificateNumber</div>
+                                    }
+                                </td>
+                                <td style="text-align:right;font-family:var(--font-mono);font-size:13px">
+                                    @r.ExpiresAt.ToString("yyyy-MM-dd")
+                                    <div style="font-size:10px;color:var(--text-muted)">@(r.DaysToExpiry < 0 ? $"{-r.DaysToExpiry}d ago" : $"in {r.DaysToExpiry}d")</div>
+                                </td>
+                                <td style="text-align:center">
+                                    <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:@StatusBadgeBg(r.Status);color:@StatusBadgeFg(r.Status)">
+                                        @r.Status
+                                    </span>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                <p style="font-size:11px;color:var(--text-muted);padding:8px 4px 0">
+                    Showing top @comp.Queue.Count entries.
+                    Open <a href="/Admin/Competencies" style="color:var(--teal)">Admin → Competencies</a> to manage individual operators.
+                </p>
+            }
+        </div>
+    </div>
+}
+
+@* ═════════════════════════════════════════════════════════════════════
+   CONFIGURATION & POLICY AUDIT  (mirrors Power BI Page 6)
+   ─────────────────────────────────────────────────────────────────────
+   Who changed what, when. Reads the AuditEvents table filtered on the
+   settings / admin / user / competency action constants. Hidden when
+   there's been no policy activity at all in 90 days. ══════════════════ *@
+@{
+    var cfg = dashboard.ConfigAudit;
+}
+@if (cfg.Changes90d > 0)
+{
+    <div style="margin-top:36px;padding-bottom:10px;border-bottom:1px solid var(--steel-border)">
+        <h2 style="font-size:18px;margin:0">🛡 Configuration &amp; Policy Audit</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+            Every system configuration change, admin role change, user-access change, and competency lifecycle event in the last 90 days.
+            Inspector-ready "who changed what, when" report.
+        </p>
+    </div>
+
+    @* ── KPI cards (4 across) ───────────────────────────────────────── *@
+    <div class="stat-grid" style="margin-top:18px;margin-bottom:22px">
+        <div class="stat-card info">
+            <div class="stat-label">Changes (30d)</div>
+            <div class="stat-value">@cfg.Changes30d</div>
+            <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">@cfg.Changes90d in last 90 days</div>
+        </div>
+        <div class="stat-card" style="border-top:3px solid #8b5cf6">
+            <div class="stat-label">Admin policy (30d)</div>
+            <div class="stat-value" style="color:#a78bfa">@cfg.AdminPolicy30d</div>
+            <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">admin role / account events</div>
+        </div>
+        <div class="stat-card" style="border-top:3px solid #06b6d4">
+            <div class="stat-label">User access (30d)</div>
+            <div class="stat-value" style="color:#22d3ee">@cfg.UserAccess30d</div>
+            <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">deactivations + password resets</div>
+        </div>
+        <div class="stat-card" style="border-top:3px solid #f59e0b">
+            <div class="stat-label">Distinct actors (90d)</div>
+            <div class="stat-value" style="color:#fbbf24">@cfg.DistinctActors90d</div>
+            <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">
+                last change @(cfg.LastChange?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")
+            </div>
+        </div>
+    </div>
+
+    <div class="chart-row">
+        @* ── Donut: by category ──────────────────────────────────────── *@
+        <div class="chart-card">
+            <div class="chart-head">
+                <h3>Activity by category</h3>
+                <p>Where the policy activity has been concentrated in the last 90 days.</p>
+            </div>
+            @* Same fixed-height wrapper as the competency donut — keeps
+               the canvas from infinite-growing now that the legend table
+               below shares the parent .chart-card. *@
+            <div style="position:relative;height:200px">
+                <canvas id="chartConfigCategories"></canvas>
+            </div>
+            <table class="data-table" style="margin-top:14px">
+                <thead><tr><th>Category</th><th style="text-align:right">Events</th></tr></thead>
+                <tbody>
+                    @foreach (var c in cfg.ByCategory)
+                    {
+                        <tr>
+                            <td>
+                                <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:@CategoryColour(c.Category);margin-right:8px;vertical-align:middle"></span>
+                                @c.Category
+                            </td>
+                            <td style="text-align:right;font-family:var(--font-mono);font-weight:600">@c.Count</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @* ── Recent audit table (top 30) ──────────────────────────────── *@
+        <div class="chart-card">
+            <div class="chart-head">
+                <h3>Recent changes</h3>
+                <p>Most recent 30 policy or configuration events. Drill via <a href="/Admin/Audit" style="color:var(--teal)">Admin → Audit</a> for the full trail.</p>
+            </div>
+            @if (!cfg.Recent.Any())
+            {
+                <p style="color:var(--text-muted);font-size:12px;padding:20px;text-align:center">No policy events in the last 90 days.</p>
+            }
+            else
+            {
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            <th>Actor</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in cfg.Recent)
+                        {
+                            <tr>
+                                <td style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);white-space:nowrap">
+                                    @row.OccurredAt.ToLocalTime().ToString("MM-dd HH:mm")
+                                </td>
+                                <td>
+                                    <strong style="font-size:12px">@row.ActorName</strong>
+                                    <div style="font-size:10px;color:var(--text-muted)">@row.ActorRole</div>
+                                </td>
+                                <td>
+                                    <div style="font-family:var(--font-mono);font-size:11px">@row.Action</div>
+                                    <div>
+                                        <span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:600;background:@CategoryColour(row.Category);color:#fff">
+                                            @row.Category
+                                        </span>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
 
 @* ───────────── RAW TABLE ───────────── *@
 <h3 style="font-size:15px;margin:24px 0 10px">Submissions in scope</h3>
@@ -414,5 +763,61 @@ else
                 }
             }
         });
+
+        // ── Competency: by-machine-type donut ─────────────────────────
+        // Active certificate count per machine type. The legend table
+        // beside the canvas already explains the per-band breakdown, so
+        // this chart is kept deliberately simple: one ring, one number
+        // per slice.
+        const competencyTypeLabels = @Html.Raw(competencyTypeLabelsJs);
+        const competencyTypeCounts = @Html.Raw(competencyTypeCountsJs);
+
+        const competencyTypeEl = document.getElementById('chartCompetencyTypes');
+        if (competencyTypeEl && competencyTypeCounts.length > 0) {
+            new Chart(competencyTypeEl, {
+                type: 'doughnut',
+                data: {
+                    labels: competencyTypeLabels,
+                    datasets: [{
+                        data: competencyTypeCounts,
+                        backgroundColor: [
+                            '#0e9488','#06b6d4','#8b5cf6','#f59e0b',
+                            '#22c55e','#ef4444','#f97316','#fbbf24',
+                            '#a78bfa','#22d3ee','#fb7185','#94a3b8',
+                            '#84cc16','#475569'
+                        ],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } }
+                }
+            });
+        }
+
+        // ── Config audit: by-category donut ──────────────────────────
+        const configCatLabels = @Html.Raw(configCatLabelsJs);
+        const configCatCounts = @Html.Raw(configCatCountsJs);
+        const configCatColors = @Html.Raw(configCatColorsJs);
+
+        const configCatEl = document.getElementById('chartConfigCategories');
+        if (configCatEl && configCatCounts.length > 0) {
+            new Chart(configCatEl, {
+                type: 'doughnut',
+                data: {
+                    labels: configCatLabels,
+                    datasets: [{
+                        data: configCatCounts,
+                        backgroundColor: configCatColors,
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } }
+                }
+            });
+        }
     </script>
 }

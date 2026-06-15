@@ -1,0 +1,198 @@
+@model List<EquipmentChecklist.Models.AppSetting>
+@{
+    ViewData["Title"] = "Application Settings";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    // Group by category for the section headers. Empty groups don't render.
+    var grouped = Model.GroupBy(s => s.Category).OrderBy(g => g.Key).ToList();
+
+    // Friendly one-line subtitle per category so an admin who's never
+    // seen the page knows what they're looking at. Anything not in the
+    // dictionary just shows the key alone.
+    var categoryBlurb = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Mine"]     = "Site identity and the operational email addresses on the SHE / management chain.",
+        ["Email"]    = "SMTP credentials and the maintenance-manager copy address for parts-order PDFs.",
+        ["Security"] = "WebAuthn / Fido2 relying-party + allowed origins. Restart-required for changes to fully propagate.",
+        ["Auth"]     = "Seeded administrator account used when the database is empty on first boot."
+    };
+}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+        <h2 style="font-size:20px;margin:0">Application Settings</h2>
+        <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
+            Runtime configuration. Changes take effect immediately — no restart required.
+            Secrets are masked; leave the field blank to keep the existing value.
+        </p>
+    </div>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
+
+@if (Model.Count > 0)
+{
+    @* Client-side filter box. Matches against the key (data-search attribute on
+       each row) so an admin looking for "manager" finds Mine.MineManagerEmail
+       and Email.ManagerEmail in one glance. Empty categories collapse out of view. *@
+    <div style="position:relative;margin-bottom:14px">
+        <input type="search" id="settingSearch" autocomplete="off"
+               placeholder="Filter by key or description… e.g. smtp, manager, fido"
+               style="width:100%;padding:10px 14px 10px 36px;border-radius:8px;border:1px solid var(--steel-border);background:var(--steel-mid);color:var(--text-primary);font-size:13px" />
+        <span style="position:absolute;left:12px;top:10px;color:var(--text-muted);font-size:13px">🔍</span>
+    </div>
+}
+
+@if (Model.Count == 0)
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">⚙</div>
+        <p>No settings seeded yet. Restart the API — the boot seeder copies appsettings.json values into this table.</p>
+    </div>
+}
+else
+{
+    @foreach (var group in grouped)
+    {
+        <div class="settings-group" data-category="@group.Key"
+             style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;overflow:hidden;margin-bottom:18px">
+            <div style="padding:12px 18px;background:var(--steel-dark);border-bottom:1px solid var(--steel-border);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+                <div>
+                    <h3 style="font-size:14px;margin:0;letter-spacing:.5px;text-transform:uppercase;color:var(--text-muted)">
+                        @group.Key
+                    </h3>
+                    @if (categoryBlurb.TryGetValue(group.Key, out var blurb))
+                    {
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.5;font-style:italic">
+                            @blurb
+                        </div>
+                    }
+                </div>
+                @* Self-test button on the Email group — fires SendTestAsync
+                   against the signed-in admin's address so they can verify
+                   right after changing SMTP settings, without leaving the
+                   page or trying to provoke a parts-order email. *@
+                @if (string.Equals(group.Key, "Email", StringComparison.OrdinalIgnoreCase))
+                {
+                    <form method="post" action="/Admin/TestEmail" style="margin:0"
+                          onsubmit="return confirm('Send a self-test email using the current SMTP settings? It goes to your own address.');">
+                        @Html.AntiForgeryToken()
+                        <button type="submit" class="btn btn-ghost btn-sm" title="Verify the current SMTP settings actually work">
+                            ✉ Send test email
+                        </button>
+                    </form>
+                }
+            </div>
+            @foreach (var s in group.OrderBy(x => x.Key))
+            {
+                @* Secret rows of GetAllAsync arrive with the value pre-masked
+                   to bullets. Treat that as "value is set" so the placeholder
+                   reads "(unchanged)" not "— not set —". Real never-set
+                   secrets land with empty Value here. *@
+                var secretHasValue = s.IsSecret && !string.IsNullOrEmpty(s.Value);
+                var searchHaystack = $"{s.Key} {s.Description}".ToLowerInvariant();
+                <div class="setting-row" data-search="@searchHaystack"
+                     style="padding:14px 18px;border-top:1px solid var(--steel-border);display:grid;grid-template-columns:280px 1fr auto;gap:14px;align-items:start">
+                    <div>
+                        <div style="font-weight:600;font-family:ui-monospace,monospace;font-size:13px">@s.Key</div>
+                        @if (!string.IsNullOrEmpty(s.Description))
+                        {
+                            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">@s.Description</div>
+                        }
+                        @if (!s.IsSecret && !string.IsNullOrEmpty(s.DefaultValue) && s.Value != s.DefaultValue)
+                        {
+                            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;font-style:italic">
+                                Default: <span style="font-family:ui-monospace,monospace">@s.DefaultValue</span>
+                            </div>
+                        }
+                        @if (s.IsSecret)
+                        {
+                            <div style="display:inline-block;margin-top:4px;padding:1px 6px;font-size:10px;font-weight:700;color:#fca5a5;border:1px solid #b91c1c;background:rgba(239,68,68,.06);border-radius:3px">SECRET</div>
+                        }
+                    </div>
+                    <form method="post" action="/Admin/SaveSetting" style="margin:0;display:flex;flex-direction:column;gap:4px">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="id" value="@s.Id" />
+                        @if (s.IsSecret)
+                        {
+                            <input type="password" name="value" class="form-control"
+                                   placeholder="@(secretHasValue ? "(unchanged — leave blank to keep)" : "— not set —")"
+                                   autocomplete="off" />
+                        }
+                        else if ((s.Value?.Length ?? 0) > 60)
+                        {
+                            <textarea name="value" class="form-control" rows="2">@s.Value</textarea>
+                        }
+                        else
+                        {
+                            <input type="text" name="value" class="form-control"
+                                   value="@(s.Value ?? "")" autocomplete="off"
+                                   placeholder="@(string.IsNullOrEmpty(s.Value) ? "— not set —" : "")" />
+                        }
+                        <div style="font-size:10px;color:var(--text-muted)">
+                            Last updated @s.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm" style="align-self:flex-start;margin-top:2px">Save</button>
+                    </form>
+                    <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+                        @* Reset-to-default — only meaningful when the row
+                           has a default AND it differs from the current
+                           value. Masked secrets always show the button
+                           because we can't compare values without leaking. *@
+                        @if (!string.IsNullOrEmpty(s.DefaultValue) && (s.IsSecret || s.Value != s.DefaultValue))
+                        {
+                            <form method="post" action="/Admin/ResetSetting" style="margin:0"
+                                  onsubmit="return confirm('Reset @s.Key back to its seeded default?');">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="id" value="@s.Id" />
+                                <button type="submit" class="btn btn-ghost btn-sm" title="Restore the seeded default value">
+                                    ↶ Reset
+                                </button>
+                            </form>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    }
+
+    <script>
+        // ── Settings filter ─────────────────────────────────────────────
+        // Pure DOM filter — no XHR, just hide/show rows by haystack match.
+        // Categories collapse out of view when zero rows match so the page
+        // stays compact when the admin filters down to a handful of keys.
+        (function () {
+            const box = document.getElementById('settingSearch');
+            if (!box) return;
+            const groups = document.querySelectorAll('.settings-group');
+            box.addEventListener('input', () => {
+                const q = box.value.trim().toLowerCase();
+                groups.forEach(g => {
+                    let visible = 0;
+                    g.querySelectorAll('.setting-row').forEach(r => {
+                        const match = !q || r.dataset.search.includes(q);
+                        r.style.display = match ? '' : 'none';
+                        if (match) visible++;
+                    });
+                    g.style.display = visible === 0 ? 'none' : '';
+                });
+            });
+        })();
+    </script>
+
+    <p style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.6">
+        Every change is captured in the
+        <a href="/Admin/Audit" style="color:var(--teal)">audit trail</a>
+        under <code style="font-family:ui-monospace,monospace">@EquipmentChecklist.DTOs.AuditActions.SettingsChanged</code>.
+        Connection strings and the JWT signing key are deliberately kept in
+        <code style="font-family:ui-monospace,monospace">appsettings.json</code> — they're
+        bootstrap-essential or cryptographic and would compromise the system if exposed via the DB.
+    </p>
+}

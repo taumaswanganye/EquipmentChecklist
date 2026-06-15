@@ -224,6 +224,25 @@ public class LocalCache
             key);
     }
 
+    /// <summary>
+    /// Targeted refresh of the cached user's competency list. Called by
+    /// the periodic /me refresh in <c>ApiHealth</c> so an admin adding /
+    /// revoking competencies on the web reaches the mobile cache without
+    /// requiring the operator to sign out and back in. Touches ONLY
+    /// CompetenciesJson — password hash, JWT, roles all unchanged.
+    /// </summary>
+    public async Task UpdateCompetenciesAsync(string? email,
+        IEnumerable<CompetencySummaryDto>? competencies)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return;
+        await EnsureInitAsync();
+        var key  = NormalizeEmail(email);
+        var json = JsonSerializer.Serialize(competencies ?? new List<CompetencySummaryDto>());
+        await _db.ExecuteAsync(
+            "UPDATE cached_users SET CompetenciesJson = ?, LastSyncedAt = ? WHERE EmailKey = ?",
+            json, DateTime.UtcNow, key);
+    }
+
     public async Task<CachedUser?> FindUserAsync(string email)
     {
         await EnsureInitAsync();

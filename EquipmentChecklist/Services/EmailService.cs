@@ -9,16 +9,121 @@ public class EmailService
     private readonly IConfiguration _cfg;
     private readonly ILogger<EmailService> _log;
     private readonly MineSettings _mine;
+    private readonly ConfigurationService _config;
 
     public EmailService(
         IConfiguration cfg,
         ILogger<EmailService> log,
-        Microsoft.Extensions.Options.IOptions<MineSettings> mine)
+        Microsoft.Extensions.Options.IOptions<MineSettings> mine,
+        ConfigurationService config)
     {
         _cfg = cfg;
         _log = log;
         _mine = mine.Value;
+        _config = config;
     }
+
+    /// <summary>
+    /// Single point of truth for SMTP credentials. Pulls every value
+    /// from the DB-backed <see cref="ConfigurationService"/> with the
+    /// historical <c>Email:*</c> defaults as fallbacks. Called once at
+    /// the top of each send method instead of re-reading per field.
+    /// </summary>
+    private async Task<SmtpConfig> GetSmtpConfigAsync()
+    {
+        return new SmtpConfig(
+            Host:         await _config.GetAsync("Email.SmtpHost") ?? "smtp.gmail.com",
+            Port:         await _config.GetIntAsync("Email.SmtpPort", 587),
+            Username:     await _config.GetAsync("Email.Username") ?? "",
+            Password:     await _config.GetAsync("Email.Password") ?? "",
+            From:         await _config.GetAsync("Email.From")
+                          ?? await _config.GetAsync("Email.Username") ?? "",
+            FromName:     await _config.GetAsync("Email.FromName") ?? "Belfast Equipment System",
+            ManagerEmail: await _config.GetAsync("Email.ManagerEmail"));
+    }
+
+    /// <summary>
+    /// Subject-line prefix used by all outbound emails — typically the
+    /// mine's short name in brackets, e.g. <c>[BELFAST] Parts Order #123</c>.
+    /// Reads <c>Mine.ShortName</c> from settings with a sensible fallback
+    /// so a freshly-cloned dev environment doesn't ship blank subjects.
+    /// </summary>
+    private async Task<string> GetSubjectPrefixAsync()
+    {
+        var sn = await _config.GetAsync("Mine.ShortName");
+        if (string.IsNullOrWhiteSpace(sn)) sn = _mine.ShortName ?? "MINE";
+        return $"[{sn}]";
+    }
+
+    /// <summary>
+    /// Fires a single low-payload self-test message to the supplied
+    /// address using the live SMTP config. Returns null on success or
+    /// the SMTP error message on failure so the admin UI can render the
+    /// actual failure (instead of a generic "didn't work"). Subject and
+    /// body are deliberately distinctive so the recipient knows it's a
+    /// test and not a real notification.
+    /// </summary>
+    public async Task<string?> SendTestAsync(string toEmail, string toName)
+    {
+        var c = await GetSmtpConfigAsync();
+        if (string.IsNullOrEmpty(c.Username))
+            return "SMTP isn't configured — Email.Username is blank.";
+
+        try
+        {
+            using var client = new SmtpClient(c.Host, c.Port)
+            {
+                EnableSsl   = true,
+                Credentials = new NetworkCredential(c.Username, c.Password)
+            };
+            var subject = $"{await GetSubjectPrefixAsync()} SMTP self-test — {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC";
+            var html    = $$"""
+                <!DOCTYPE html><html><body style="font-family:Segoe UI,Helvetica,Arial,sans-serif;background:#f3f4f6;padding:24px">
+                <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:22px">
+                <h2 style="margin:0 0 10px;color:#0d1729">SMTP test successful</h2>
+                <p style="font-size:14px;color:#1f2937;line-height:1.6;margin:0 0 12px">
+                  Hi {{System.Net.WebUtility.HtmlEncode(toName)}},
+                </p>
+                <p style="font-size:14px;color:#1f2937;line-height:1.6;margin:0 0 12px">
+                  This is a self-test triggered from Admin → Settings. Receiving it
+                  confirms the current SMTP credentials in the AppSettings table can
+                  authenticate against <strong>{{System.Net.WebUtility.HtmlEncode(c.Host)}}:{{c.Port}}</strong>
+                  and deliver mail.
+                </p>
+                <p style="font-size:11px;color:#6b7280;margin:0">Sent {{DateTime.UtcNow:yyyy-MM-dd HH:mm}} UTC.</p>
+                </div></body></html>
+                """;
+            var msg = new MailMessage
+            {
+                From       = new MailAddress(c.From, c.FromName),
+                Subject    = subject,
+                Body       = html,
+                IsBodyHtml = true
+            };
+            msg.To.Add(new MailAddress(toEmail, toName));
+            await client.SendMailAsync(msg);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "SMTP self-test failed");
+            // Walk the inner-exception chain for the real cause (SMTP /
+            // network / TLS errors typically nest). Strip newlines so
+            // the message fits the TempData display.
+            var cause = ex;
+            while (cause.InnerException != null) cause = cause.InnerException;
+            return cause.Message.Replace("\r", " ").Replace("\n", " ");
+        }
+    }
+
+    private record SmtpConfig(
+        string  Host,
+        int     Port,
+        string  Username,
+        string  Password,
+        string  From,
+        string  FromName,
+        string? ManagerEmail);
 
     // ── Send order confirmation to mechanic + parts order PDF to manager ───────
     /// <summary>Returns true if email was sent successfully, false if skipped or failed.</summary>
@@ -29,17 +134,19 @@ public class EmailService
         string orderRef,
         byte[]? partsOrderPdf = null)
     {
-        var smtp = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
-        var port = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
-        var user = _cfg["Email:Username"] ?? "";
-        var pass = _cfg["Email:Password"] ?? "";
-        var from = _cfg["Email:From"] ?? user;
-        var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
-        var managerEmail = _cfg["Email:ManagerEmail"];
+        // DB-backed config; falls back to IConfiguration. See ConfigurationService.
+        var c            = await GetSmtpConfigAsync();
+        var smtp         = c.Host;
+        var port         = c.Port;
+        var user         = c.Username;
+        var pass         = c.Password;
+        var from         = c.From;
+        var fromName     = c.FromName;
+        var managerEmail = c.ManagerEmail;
 
         if (string.IsNullOrEmpty(user))
         {
-            _log.LogWarning("Email not configured – skipping send. Set Email:* in appsettings.json");
+            _log.LogWarning("Email not configured – skipping send. Set Email.* in Admin → Settings.");
             return false;
         }
 
@@ -65,7 +172,7 @@ public class EmailService
             var mechMsg = new MailMessage
             {
                 From = new MailAddress(from, fromName),
-                Subject = $"[Belfast] Parts Order #{orderRef} – {items.Count} item(s) submitted",
+                Subject = $"{await GetSubjectPrefixAsync()} Parts Order #{orderRef} – {items.Count} item(s) submitted",
                 Body = mechanicBody,
                 IsBodyHtml = true,
             };
@@ -80,7 +187,7 @@ public class EmailService
                 var mgrMsg = new MailMessage
                 {
                     From = new MailAddress(from, fromName),
-                    Subject = $"[Belfast] PARTS ORDER REQUIRED – {items.Count} item(s)  |  Ref #{orderRef}",
+                    Subject = $"{await GetSubjectPrefixAsync()} PARTS ORDER REQUIRED – {items.Count} item(s)  |  Ref #{orderRef}",
                     Body = managerBody,
                     IsBodyHtml = true,
                 };
@@ -174,16 +281,17 @@ public class EmailService
         int defectCount,
         string supervisorName)
     {
-        var smtp = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
-        var port = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
-        var user = _cfg["Email:Username"] ?? "";
-        var pass = _cfg["Email:Password"] ?? "";
-        var from = _cfg["Email:From"] ?? user;
-        var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
+        var c        = await GetSmtpConfigAsync();
+        var smtp     = c.Host;
+        var port     = c.Port;
+        var user     = c.Username;
+        var pass     = c.Password;
+        var from     = c.From;
+        var fromName = c.FromName;
 
         if (string.IsNullOrEmpty(user))
         {
-            _log.LogWarning("Email not configured — skipping rejection email. Set Email:* in appsettings.json");
+            _log.LogWarning("Email not configured — skipping rejection email. Set Email.* in Admin → Settings.");
             return false;
         }
         if (string.IsNullOrWhiteSpace(mechanicEmail))
@@ -205,7 +313,7 @@ public class EmailService
             var msg = new MailMessage
             {
                 From = new MailAddress(from, fromName),
-                Subject = $"[Belfast] NO-GO · {machineNumber} rejected — {defectCount} defect(s) assigned to you",
+                Subject = $"{await GetSubjectPrefixAsync()} NO-GO · {machineNumber} rejected — {defectCount} defect(s) assigned to you",
                 Body = body,
                 IsBodyHtml = true,
             };
@@ -357,12 +465,13 @@ public class EmailService
         string newPassword,
         string resetByAdmin)
     {
-        var smtp = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
-        var port = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
-        var user = _cfg["Email:Username"] ?? "";
-        var pass = _cfg["Email:Password"] ?? "";
-        var from = _cfg["Email:From"] ?? user;
-        var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
+        var c        = await GetSmtpConfigAsync();
+        var smtp     = c.Host;
+        var port     = c.Port;
+        var user     = c.Username;
+        var pass     = c.Password;
+        var from     = c.From;
+        var fromName = c.FromName;
 
         // If email isn't configured we still want the password reset to
         // succeed locally — but we MUST tell the caller so the admin sees
@@ -509,12 +618,13 @@ public class EmailService
     private async Task<bool> SendBrandedAsync(
         string toEmail, string toName, string subject, string htmlBody)
     {
-        var smtp = _cfg["Email:SmtpHost"] ?? "smtp.gmail.com";
-        var port = int.Parse(_cfg["Email:SmtpPort"] ?? "587");
-        var user = _cfg["Email:Username"] ?? "";
-        var pass = _cfg["Email:Password"] ?? "";
-        var from = _cfg["Email:From"]     ?? user;
-        var fromName = _cfg["Email:FromName"] ?? "Belfast Equipment System";
+        var c        = await GetSmtpConfigAsync();
+        var smtp     = c.Host;
+        var port     = c.Port;
+        var user     = c.Username;
+        var pass     = c.Password;
+        var from     = c.From;
+        var fromName = c.FromName;
 
         if (string.IsNullOrEmpty(user))
         {

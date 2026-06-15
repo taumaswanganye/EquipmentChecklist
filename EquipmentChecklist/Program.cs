@@ -59,6 +59,15 @@ builder.Services.AddSignalR();
 // singleton so we don't regenerate the key on every request.
 builder.Services.AddSingleton<EquipmentChecklist.Services.OfflineVoucherService>();
 
+// ── Fido2 / WebAuthn ──────────────────────────────────────────────────
+// Initial values come from appsettings (the DB isn't reachable yet at
+// builder.Services time — we're still composing DI). The actual values
+// used at runtime are layered by the IPostConfigureOptions hook below,
+// which runs the first time the options are resolved AFTER the
+// container is built and reads from the DB-backed ConfigurationService.
+// Net effect: admins editing Fido2 settings in Admin → Settings don't
+// need a restart on the FIRST request after the change, but the cached
+// values do mean subsequent Fido2 instances see the new value lazily.
 builder.Services.AddFido2(options =>
 {
     options.ServerDomain      = builder.Configuration["Fido2:ServerDomain"]      ?? "localhost";
@@ -67,6 +76,13 @@ builder.Services.AddFido2(options =>
         (builder.Configuration.GetSection("Fido2:Origins").Get<string[]>() ?? new[] { "https://localhost:5001" }));
     options.TimestampDriftTolerance = 300_000;
 });
+
+// DB-backed override for Fido2 options. Reads run once at first
+// resolution; the cached values are then re-checked each time the
+// options pipeline rebuilds (which Fido2NetLib does on each scope).
+builder.Services.AddSingleton<
+    Microsoft.Extensions.Options.IPostConfigureOptions<Fido2NetLib.Fido2Configuration>,
+    EquipmentChecklist.Services.DbFido2PostConfigure>();
 // ── Identity ─────────────────────────────────────────────────────────────────
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(opt =>
 {

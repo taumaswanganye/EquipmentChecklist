@@ -26,6 +26,7 @@ public class AdminController : Controller
     private readonly AuditService                 _audit;
     private readonly EmailService                 _email;
     private readonly CompetencyService            _competency;
+    private readonly ConfigurationService         _settings;
 
     public AdminController(ApplicationDbContext db,
                            UserManager<ApplicationUser> users,
@@ -34,7 +35,8 @@ public class AdminController : Controller
                            NotificationService notifications,
                            AuditService audit,
                            EmailService email,
-                           CompetencyService competency)
+                           CompetencyService competency,
+                           ConfigurationService settings)
     {
         _db            = db;
         _users         = users;
@@ -44,6 +46,7 @@ public class AdminController : Controller
         _audit         = audit;
         _email         = email;
         _competency    = competency;
+        _settings      = settings;
     }
 
     // ── Image upload helper ───────────────────────────────────────────────────
@@ -2347,5 +2350,142 @@ public class AdminController : Controller
             TempData["Error"] = $"Truncate failed: {ex.Message}";
             return RedirectToAction(nameof(Debug));
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  APPLICATION SETTINGS (DB-backed config)
+    //
+    //  Lists every editable setting grouped by Category. Edits write back
+    //  through ConfigurationService (which invalidates its cache) and
+    //  audit-log the change. Secret values render password-masked.
+    // ══════════════════════════════════════════════════════════════════════════
+    [HttpGet]
+    public async Task<IActionResult> Settings()
+    {
+        // GetAllAsync masks secrets before returning.
+        var rows = await _settings.GetAllAsync();
+        return View(rows);
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SaveSetting(int id, string? value)
+    {
+        var row = await _db.AppSettings.FirstOrDefaultAsync(s => s.Id == id);
+        if (row == null)
+        {
+            TempData["Error"] = "Setting not found.";
+            return RedirectToAction("Settings");
+        }
+
+        // Secret heuristic: if the form value is empty AND the row is a
+        // secret, leave the existing value alone — empty submit on a
+        // masked field shouldn't wipe the credential.
+        if (row.IsSecret && string.IsNullOrEmpty(value))
+        {
+            TempData["Success"] = $"{row.Key} unchanged.";
+            return RedirectToAction("Settings");
+        }
+
+        var actorId = _users.GetUserId(User);
+        await _settings.SetAsync(row.Key, value, actorId);
+
+        try
+        {
+            // Don't write the secret value into the audit payload — just
+            // record that it changed. Non-secret values are captured so a
+            // future investigation can see the before/after.
+            await _audit.LogAsync(
+                action:     AuditActions.SettingsChanged,
+                targetType: "AppSetting",
+                targetId:   row.Id,
+                payload:    new
+                {
+                    key       = row.Key,
+                    category  = row.Category,
+                    oldValue  = row.IsSecret ? "***" : row.Value,
+                    newValue  = row.IsSecret ? "***" : value,
+                    isSecret  = row.IsSecret
+                });
+        }
+        catch { /* audit failure must not block the operator flow */ }
+
+        TempData["Success"] = $"{row.Key} updated.";
+        return RedirectToAction("Settings");
+    }
+
+    /// <summary>
+    /// Reset a setting back to its seeded DefaultValue. Useful when an
+    /// admin fat-fingers a value and wants to undo without remembering
+    /// what the original was. Audited under settings.reset.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ResetSetting(int id)
+    {
+        var row = await _db.AppSettings.FirstOrDefaultAsync(s => s.Id == id);
+        if (row == null)
+        {
+            TempData["Error"] = "Setting not found.";
+            return RedirectToAction("Settings");
+        }
+
+        if (row.DefaultValue == null && row.Value == null)
+        {
+            TempData["Success"] = $"{row.Key} is already at its default (unset).";
+            return RedirectToAction("Settings");
+        }
+
+        var prior = row.Value;
+        var actorId = _users.GetUserId(User);
+        await _settings.SetAsync(row.Key, row.DefaultValue, actorId);
+
+        try
+        {
+            await _audit.LogAsync(
+                action:     AuditActions.SettingsReset,
+                targetType: "AppSetting",
+                targetId:   row.Id,
+                payload:    new
+                {
+                    key       = row.Key,
+                    category  = row.Category,
+                    oldValue  = row.IsSecret ? "***" : prior,
+                    newValue  = row.IsSecret ? "***" : row.DefaultValue,
+                    isSecret  = row.IsSecret
+                });
+        }
+        catch { }
+
+        TempData["Success"] = $"{row.Key} reset to default.";
+        return RedirectToAction("Settings");
+    }
+
+    /// <summary>
+    /// Fire an SMTP self-test to the signed-in admin's address using the
+    /// current Email.* settings. Surfaces the actual SMTP error if the
+    /// send fails so the admin can diagnose without leaving the page.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> TestEmail()
+    {
+        var actor = await _users.GetUserAsync(User);
+        if (actor == null || string.IsNullOrWhiteSpace(actor.Email))
+        {
+            TempData["Error"] = "Sign-in account has no email address on file. Add one before testing.";
+            return RedirectToAction("Settings");
+        }
+
+        var error = await _email.SendTestAsync(actor.Email, actor.FullName ?? actor.Email);
+        if (error == null)
+        {
+            TempData["Success"] =
+                $"Test email sent to {actor.Email}. Check your inbox — it'll arrive within a few seconds.";
+        }
+        else
+        {
+            // Show the actual SMTP failure so the admin doesn't have to
+            // tail logs to know why it didn't work.
+            TempData["Error"] = $"SMTP test failed: {error}";
+        }
+        return RedirectToAction("Settings");
     }
 }

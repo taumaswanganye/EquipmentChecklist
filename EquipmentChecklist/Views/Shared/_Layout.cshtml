@@ -304,6 +304,9 @@
                 <a href="/Admin/Competencies" class="nav-item @(path.StartsWith("/Admin/Competencies") || path.StartsWith("/Admin/OperatorCompetency") || path.StartsWith("/Admin/AddCompetency") ? "active" : "")">
                     <span class="nav-icon">🎓</span> Competencies
                 </a>
+                <a href="/Admin/Settings" class="nav-item @(path.StartsWith("/Admin/Settings") || path.StartsWith("/Admin/SaveSetting") ? "active" : "")">
+                    <span class="nav-icon">⚙</span> Settings
+                </a>
                 <a href="/Admin/Assignments" class="nav-item @(path.StartsWith("/Admin/Assignment")?"active":"")">
                     <span class="nav-icon">🔗</span> Assignments
                 </a>

@@ -1,0 +1,16 @@
+{
+  "version": "0.1",
+  "connections": [
+    {
+      "details": {
+        "protocol": "postgresql",
+        "address": {
+          "server": "localhost",
+          "database": "EquipmentChecklist"
+        }
+      },
+      "options": {},
+      "mode": "DirectQuery"
+    }
+  ]
+}

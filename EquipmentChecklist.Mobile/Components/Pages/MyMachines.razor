@@ -137,6 +137,22 @@ else
                     <div class="m-name">@(string.IsNullOrEmpty(m.TypeDisplay) ? "NoType" : m.TypeDisplay)</div>
                     <div class="m-type">@m.MachineName</div>
 
+                    @* ── Competency expiry warning chip ─────────────────
+                       Shows ONLY when the operator's competency for this
+                       type is within 30 days. Pre-emptive nudge so they
+                       can renew before getting blocked at the gate. *@
+                    @{
+                        var compDays = CompetencyExpiresInDays(m);
+                    }
+                    @if (compDays.HasValue)
+                    {
+                        var chipCls   = compDays.Value <= 7 ? "comp-chip urgent" : "comp-chip";
+                        var chipLabel = compDays.Value == 0 ? "Cert expires today"
+                                       : compDays.Value == 1 ? "Cert expires tomorrow"
+                                       : $"Cert expires in {compDays.Value} days";
+                        <span class="@chipCls">@(compDays.Value <= 7 ? "⚠" : "⏳") @chipLabel</span>
+                    }
+
                     @if (m.IsImmobilised && !string.IsNullOrEmpty(m.ImmobilisedReason))
                     {
                         <p class="m-reason">@m.ImmobilisedReason</p>
@@ -335,6 +351,23 @@ else
     .m-reason { font-size:11px; color:#fca5a5; line-height:1.5; margin:8px 0 0; word-break:break-word; }
     .m-reason.warn { color:#fbbf24; }
 
+    /* ── Competency-expiry chip ─────────────────────────────────────────
+       Inline pill that appears below the machine type when the operator's
+       cert is within 30 days. Amber by default (heads-up), red within
+       7 days (urgent — renew now or get blocked). The icon swaps so an
+       operator scanning the page can prioritise by glyph alone. */
+    .comp-chip {
+        display:inline-block; margin-top:8px;
+        padding:3px 9px; border-radius:5px;
+        font-size:10.5px; font-weight:700; letter-spacing:.4px;
+        color:#fbbf24; border:1px solid #92400e;
+        background:rgba(146,64,14,.18);
+    }
+    .comp-chip.urgent {
+        color:#fca5a5; border-color:#b91c1c;
+        background:rgba(127,29,29,.18);
+    }
+
     .m-btn { display:block; margin:0 14px 14px; padding:11px; border:none; border-radius:8px; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit; text-align:center; }
     .m-btn.go  { background:#16a34a; color:#fff; }
     .m-btn.go:hover { background:#15803d; }
@@ -441,7 +474,13 @@ else
         try
         {
             var cachedMachines = await Cache.GetMachinesAsync();
-            if (cachedMachines.Count > 0) { machines = cachedMachines; busy = false; StateHasChanged(); }
+            if (cachedMachines.Count > 0)
+            {
+                machines = cachedMachines;
+                await RefreshCompetencyExpiriesAsync();
+                busy = false;
+                StateHasChanged();
+            }
         } catch { }
 
         try
@@ -485,6 +524,7 @@ else
             {
                 machines = machinesTask.Result;
                 await Cache.SaveMachinesAsync(machinesTask.Result);
+                await RefreshCompetencyExpiriesAsync();
             }
             if (statsTask.Result is not null)
                 stats = statsTask.Result;
@@ -514,6 +554,15 @@ else
     // bottom of the page renders. blockedMachine != null is the toggle.
     // We hold the full DTO so the modal can show machine name + number
     // + type without having to look them up again.
+    /// <summary>
+    /// Pre-computed competency expiry per machine type for the operator,
+    /// keyed by machine TypeCode. Populated once after machines load so
+    /// the card-render loop can render badges synchronously without
+    /// awaiting per item. Refreshed by ApiHealth's /me poll via the
+    /// cache update — the next LoadAsync call sees the freshest data.
+    /// </summary>
+    private Dictionary<int, DateTime?> competencyExpiryByType = new();
+
     private SyncMachineSummaryDto? blockedMachine;
     private DateTime?              blockedLastExpiry;
 
@@ -549,6 +598,45 @@ else
     {
         blockedMachine    = null;
         blockedLastExpiry = null;
+    }
+
+    /// <summary>
+    /// Build the (machineTypeCode → expiry) lookup the card renderer
+    /// uses to decide whether to paint a warning chip. One pass over
+    /// the distinct types in the visible machine list, one cache hit
+    /// per type. The expiry comes from <see cref="LocalCache.GetCompetencyExpiryAsync"/>
+    /// which reads the freshest cached competency for that operator
+    /// (also pre-blocks at machine-tap).
+    /// </summary>
+    private async Task RefreshCompetencyExpiriesAsync()
+    {
+        if (machines == null || machines.Count == 0) return;
+        var email = Auth.CurrentUser?.Email;
+        if (string.IsNullOrEmpty(email)) return;
+
+        var distinctTypes = machines.Select(m => m.Type).Distinct().ToList();
+        var fresh = new Dictionary<int, DateTime?>();
+        foreach (var t in distinctTypes)
+        {
+            try { fresh[t] = await Cache.GetCompetencyExpiryAsync(email, t); }
+            catch { fresh[t] = null; }
+        }
+        competencyExpiryByType = fresh;
+    }
+
+    /// <summary>
+    /// Returns the days-until-expiry for a machine if the operator's
+    /// competency is within 30 days, or null when no warning needed.
+    /// The card-render loop reads this to decide whether to paint an
+    /// amber "Expires in N days" chip.
+    /// </summary>
+    private int? CompetencyExpiresInDays(SyncMachineSummaryDto m)
+    {
+        if (!competencyExpiryByType.TryGetValue(m.Type, out var expiry) || expiry is null)
+            return null;
+        var days = (int)Math.Ceiling((expiry.Value - DateTime.UtcNow).TotalDays);
+        if (days < 0 || days > 30) return null;
+        return days;
     }
 
     private static (string Cls, string Label) StatusBadge(ChecklistStatus s) => s switch

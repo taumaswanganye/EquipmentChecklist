@@ -480,6 +480,12 @@ public static class AuditActions
     // ON BEHALF OF the user (admin override) vs BY the user themselves.
     public const string UserPasswordReset    = "user.password_reset";
 
+    // Runtime configuration change via Admin → Settings. Captures the
+    // setting key + before/after values (or "***" for secrets) so a later
+    // investigation can answer "when did the SMTP host change and to what".
+    public const string SettingsChanged      = "settings.changed";
+    public const string SettingsReset        = "settings.reset";
+
     // Block / unblock by admin. When a user is deactivated, both the
     // server-side JWT validator AND the mobile-side AuthService refuse
     // further sign-ins, online or offline. Audit captures the actor +

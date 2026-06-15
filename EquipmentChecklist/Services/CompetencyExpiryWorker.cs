@@ -2,7 +2,6 @@ using EquipmentChecklist.Data;
 using EquipmentChecklist.DTOs;
 using EquipmentChecklist.Models;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace EquipmentChecklist.Services;
 
@@ -86,9 +85,13 @@ public class CompetencyExpiryWorker : BackgroundService
         var db          = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var email       = scope.ServiceProvider.GetRequiredService<EmailService>();
         var audit       = scope.ServiceProvider.GetRequiredService<AuditService>();
-        var mineOpts    = scope.ServiceProvider.GetRequiredService<IOptions<MineSettings>>();
-        var mine        = mineOpts.Value;
-        var cfg         = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+        // DB-backed settings — admins changing Mine.MineManagerEmail or
+        // Mine.SheOfficerEmail in Admin → Settings take effect on the next
+        // worker pass (i.e. tomorrow morning) without a restart.
+        var config      = scope.ServiceProvider.GetRequiredService<ConfigurationService>();
+        // In-app notifications fire alongside emails — operators on a
+        // phone don't read work email, but they DO see the bell badge.
+        var notifs      = scope.ServiceProvider.GetRequiredService<NotificationService>();
 
         var now = DateTime.UtcNow;
 
@@ -109,9 +112,13 @@ public class CompetencyExpiryWorker : BackgroundService
         // Recipients beyond the operator themselves are global per the
         // admin's scoping choices — supervisor (denormalised via the
         // OperatorSupervisorAssignments table), mine manager, SHE officer.
-        var sheOfficer  = mine.SheOfficerEmail;
-        var mineManager = mine.MineManagerEmail
-                         ?? cfg["Email:ManagerEmail"]; // fallback for one-human-two-roles mines
+        // Recipients beyond the operator + supervisor — pulled from the
+        // AppSettings table so admins can rotate the addresses live. The
+        // Email.ManagerEmail key acts as the fallback when Mine.MineManagerEmail
+        // is blank (one-human-two-roles mines).
+        var sheOfficer  = await config.GetAsync("Mine.SheOfficerEmail", ct);
+        var mineManager = await config.GetAsync("Mine.MineManagerEmail", ct)
+                       ?? await config.GetAsync("Email.ManagerEmail", ct);
 
         // Cache supervisor lookup so we don't re-query for the same
         // operator multiple times in this pass.
@@ -166,6 +173,20 @@ public class CompetencyExpiryWorker : BackgroundService
                     comp.ExpiryNoticeSentAt = now;
                     sentExpiry++;
 
+                    // In-app notification so the operator's mobile bell
+                    // bumps the next time they open the app. The body
+                    // uses past-tense "expired" since the date has passed.
+                    try
+                    {
+                        await notifs.PushAsync(
+                            userId: comp.OperatorId,
+                            kind:   NotificationKinds.CompetencyExpired,
+                            title:  $"⛔ Competency expired — {machineLabel}",
+                            body:   $"Your certificate for {machineLabel} expired on {comp.ExpiresAt:yyyy-MM-dd}. " +
+                                    "Contact your administrator to renew.");
+                    }
+                    catch { /* notification failure must not block the email pass */ }
+
                     try
                     {
                         await audit.LogAsync(
@@ -193,6 +214,16 @@ public class CompetencyExpiryWorker : BackgroundService
                             r.Email, r.Name, op.FullName, machineLabel,
                             comp.CertificateNumber, comp.ExpiresAt, daysLeft);
                     }
+                    try
+                    {
+                        await notifs.PushAsync(
+                            userId: comp.OperatorId,
+                            kind:   NotificationKinds.CompetencyExpiring,
+                            title:  $"⚠ {machineLabel} competency expires in {daysLeft} day{(daysLeft == 1 ? "" : "s")}",
+                            body:   $"Your certificate for {machineLabel} expires on {comp.ExpiresAt:yyyy-MM-dd}. " +
+                                    "Renew it now to avoid being blocked from operating.");
+                    }
+                    catch { }
                     comp.Reminder7DaysSentAt = now;
                     sent7++;
                 }
@@ -205,6 +236,16 @@ public class CompetencyExpiryWorker : BackgroundService
                             r.Email, r.Name, op.FullName, machineLabel,
                             comp.CertificateNumber, comp.ExpiresAt, daysLeft);
                     }
+                    try
+                    {
+                        await notifs.PushAsync(
+                            userId: comp.OperatorId,
+                            kind:   NotificationKinds.CompetencyExpiring,
+                            title:  $"⏳ {machineLabel} competency expires in {daysLeft} days",
+                            body:   $"Your certificate for {machineLabel} expires on {comp.ExpiresAt:yyyy-MM-dd}. " +
+                                    "Plan your renewal now.");
+                    }
+                    catch { }
                     comp.Reminder30DaysSentAt = now;
                     sent30++;
                 }
