@@ -44,11 +44,37 @@ public class BiometricUnlock
         {
             var ctx = Platform.CurrentActivity ?? Android.App.Application.Context;
             var manager = BiometricManager.From(ctx);
-            // BiometricStrong = Class 3 — required for any cryptographic
-            // tie-in. We don't bind a CryptoObject in PromptAsync today,
-            // but enforcing Strong here keeps the door open for it later
-            // without changing the availability contract.
-            var result  = manager.CanAuthenticate(BiometricManager.Authenticators.BiometricStrong);
+
+            // ── Authenticator policy ──────────────────────────────────────
+            // We accept ANY of: Class 3 fingerprint/iris/Strong face,
+            //                   Class 2 camera face unlock,
+            //                   the device's lockscreen PIN/pattern/password
+            //                   as a fallback after biometric retries.
+            //
+            // Trade-offs the mine operator should know:
+            //   • Class 3 (fingerprint on every Samsung capacitive sensor,
+            //     hardware face on a handful of flagships) is the strongest
+            //     and is cryptographically bindable. We don't currently
+            //     bind a CryptoObject so the practical difference here is
+            //     spoof-resistance, not cryptographic guarantees.
+            //   • Class 2 face unlock (camera-based, on most Samsung
+            //     tablets including the Tab Active 5 / Tab S9 FE) can be
+            //     defeated by a high-quality photo or video of the
+            //     enrolled user. For pre-shift-check accountability under
+            //     MHSA we'd rather operators use fingerprint, but allowing
+            //     Class 2 face gives the system a usable second factor on
+            //     devices without good fingerprint placement.
+            //   • DeviceCredential is the phone's lockscreen secret. It's
+            //     what the operator already trusts to unlock their phone,
+            //     and the OS handles it natively after biometric fails
+            //     three times — so the user never gets stuck "can't sign
+            //     in" because their finger is wet or face is masked.
+            const int policy =
+                  BiometricManager.Authenticators.BiometricStrong
+                | BiometricManager.Authenticators.BiometricWeak
+                | BiometricManager.Authenticators.DeviceCredential;
+
+            var result = manager.CanAuthenticate(policy);
             return result == BiometricManager.BiometricSuccess;
         }
         catch
@@ -106,11 +132,22 @@ public class BiometricUnlock
             var callback = new BiometricAuthCallback(tcs);
             var prompt   = new BiometricPrompt(activity, executor, callback);
 
+            // Same authenticator policy as IsAvailableAsync — keep them in
+            // lock-step or CanAuthenticate says "yes" while Authenticate
+            // throws "no usable authenticators" at runtime. NegativeButton
+            // can't co-exist with DeviceCredential, so when we let the OS
+            // offer the lockscreen PIN as a fallback we suppress the
+            // explicit "Use password" option — the system shows its own
+            // "Use device credential" affordance instead.
+            const int policy =
+                  BiometricManager.Authenticators.BiometricStrong
+                | BiometricManager.Authenticators.BiometricWeak
+                | BiometricManager.Authenticators.DeviceCredential;
+
             var info = new BiometricPrompt.PromptInfo.Builder()
                 .SetTitle("Pre-Checklist")
                 .SetSubtitle(reason)
-                .SetNegativeButtonText("Use password")
-                .SetAllowedAuthenticators(BiometricManager.Authenticators.BiometricStrong)
+                .SetAllowedAuthenticators(policy)
                 .SetConfirmationRequired(false)
                 .Build();
 

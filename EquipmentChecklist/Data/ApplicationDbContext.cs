@@ -26,6 +26,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<AllowedDevice>      AllowedDevices      => Set<AllowedDevice>();
     public DbSet<OperatorCompetency> OperatorCompetencies => Set<OperatorCompetency>();
     public DbSet<AppSetting>         AppSettings         => Set<AppSetting>();
+    public DbSet<OutboxMessage>      OutboxMessages      => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

@@ -76,6 +76,17 @@
             </button>
         </form>
 
+        <!-- Biometric unavailable diagnostic — shown when the browser
+             can't do WebAuthn. The most common reason is opening this
+             page over plain HTTP (or a non-localhost IP without a
+             trusted cert). Previously we silently hid the biometric
+             block, leaving the operator wondering why nothing appeared. -->
+        <div id="bioUnavailable" style="display:none;margin-top:18px;padding:12px 14px;background:#1f2937;border:1px dashed #475569;border-radius:8px;font-size:11px;color:#94a3b8;line-height:1.5">
+            <strong style="display:block;color:#fbbf24;margin-bottom:4px">🔐 Biometric sign-in unavailable</strong>
+            <span id="bioUnavailableReason">This browser can't use biometric authentication on this address.</span>
+            <span id="bioUnavailableHint" style="display:block;margin-top:4px;color:#cbd5e1"></span>
+        </div>
+
         <!-- Biometric divider + button -->
         <div id="bioBlock" style="display:none;margin-top:18px">
             <div style="display:flex;align-items:center;gap:10px;color:var(--text-muted);font-size:11px;margin:14px 0">
@@ -130,6 +141,9 @@
         // no cached voucher to fall back to.
         var bioSupported = !!(window.WebAuthnClient && window.WebAuthnClient.isSupported);
         var bioBlock     = document.getElementById('bioBlock');
+        var bioUnavail   = document.getElementById('bioUnavailable');
+        var bioUnavailReason = document.getElementById('bioUnavailableReason');
+        var bioUnavailHint   = document.getElementById('bioUnavailableHint');
         var btnBio       = document.getElementById('btnBiometric');
         var btnPin       = document.getElementById('btnPin');
         var statusEl     = document.getElementById('bioStatus');
@@ -138,7 +152,29 @@
         var emailEl      = document.querySelector('input[name="email"]');
         var rUrl         = '@Html.Raw(ViewBag.ReturnUrl ?? "")';
 
-        if (bioSupported) bioBlock.style.display = 'block';
+        // Decide which of the two blocks to show. Either we have WebAuthn
+        // and we render the biometric button, or we have a reason it's
+        // unavailable and we render a visible diagnostic. Silent hiding
+        // was the previous regression.
+        if (bioSupported) {
+            bioBlock.style.display = 'block';
+        } else {
+            bioUnavail.style.display = 'block';
+            var reason, hint;
+            if (!window.isSecureContext) {
+                // Browsers refuse PublicKeyCredential outside secure contexts.
+                reason = "This page is not loaded over a secure connection.";
+                hint   = "Open the site via https://localhost or your mine's HTTPS hostname — plain HTTP and bare IP addresses don't support biometric.";
+            } else if (!window.PublicKeyCredential) {
+                reason = "This browser doesn't support the WebAuthn standard.";
+                hint   = "Use a current build of Edge, Chrome, Firefox, or Safari.";
+            } else {
+                reason = "WebAuthn helper script failed to load.";
+                hint   = "Reload the page. If the problem persists, check the browser console for a 404 on /js/webauthn.js.";
+            }
+            bioUnavailReason.textContent = reason;
+            bioUnavailHint.textContent   = hint;
+        }
         if (!window.OfflineVoucher) return;
 
         OfflineVoucher.init().then(syncOfflineUi);
@@ -175,6 +211,20 @@
 
         // ── Biometric click ────────────────────────────────────────────
         btnBio.addEventListener('click', async function () {
+            // Defensive: if the email field is empty we'd ask the server
+            // for a discoverable / usernameless ceremony, which silently
+            // returns null on devices that enrolled with non-discoverable
+            // credentials (the older default). Most operators see "nothing
+            // happens." Force them to type the email first — that scopes
+            // the WebAuthn challenge to a specific credential and the OS
+            // prompt is reliably shown.
+            if (navigator.onLine && !(emailEl.value || '').trim()) {
+                statusEl.textContent = '✕ Type your email above first, then tap biometric.';
+                statusEl.style.color = 'var(--amber)';
+                emailEl.focus();
+                return;
+            }
+
             btnBio.disabled = true;
             try {
                 if (navigator.onLine) {

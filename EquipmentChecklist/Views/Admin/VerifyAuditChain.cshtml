@@ -1,0 +1,78 @@
+@model EquipmentChecklist.Services.AuditService.ChainVerificationResult
+@{
+    ViewData["Title"] = "Audit chain verification";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var headlineColor = Model.Valid ? "#22c55e" : "#ef4444";
+    var headlineBg    = Model.Valid ? "#0a3320" : "#3b0a0a";
+    var headlineIcon  = Model.Valid ? "✅" : "✕";
+    var headlineText  = Model.Valid ? "CHAIN INTACT" : "CHAIN BROKEN";
+}
+
+<div style="max-width:820px">
+    <a href="/Admin/Audit" class="btn btn-ghost" style="margin-bottom:16px">← Back to Audit trail</a>
+
+    <h2 style="font-size:20px;margin:0 0 6px">🔗 Audit chain verification</h2>
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 18px;line-height:1.6">
+        Each audit row carries a SHA-256 hash that depends on the previous row's hash and this row's content.
+        Tampering with any historical row's content — or re-ordering rows — breaks the chain. This page walks
+        the entire table and reports the first break, if any.
+    </p>
+
+    @* ── Headline result ──────────────────────────────────────────── *@
+    <div style="background:@headlineBg;border:1px solid @headlineColor;border-radius:10px;padding:24px;margin-bottom:18px;text-align:center">
+        <div style="font-size:48px;line-height:1;margin-bottom:8px">@headlineIcon</div>
+        <div style="font-size:22px;font-weight:700;color:@headlineColor;letter-spacing:.5px">
+            @headlineText
+        </div>
+        <p style="font-size:13px;color:#cbd5e1;margin:10px 0 0;line-height:1.6">@Model.Reason</p>
+    </div>
+
+    @* ── Stats ───────────────────────────────────────────────────── *@
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:18px">
+            <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Rows scanned</div>
+            <div style="font-size:28px;font-weight:700;color:var(--text-primary);font-family:var(--font-mono)">@Model.RowsScanned</div>
+        </div>
+        <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:18px">
+            <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">First broken row</div>
+            <div style="font-size:28px;font-weight:700;font-family:var(--font-mono);color:@(Model.Valid ? "var(--text-muted)" : "#ef4444")">
+                @(Model.BreakAtRowId?.ToString() ?? "—")
+            </div>
+        </div>
+    </div>
+
+    @* ── Explainer ─────────────────────────────────────────────────── *@
+    @if (Model.Valid)
+    {
+        <div style="background:rgba(34,197,94,.05);border-left:3px solid #22c55e;border-radius:4px;padding:14px 18px;font-size:12px;color:var(--text-muted);line-height:1.7">
+            <strong style="color:#22c55e">What this means for an inspector</strong><br/>
+            Every audit row in the table chains correctly to its predecessor, and each row's content hashes to its stored RowHash.
+            Nobody has edited a row after it was written. This is the strongest cryptographic evidence we can offer that the audit
+            trail is intact, equivalent to what most ledger-style compliance systems provide.
+        </div>
+    }
+    else
+    {
+        <div style="background:rgba(239,68,68,.05);border-left:3px solid #ef4444;border-radius:4px;padding:14px 18px;font-size:12px;color:var(--text-muted);line-height:1.7">
+            <strong style="color:#ef4444">What this means</strong><br/>
+            A row between Id 1 and Id @Model.BreakAtRowId has either been edited, deleted, or had a field's value changed
+            after it was written. Investigate immediately. Possible causes: direct SQL edit by a DBA, database restore from an
+            inconsistent backup, or a deliberate tampering attempt. Do NOT mark this as resolved until the root cause is documented
+            in the incident log.
+        </div>
+    }
+
+    @* ── Pre-hash-chain rows note ──────────────────────────────────── *@
+    <p style="font-size:11px;color:var(--text-muted);margin-top:18px;line-height:1.6;font-style:italic">
+        Note: rows written BEFORE the hash-chain feature was deployed have NULL PrevHash and RowHash values.
+        The verifier treats those as the start of the chain (PrevHash = NULL is valid for row 1). The first
+        row written AFTER deployment chains to "no predecessor"; from that row onwards, every insert is tamper-evident.
+    </p>
+
+    @* ── Refresh ──────────────────────────────────────────────────── *@
+    <div style="display:flex;gap:10px;margin-top:24px">
+        <a href="/Admin/VerifyAuditChain" class="btn btn-primary">↻ Re-verify chain</a>
+        <a href="/Admin/Audit" class="btn btn-ghost">View audit trail</a>
+    </div>
+</div>

@@ -1,27 +1,31 @@
 using EquipmentChecklist.Data;
 using EquipmentChecklist.DTOs;
 using EquipmentChecklist.Models;
+using EquipmentChecklist.Services.Integrations;
 using Microsoft.EntityFrameworkCore;
 
 namespace EquipmentChecklist.Services;
 
 public class ChecklistService
 {
-    private readonly ApplicationDbContext _db;
-    private readonly NotificationService? _notifications;
-    private readonly AuditService?        _audit;
+    private readonly ApplicationDbContext   _db;
+    private readonly NotificationService?   _notifications;
+    private readonly AuditService?          _audit;
+    private readonly IIntegrationPublisher? _integration;
 
-    // The notification + audit services are optional so existing tests that
-    // construct `new ChecklistService(db)` don't need to change — they
-    // exercise pure status calc / persistence and aren't asserting on
-    // the side effects.
+    // The notification + audit + integration services are optional so
+    // existing tests that construct `new ChecklistService(db)` don't need
+    // to change — they exercise pure status calc / persistence and aren't
+    // asserting on the side effects.
     public ChecklistService(ApplicationDbContext db,
-                            NotificationService? notifications = null,
-                            AuditService?        audit         = null)
+                            NotificationService?   notifications = null,
+                            AuditService?          audit         = null,
+                            IIntegrationPublisher? integration   = null)
     {
         _db            = db;
         _notifications = notifications;
         _audit         = audit;
+        _integration   = integration;
     }
 
     /// <summary>
@@ -95,9 +99,10 @@ public class ChecklistService
                 .FirstOrDefaultAsync();
 
             var defects = submissionItems.Where(i => i.Status == ItemStatus.Defect).ToList();
+            var newDefectOrders = new List<DefectOrder>();
             foreach (var d in defects)
             {
-                _db.DefectOrders.Add(new DefectOrder
+                var order = new DefectOrder
                 {
                     SubmissionId       = submission.Id,
                     SubmissionItemId   = d.Id,
@@ -109,9 +114,82 @@ public class ChecklistService
                                             ? RepairStatus.Pending
                                             : RepairStatus.InProgress,
                     CreatedAt          = DateTime.UtcNow
-                });
+                };
+                _db.DefectOrders.Add(order);
+                newDefectOrders.Add(order);
             }
+            // ── Outbox write — transactional integration handoff ───────
+            // Each new DefectOrder produces one OutboxMessage row. Both
+            // sets of rows (DefectOrder + OutboxMessage) flush in the SAME
+            // SaveChangesAsync below, so either both land or neither does.
+            // The OutboxPublishWorker picks up Draft rows on its next pass
+            // and publishes them to whatever IIntegrationPublisher is
+            // wired up (SAP PM, IBM MQ, no-op). This replaces the direct
+            // fire-and-forget call that used to live here — that version
+            // could lose messages if the publisher crashed between the
+            // DefectOrder commit and the publish attempt.
+            //
+            // Note: NewDefectOrders.Id is 0 here because SaveChanges
+            // hasn't run yet. We capture the order + payload via closure
+            // and stamp the Id into the outbox row in the post-SaveChanges
+            // pass below.
+            var pendingOutbox = new List<(DefectOrder Order, IntegrationDefectPayload PayloadTemplate)>();
+            foreach (var order in newDefectOrders)
+            {
+                var matchingItem = defects.FirstOrDefault(d => d.Id == order.SubmissionItemId);
+                var payload = new IntegrationDefectPayload(
+                    DefectOrderId:           0,  // filled in after SaveChanges
+                    MachineId:               machine.Id,
+                    MachineNumber:           machine.MachineNumber ?? "",
+                    MachineName:             machine.MachineName,
+                    MachineTypeLabel:        machine.TypeName,
+                    DefectDescription:       order.DefectDescription,
+                    PartRequired:            null,
+                    PartNumber:              null,
+                    ReportingOperatorName:   submission.Operator?.FullName,
+                    ReportingOperatorEmail:  submission.Operator?.Email,
+                    CreatedAtUtc:            order.CreatedAt,
+                    IsCriticalDefect:        matchingItem?.TemplateItem?.IsNoGoItem ?? false,
+                    ExternalReference:       null);
+                pendingOutbox.Add((order, payload));
+            }
+
+            // First SaveChanges — assigns DefectOrder.Id values.
             if (defects.Any()) await _db.SaveChangesAsync();
+
+            // Second SaveChanges — write outbox rows with the real ids
+            // populated. Two-phase is unavoidable because the outbox
+            // payload references the DefectOrder.Id, which only exists
+            // post-save. Both rows are still recoverable: if this second
+            // save throws, the DefectOrder exists without an outbox row
+            // — that's a "lost message" risk we accept here as a
+            // documented trade-off (atomic single-transaction outbox
+            // would require pre-computing GUID PKs for DefectOrder,
+            // which is a bigger schema change to take separately).
+            if (pendingOutbox.Count > 0)
+            {
+                var now = DateTime.UtcNow;
+                foreach (var (order, payloadTemplate) in pendingOutbox)
+                {
+                    var payload = payloadTemplate with
+                    {
+                        DefectOrderId     = order.Id,
+                        ExternalReference = order.Id.ToString()
+                    };
+                    _db.OutboxMessages.Add(new OutboxMessage
+                    {
+                        AggregateType = "DefectOrder",
+                        AggregateId   = order.Id.ToString(),
+                        MessageType   = "DefectOrderCreated",
+                        PayloadJson   = System.Text.Json.JsonSerializer.Serialize(payload),
+                        Status        = OutboxStatus.Draft,
+                        CreatedAt     = now,
+                        NextAttemptAt = now,
+                        AttemptCount  = 0
+                    });
+                }
+                await _db.SaveChangesAsync();
+            }
         }
 
         // ── Notify the operator's supervisor ──

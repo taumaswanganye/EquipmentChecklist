@@ -1,0 +1,202 @@
+@model List<EquipmentChecklist.Models.OutboxMessage>
+@using EquipmentChecklist.Models
+@{
+    ViewData["Title"] = "Integration Outbox";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var counts = (EquipmentChecklist.Controllers.AdminController.OutboxCounts)ViewBag.Counts;
+
+    // Colour each status badge consistently. Same palette as the
+    // checklist GO/GO-BUT/NO-GO chips so the visual language is
+    // familiar across the admin surface.
+    string BadgeBg(string s) => s switch {
+        OutboxStatus.Sent       => "#16a34a",
+        OutboxStatus.Draft      => "#0ea5e9",
+        OutboxStatus.DeadLetter => "#dc2626",
+        _                       => "#64748b"
+    };
+    string BadgeFg(string _) => "#ffffff";
+
+    // Truncate long payload + error strings for the table so a 4KB
+    // JSON blob doesn't break the layout. Hover-title shows the full
+    // value; click-to-copy could be added later if anyone asks.
+    string Trunc(string? s, int n) =>
+        string.IsNullOrEmpty(s) ? "—"
+        : s.Length > n ? s.Substring(0, n) + "…" : s;
+}
+
+@* ── Page head ────────────────────────────────────────────────────── *@
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h2 class="page-title">📤 Integration Outbox</h2>
+        <p class="page-subtitle">
+            Transactional outbox for SAP PM / IBM MQ / other external integrations.
+            Every defect creates a Draft row; the OutboxPublishWorker drains it.
+        </p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <form method="post" action="/Admin/PurgeSentOutboxMessages" style="margin:0"
+              onsubmit="return confirm('Delete every Sent outbox row older than 30 days? This cannot be undone (the underlying DefectOrder rows are not touched).');">
+            @Html.AntiForgeryToken()
+            <button type="submit" class="btn btn-ghost" title="Free up table space — Sent rows are not needed for replay">
+                🧹 Purge sent &gt; 30 days
+            </button>
+        </form>
+    </div>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
+
+@* ── KPI cards ────────────────────────────────────────────────────── *@
+<div class="stat-grid" style="margin-bottom:24px">
+    <div class="stat-card info">
+        <div class="stat-label">Draft (waiting)</div>
+        <div class="stat-value">@counts.Draft</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">
+            @if (counts.OldestDraft.HasValue)
+            {
+                var age = DateTime.UtcNow - counts.OldestDraft.Value;
+                <text>oldest @((int)age.TotalMinutes)m old</text>
+            }
+            else
+            {
+                <text>queue empty</text>
+            }
+        </div>
+    </div>
+    <div class="stat-card go">
+        <div class="stat-label">Sent (last 24h)</div>
+        <div class="stat-value">@counts.SentLast24h</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">
+            published successfully
+        </div>
+    </div>
+    <div class="stat-card nogo">
+        <div class="stat-label">Dead-lettered</div>
+        <div class="stat-value">@counts.DeadLetter</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">
+            @(counts.DeadLetter > 0 ? "needs admin review" : "all clear")
+        </div>
+    </div>
+    <div class="stat-card" style="border-top:3px solid #94a3b8">
+        <div class="stat-label">Total (all time)</div>
+        <div class="stat-value" style="color:#cbd5e1">@counts.TotalAllTime</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">
+            rows on disk
+        </div>
+    </div>
+</div>
+
+@* ── Backlog warning ─────────────────────────────────────────────── *@
+@if (counts.Draft >= 20 && counts.OldestDraft.HasValue &&
+     (DateTime.UtcNow - counts.OldestDraft.Value).TotalMinutes >= 5)
+{
+    <div class="alert alert-warning" style="margin-bottom:16px;display:flex;gap:12px;align-items:flex-start">
+        <span style="font-size:22px;flex-shrink:0">⚠</span>
+        <div>
+            <strong>Outbox backlog detected.</strong>
+            <p style="font-size:12px;margin:4px 0 0;line-height:1.6">
+                @counts.Draft messages are waiting and the oldest is more than 5 minutes old.
+                Check that the OutboxPublishWorker is running and the configured
+                <a href="/Admin/Settings" style="color:var(--teal)">SAP / IBM MQ endpoint</a> is reachable.
+            </p>
+        </div>
+    </div>
+}
+@if (counts.DeadLetter > 0)
+{
+    <div class="alert alert-danger" style="margin-bottom:16px;display:flex;gap:12px;align-items:flex-start">
+        <span style="font-size:22px;flex-shrink:0">✕</span>
+        <div>
+            <strong>@counts.DeadLetter dead-lettered message(s) need attention.</strong>
+            <p style="font-size:12px;margin:4px 0 0;line-height:1.6">
+                These rows hit the retry ceiling and stopped trying. Review the LastError column below.
+                Once the root cause is fixed, click <em>Retry</em> to put the row back into Draft.
+            </p>
+        </div>
+    </div>
+}
+
+@* ── Messages table ──────────────────────────────────────────────── *@
+<h3 style="font-size:15px;margin:24px 0 10px">Recent messages (last 50)</h3>
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">
+        <div style="font-size:36px;margin-bottom:8px">📭</div>
+        <p>No outbox messages yet. Once an operator submits a NO-GO checklist, defect messages will appear here.</p>
+    </div>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Created</th>
+                <th>Aggregate</th>
+                <th>Message type</th>
+                <th>Status</th>
+                <th style="text-align:right">Attempts</th>
+                <th>Processed</th>
+                <th>Last error</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var m in Model)
+            {
+                <tr>
+                    <td style="font-family:var(--font-mono);color:var(--text-muted);font-size:11px">@m.Id</td>
+                    <td style="font-size:12px;color:var(--text-muted);white-space:nowrap">
+                        @m.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm:ss")
+                    </td>
+                    <td style="font-size:12px">
+                        <strong>@m.AggregateType</strong>
+                        <div style="font-family:var(--font-mono);color:var(--text-muted);font-size:11px">#@m.AggregateId</div>
+                    </td>
+                    <td style="font-family:var(--font-mono);font-size:11px">@m.MessageType</td>
+                    <td>
+                        <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:@BadgeBg(m.Status);color:@BadgeFg(m.Status)">
+                            @m.Status
+                        </span>
+                    </td>
+                    <td style="text-align:right;font-family:var(--font-mono);font-size:13px">@m.AttemptCount</td>
+                    <td style="font-size:12px;color:var(--text-muted);white-space:nowrap">
+                        @(m.ProcessedAt.HasValue
+                            ? m.ProcessedAt.Value.ToLocalTime().ToString("MM-dd HH:mm:ss")
+                            : (m.NextAttemptAt.HasValue ? "retry @ " + m.NextAttemptAt.Value.ToLocalTime().ToString("HH:mm:ss") : "—"))
+                    </td>
+                    <td style="font-size:11px;color:#fca5a5;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        title="@m.LastError">
+                        @Trunc(m.LastError, 60)
+                    </td>
+                    <td style="text-align:right">
+                        @if (m.Status == OutboxStatus.DeadLetter)
+                        {
+                            <form method="post" action="/Admin/RetryOutboxMessage" style="margin:0;display:inline"
+                                  onsubmit="return confirm('Reset this row to Draft so the worker tries again? Use only after the underlying issue (e.g. SAP credentials, MQ connectivity) has been fixed.');">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="id" value="@m.Id" />
+                                <button type="submit" class="btn btn-ghost btn-sm" title="Reset to Draft for one more publish attempt">
+                                    ↻ Retry
+                                </button>
+                            </form>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <p style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">
+        Worker polls every 5 seconds. Draft rows with NextAttemptAt in the future are waiting on exponential backoff (2 s → 4 s → 8 s → 16 s → 32 s …, capped at 1 h).
+        Dead-letter threshold is configurable via <a href="/Admin/Settings" style="color:var(--teal)"><code>Outbox.MaxRetries</code></a>.
+    </p>
+}

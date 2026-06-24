@@ -1,8 +1,11 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using EquipmentChecklist.Data;
 using EquipmentChecklist.DTOs;
 using EquipmentChecklist.Models;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 
 namespace EquipmentChecklist.Services;
 
@@ -33,6 +36,15 @@ public class AuditService
     private readonly IHttpContextAccessor         _http;
     private readonly UserManager<ApplicationUser> _users;
     private readonly ILogger<AuditService>        _log;
+
+    // ── Hash-chain serialisation ─────────────────────────────────────────
+    // Process-wide semaphore around the (read last RowHash) → (compute new
+    // hash) → (insert) critical section. Without it, two simultaneous audit
+    // writes could both read the same "previous" RowHash and chain to it,
+    // breaking the chain at the second one. For a multi-instance deployment
+    // we'd need a distributed lock; this single-process lock is correct for
+    // the pilot single-API-instance topology.
+    private static readonly SemaphoreSlim ChainLock = new(1, 1);
 
     public AuditService(ApplicationDbContext db,
                         IHttpContextAccessor http,
@@ -167,9 +179,27 @@ public class AuditService
                 IpAddress        = actor.IpAddress
             };
 
-            _db.AuditEvents.Add(row);
-            await _db.SaveChangesAsync(ct);
-            return row.Id;
+            // Compute the tamper-evident chain hash inside a process-wide
+            // critical section so concurrent writers don't both chain to
+            // the same "previous" row. The lock is held only for the brief
+            // window of read-prev → compute → save.
+            await ChainLock.WaitAsync(ct);
+            try
+            {
+                row.PrevHash = await _db.AuditEvents
+                    .OrderByDescending(a => a.Id)
+                    .Select(a => a.RowHash)
+                    .FirstOrDefaultAsync(ct);
+                row.RowHash = ComputeRowHash(row);
+
+                _db.AuditEvents.Add(row);
+                await _db.SaveChangesAsync(ct);
+                return row.Id;
+            }
+            finally
+            {
+                ChainLock.Release();
+            }
         }
         catch (Exception ex)
         {
@@ -230,9 +260,33 @@ public class AuditService
 
         try
         {
-            _db.AuditEvents.AddRange(rows);
-            await _db.SaveChangesAsync(ct);
-            return rows.Count;
+            // Same chain serialisation as the single-insert path. We
+            // compute each row's hash inside the lock, threading the
+            // previous row's RowHash through the batch — so the chain
+            // stays valid even when one POST inserts 50 rows at once.
+            await ChainLock.WaitAsync(ct);
+            try
+            {
+                var prev = await _db.AuditEvents
+                    .OrderByDescending(a => a.Id)
+                    .Select(a => a.RowHash)
+                    .FirstOrDefaultAsync(ct);
+
+                foreach (var r in rows)
+                {
+                    r.PrevHash = prev;
+                    r.RowHash  = ComputeRowHash(r);
+                    prev       = r.RowHash;
+                }
+
+                _db.AuditEvents.AddRange(rows);
+                await _db.SaveChangesAsync(ct);
+                return rows.Count;
+            }
+            finally
+            {
+                ChainLock.Release();
+            }
         }
         catch (Exception ex)
         {
@@ -261,4 +315,115 @@ public class AuditService
             if (roles.Contains(r)) return r;
         return roles.FirstOrDefault();
     }
+
+    /// <summary>
+    /// Compute the SHA-256 chain hash for an audit row. The serialised
+    /// form is a fixed pipe-separated layout of every content field —
+    /// keeping it stable matters because changing the layout in the future
+    /// would invalidate every existing row's hash.
+    ///
+    /// <para>Order, exactly: PrevHash | Action | ActorUserId | ActorName |
+    /// ActorEmail | ActorRole | TargetType | TargetId | PayloadJson |
+    /// OccurredAtServer (ISO 8601) | DeviceKind | IpAddress.</para>
+    /// </summary>
+    private static string ComputeRowHash(AuditEvent row)
+    {
+        // Empty string instead of "null" so two adjacent nulls don't
+        // collide with a literal "null" in any field.
+        static string S(string? s) => s ?? "";
+
+        var canonical = string.Join("|",
+            S(row.PrevHash),
+            S(row.Action),
+            S(row.ActorUserId),
+            S(row.ActorName),
+            S(row.ActorEmail),
+            S(row.ActorRole),
+            S(row.TargetType),
+            row.TargetId?.ToString() ?? "",
+            S(row.PayloadJson),
+            row.OccurredAtServer.ToUniversalTime().ToString("O"),
+            S(row.DeviceKind),
+            S(row.IpAddress));
+
+        Span<byte> hash = stackalloc byte[32];
+        var bytes = Encoding.UTF8.GetBytes(canonical);
+        SHA256.HashData(bytes, hash);
+
+        // Lowercase hex — 64 chars. Matches the PrevHash/RowHash column length.
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Walk the audit table in Id order and verify every row's RowHash
+    /// matches the SHA-256 of (its PrevHash || its content fields). The
+    /// first break is reported with the row Id and the recomputed-vs-stored
+    /// hash pair so an admin can see exactly where (and ideally when) the
+    /// chain was tampered with.
+    /// </summary>
+    public async Task<ChainVerificationResult> VerifyChainAsync(CancellationToken ct = default)
+    {
+        var rowsScanned   = 0;
+        string? expectedPrev = null;
+
+        // Pull only what we need to recompute the hash — heavy payloads
+        // load on demand. The audit table is large, so we stream in pages.
+        const int pageSize = 500;
+        long lastId = 0;
+        while (true)
+        {
+            var page = await _db.AuditEvents
+                .AsNoTracking()
+                .Where(a => a.Id > lastId)
+                .OrderBy(a => a.Id)
+                .Take(pageSize)
+                .ToListAsync(ct);
+            if (page.Count == 0) break;
+
+            foreach (var row in page)
+            {
+                rowsScanned++;
+
+                // Detect chain breaks: this row's PrevHash should equal
+                // the previous row's RowHash.
+                if (row.PrevHash != expectedPrev)
+                {
+                    return new ChainVerificationResult(
+                        Valid:        false,
+                        RowsScanned:  rowsScanned,
+                        BreakAtRowId: row.Id,
+                        Reason:       $"PrevHash mismatch: stored '{row.PrevHash}', expected '{expectedPrev}'.");
+                }
+
+                // Recompute this row's hash and compare with the stored one.
+                var recomputed = ComputeRowHash(row);
+                if (!string.Equals(recomputed, row.RowHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new ChainVerificationResult(
+                        Valid:        false,
+                        RowsScanned:  rowsScanned,
+                        BreakAtRowId: row.Id,
+                        Reason:       $"RowHash mismatch: stored '{row.RowHash}', recomputed '{recomputed}' — row has been edited or a field's value changed.");
+                }
+
+                expectedPrev = row.RowHash;
+                lastId       = row.Id;
+            }
+        }
+
+        return new ChainVerificationResult(
+            Valid:        true,
+            RowsScanned:  rowsScanned,
+            BreakAtRowId: null,
+            Reason:       rowsScanned == 0 ? "Empty audit log." : "Chain intact across all rows.");
+    }
+
+    /// <summary>Outcome of <see cref="VerifyChainAsync"/>. Valid = true
+    /// means every row in the table chains correctly to its predecessor
+    /// and its own content hashes to its stored RowHash.</summary>
+    public record ChainVerificationResult(
+        bool   Valid,
+        int    RowsScanned,
+        long?  BreakAtRowId,
+        string Reason);
 }

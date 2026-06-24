@@ -226,6 +226,34 @@ builder.Services.AddAuthorization(opt =>
 // ── App services ──────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ChecklistService>();
 builder.Services.AddHostedService<SyncService>();
+
+// ── External-CMMS integration scaffold ────────────────────────────────────────
+// Default registration is the no-op publisher so the system works without
+// any CMMS configured. Swap to SapPmIntegrationPublisher (or write a new
+// concrete implementation for Pragma On Key / Maximo) when the mine is
+// ready to wire up its CMMS. Both implementations target the same
+// IIntegrationPublisher interface so no caller-side change is needed.
+//
+// To switch to SAP: comment out the NoOp line, uncomment the SAP line.
+// SAP keys live in AppSettings (Sap.Enabled / Sap.BaseUrl / Sap.ApiKey)
+// so the admin can flip them on at runtime without a redeploy.
+builder.Services.AddHttpClient("sap-pm", c => {
+    // Default timeout — SAP Gateways behind a corporate proxy occasionally
+    // take 5–10 seconds for the first request after a cold pool.
+    c.Timeout = TimeSpan.FromSeconds(15);
+});
+builder.Services.AddScoped<EquipmentChecklist.Services.Integrations.IIntegrationPublisher,
+                          EquipmentChecklist.Services.Integrations.NoOpIntegrationPublisher>();
+// builder.Services.AddScoped<EquipmentChecklist.Services.Integrations.IIntegrationPublisher,
+//                            EquipmentChecklist.Services.Integrations.SapPmIntegrationPublisher>();
+
+// ── Transactional outbox worker ───────────────────────────────────────────────
+// Drains OutboxMessages every 5 seconds. ChecklistService writes outbox rows
+// in the same DB transaction as DefectOrder creation; this worker is the only
+// thing that actually calls IIntegrationPublisher in production. Result:
+// guaranteed at-least-once delivery, broker-agnostic, full DMR audit trail.
+builder.Services.AddHostedService<EquipmentChecklist.Services.Integrations.OutboxPublishWorker>();
+
 // Daily MHSA-Section-22(a) renewal-reminder dispatcher. Runs at 06:00 UTC
 // (08:00 SAST), walks active competencies, and fires the 30 / 7 / 0 day
 // notifications to operator + supervisor + mine manager + SHE officer per
@@ -409,6 +437,42 @@ static async Task SeedRolesAndAdminAsync(WebApplication app)
         "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_AppSettings_Key\" " +
         "ON \"AppSettings\" (\"Key\");");
 
+    // ── OutboxMessages — transactional outbox for external integrations
+    // Created via the same idempotent ALTER-IF-NOT-EXISTS pattern as the
+    // other recent additions. Status / NextAttemptAt are the two columns
+    // the worker polls on, hence the composite index.
+    await cloudDb.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "OutboxMessages" (
+            "Id"             bigserial PRIMARY KEY,
+            "AggregateType"  character varying(40)   NOT NULL,
+            "AggregateId"    character varying(80)   NOT NULL,
+            "MessageType"    character varying(80)   NOT NULL,
+            "PayloadJson"    text                    NOT NULL,
+            "Status"         character varying(20)   NOT NULL DEFAULT 'Draft',
+            "AttemptCount"   integer                 NOT NULL DEFAULT 0,
+            "LastError"      character varying(2000) NULL,
+            "CreatedAt"      timestamp with time zone NOT NULL,
+            "ProcessedAt"    timestamp with time zone NULL,
+            "NextAttemptAt"  timestamp with time zone NULL
+        );
+        """);
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE INDEX IF NOT EXISTS \"IX_OutboxMessages_Status_NextAttemptAt\" " +
+        "ON \"OutboxMessages\" (\"Status\", \"NextAttemptAt\");");
+
+    // ── Audit hash-chain columns ──────────────────────────────────────
+    // Add PrevHash + RowHash to the existing AuditEvents table without
+    // needing an EF migration. ALTER ... ADD COLUMN IF NOT EXISTS is
+    // idempotent so re-runs are harmless. Existing pre-hash-chain rows
+    // get NULL in both columns; the first new row after deployment
+    // chains to "no predecessor" (PrevHash = NULL) and rebuilds from
+    // there. The VerifyAuditChain endpoint reports the historical NULLs
+    // as the start of the chain.
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"AuditEvents\" ADD COLUMN IF NOT EXISTS \"PrevHash\" character varying(64) NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"AuditEvents\" ADD COLUMN IF NOT EXISTS \"RowHash\" character varying(64) NULL;");
+
     // ── Seed default AppSettings rows ─────────────────────────────────
     // Copy whatever's currently in IConfiguration into the DB, with
     // category labels + descriptions so the admin UI is meaningful. Each
@@ -544,6 +608,31 @@ static async Task SeedAppSettingsAsync(IServiceProvider services)
     await config.SeedAsync("Auth.SeededAdminPassword", "Security", "Admin@123",
         "Initial password of the seeded administrator. Change it on first login.",
         isSecret: true);
+
+    // ── SAP PM integration (scaffold) ────────────────────────────────
+    // All three default to safe values — Enabled=false means the
+    // NoOpIntegrationPublisher won't actually post anywhere even if BaseUrl
+    // is missing. Real deployments flip Enabled=true after configuring
+    // BaseUrl + ApiKey via Admin → Settings.
+    await config.SeedAsync("Sap.Enabled", "Integrations", "false",
+        "Master switch for SAP PM outbound publishing. Set true after configuring BaseUrl + ApiKey.");
+    await config.SeedAsync("Sap.BaseUrl", "Integrations", "",
+        "Base URL of the SAP Gateway / OData host. Example: https://sap-gw.your-mine.co.za:8443");
+    await config.SeedAsync("Sap.ApiKey", "Integrations", "",
+        "Bearer token / API key for SAP PM endpoints. Also used as the default inbound webhook key.",
+        isSecret: true);
+    await config.SeedAsync("Sap.WorkOrderEndpoint", "Integrations",
+        "/sap/opu/odata/sap/API_MAINTENANCEORDER_SRV/MaintenanceOrder",
+        "Relative path of SAP PM's WorkOrder intake endpoint. Defaults to the standard MaintenanceOrder OData service.");
+    await config.SeedAsync("Integrations.InboundKey", "Integrations", "",
+        "Optional separate key for inbound webhook calls. Falls back to Sap.ApiKey if blank.",
+        isSecret: true);
+
+    // ── Outbox pattern tuning ─────────────────────────────────────────
+    await config.SeedAsync("Outbox.MaxRetries", "Integrations", "5",
+        "Number of publish attempts before an outbox row is moved to DeadLetter. " +
+        "5 ≈ 32 seconds of exponential backoff. Raise to ~10 for ~17 minutes if SAP " +
+        "outage windows are typically longer than that.");
 }
 
 static async Task SeedChecklistTemplatesAsync(ApplicationDbContext db)

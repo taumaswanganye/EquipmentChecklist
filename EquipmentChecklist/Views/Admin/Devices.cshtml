@@ -14,7 +14,12 @@
             @active.Count active · @revoked.Count revoked · @Model.Count total
         </p>
     </div>
-    <a href="/Admin/AddDevice" class="btn btn-primary">+ Authorise a device</a>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a href="/Admin/BulkAddDevices" class="btn btn-ghost" title="Paste a CSV of fingerprints to authorise many devices at once">
+            📋 Bulk authorise (CSV)
+        </a>
+        <a href="/Admin/AddDevice" class="btn btn-primary">+ Authorise a device</a>
+    </div>
 </div>
 
 @if (TempData["Success"] != null)

@@ -242,7 +242,21 @@ public class AuthService
 
     public Task SignOutAsync()
     {
-        SecureStorage.Default.RemoveAll();
+        // Clear session credentials but PRESERVE the biometric preference
+        // flag — biometric enrollment is per-device-per-account, not per-
+        // session. Wiping it via RemoveAll() means a user signed out by a
+        // background flow (deactivation handler, JWT expiry, device-gate
+        // rejection) silently loses their biometric opt-in and has to re-
+        // tick "Use biometrics next time" on every sign-in. That was the
+        // root cause of the "no prompt appears" regression.
+        //
+        // Anything new that lands in SecureStorage and SHOULD be wiped on
+        // sign-out must be added to this explicit list. Anything that
+        // should survive sign-out (per-device preferences) just gets left
+        // alone — opt-in by omission.
+        SecureStorage.Default.Remove(TOKEN_KEY);
+        SecureStorage.Default.Remove(EXP_KEY);
+        SecureStorage.Default.Remove(USER_KEY);
         CurrentUser = null;
         IsUnlocked  = false;
         AuthChanged?.Invoke();
@@ -256,6 +270,35 @@ public class AuthService
 
     public async Task<bool> IsBiometricEnabledAsync()
         => (await SecureStorage.Default.GetAsync(BIO_KEY)) == "1";
+
+    /// <summary>
+    /// True iff there's a persisted user record in SecureStorage AND the
+    /// biometric opt-in flag is set — i.e. the explicit "🔐 Sign in with
+    /// biometric" button on Login has something it can actually unlock.
+    /// If one of these is true but not the other (e.g. an old install
+    /// wiped USER_KEY but left BIO_KEY, or vice-versa), this returns
+    /// false AND clears the stale BIO_KEY so the inconsistent state
+    /// auto-heals on next launch.
+    /// </summary>
+    public async Task<bool> HasBiometricUnlockableSessionAsync()
+    {
+        var bioFlag = (await SecureStorage.Default.GetAsync(BIO_KEY)) == "1";
+        var userJson = await SecureStorage.Default.GetAsync(USER_KEY);
+        var hasUser  = !string.IsNullOrEmpty(userJson);
+
+        if (bioFlag && !hasUser)
+        {
+            // Stale BIO_KEY without a session to unlock — wipe it so
+            // future RefreshBiometricSessionStateAsync calls return false
+            // immediately and the explicit button stops appearing in this
+            // dead-end state. The user signs in with password, ticks the
+            // checkbox, and the flag comes back consistent.
+            SecureStorage.Default.Remove(BIO_KEY);
+            return false;
+        }
+
+        return bioFlag && hasUser;
+    }
 
     public async Task EnableBiometricsAsync()
         => await SecureStorage.Default.SetAsync(BIO_KEY, "1");

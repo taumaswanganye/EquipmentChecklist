@@ -307,6 +307,9 @@
                 <a href="/Admin/Settings" class="nav-item @(path.StartsWith("/Admin/Settings") || path.StartsWith("/Admin/SaveSetting") ? "active" : "")">
                     <span class="nav-icon">⚙</span> Settings
                 </a>
+                <a href="/Admin/Outbox" class="nav-item @(path.StartsWith("/Admin/Outbox") || path.StartsWith("/Admin/RetryOutbox") || path.StartsWith("/Admin/PurgeSent") ? "active" : "")">
+                    <span class="nav-icon">📤</span> Outbox
+                </a>
                 <a href="/Admin/Assignments" class="nav-item @(path.StartsWith("/Admin/Assignment")?"active":"")">
                     <span class="nav-icon">🔗</span> Assignments
                 </a>

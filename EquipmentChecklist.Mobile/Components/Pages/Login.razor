@@ -55,6 +55,23 @@
             @(busy ? "Signing in…" : "Sign In")
         </button>
 
+        @* Explicit "Sign in with biometric" button — visible whenever the
+           device supports biometric AND a returning user previously opted
+           in. Tapping it re-runs Auth.RestoreAsync, which fires the OS
+           prompt. Previously biometric ONLY fired automatically on page
+           load, so users who landed on the login screen via any other
+           path (sign-out, deactivation, restart) had no way to invoke it
+           manually. This button removes that dead-end. *@
+        @if (bioAvailable && hasBiometricSession)
+        {
+            <button class="bio-button" @onclick="TriggerBiometricAsync" disabled="@busy">
+                🔐 Sign in with biometric
+            </button>
+            <p class="hint" style="margin-top:6px">
+                We'll re-confirm with @(cachedDisplayName ?? "your saved account").
+            </p>
+        }
+
         <p class="hint">
             Use the same email and password you use for the web app.
         </p>
@@ -117,6 +134,20 @@
     }
     button.primary:disabled { opacity: .55; cursor: not-allowed; }
 
+    button.bio-button {
+        margin-top: 10px;
+        width: 100%;
+        padding: 11px;
+        background: transparent;
+        color: #fbbf24;
+        border: 1px solid #b45309;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    button.bio-button:disabled { opacity: .55; cursor: not-allowed; }
+
     .alert {
         background: #450a0a; border: 1px solid #7f1d1d;
         color: #fecaca; padding: 10px 12px;
@@ -160,6 +191,14 @@
     private bool   enableBio    = false;
     private bool   bioAvailable = false;
 
+    // Surfaces the "Sign in with biometric" button. True when the device
+    // has biometric hardware AND the user previously opted in AND there's
+    // a cached session that biometric can unlock. If any of those is
+    // false, the button stays hidden and the user falls through to the
+    // password form below it.
+    private bool   hasBiometricSession;
+    private string? cachedDisplayName;
+
     // Device-allowlist state. deviceProblem flips on when the server
     // returns any device_* error code; localFingerprint is resolved
     // eagerly so it's already on screen when the user opens the page —
@@ -173,6 +212,12 @@
         if (bioAvailable && await Auth.IsBiometricEnabledAsync())
             enableBio = true;  // pre-tick the box for returning users
 
+        // Decide whether the explicit "Sign in with biometric" button
+        // should appear. It's only meaningful when there's a cached
+        // session for biometric to unlock — otherwise the prompt would
+        // succeed and immediately fail because there's no token to use.
+        await RefreshBiometricSessionStateAsync();
+
         var restore = await Auth.RestoreAsync();
         switch (restore)
         {
@@ -181,7 +226,7 @@
                 break;
 
             case RestoreResult.BiometricCancelled:
-                error = "Biometric prompt was dismissed. Sign in to continue.";
+                error = "Biometric prompt was dismissed. Tap '🔐 Sign in with biometric' to retry, or use your password.";
                 break;
 
             case RestoreResult.BiometricFailed:
@@ -189,6 +234,73 @@
                 break;
 
             // NoSession / Expired / Corrupt → no message, just show the form.
+        }
+    }
+
+    /// <summary>
+    /// Looks at SecureStorage to decide whether the biometric button is
+    /// worth showing — true only when biometric is enabled AND there's a
+    /// cached user record for the prompt to unlock. The composite check
+    /// lives on AuthService so it can auto-heal a stale BIO_KEY (set, but
+    /// without a session) by silently clearing the flag.
+    /// </summary>
+    private async Task RefreshBiometricSessionStateAsync()
+    {
+        if (!bioAvailable) { hasBiometricSession = false; return; }
+
+        hasBiometricSession = await Auth.HasBiometricUnlockableSessionAsync();
+        if (!hasBiometricSession) { cachedDisplayName = null; return; }
+
+        // The full name of the cached user, surfaced on the hint line so
+        // the operator knows which account the biometric prompt will
+        // unlock — shared devices are common in the cab so this matters.
+        cachedDisplayName = Auth.CurrentUser?.FullName;
+    }
+
+    /// <summary>
+    /// Click handler for the explicit "Sign in with biometric" button.
+    /// Re-runs Auth.RestoreAsync, which fires the OS prompt and navigates
+    /// to the dashboard on success. Used when the auto-fire on page load
+    /// didn't happen (cancelled, dismissed) or when the user has just
+    /// signed out and wants back in without re-typing a password.
+    /// </summary>
+    private async Task TriggerBiometricAsync()
+    {
+        if (busy) return;
+        busy = true;
+        error = "";
+        try
+        {
+            var restore = await Auth.RestoreAsync();
+            switch (restore)
+            {
+                case RestoreResult.Unlocked:
+                    Nav.NavigateTo("/dashboard");
+                    return;
+
+                case RestoreResult.BiometricCancelled:
+                    error = "Biometric prompt was dismissed.";
+                    return;
+
+                case RestoreResult.BiometricFailed:
+                    error = "Biometric check failed. Sign in with your password.";
+                    // BiometricFailed signs the user out internally, so
+                    // hide the button on the next render — there's no
+                    // cached session left to unlock.
+                    hasBiometricSession = false;
+                    return;
+
+                case RestoreResult.NoSession:
+                case RestoreResult.Expired:
+                case RestoreResult.Corrupt:
+                    error = "No saved session on this device. Sign in with your password to re-enable biometric.";
+                    hasBiometricSession = false;
+                    return;
+            }
+        }
+        finally
+        {
+            busy = false;
         }
     }
 

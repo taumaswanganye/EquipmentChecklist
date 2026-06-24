@@ -83,4 +83,30 @@ public class AuditEvent
     /// for unusual sign-in detection.</summary>
     [MaxLength(64)]
     public string? IpAddress { get; set; }
+
+    // ── Tamper-evident hash chain ─────────────────────────────────────────
+    //
+    // Every row stores the hex SHA-256 of (PrevHash || row content fields)
+    // computed at insert time. Tampering with any historical row's content
+    // OR re-ordering rows breaks the chain at that point and at every row
+    // after it. An admin endpoint walks the chain end-to-end and reports
+    // the first break, if any.
+    //
+    // Closes DMR Reg 10.3's "tamper-evidence" expectation without needing
+    // an external blockchain — the chain is verifiable with stock SQL
+    // tools by anyone with read access to AuditEvents.
+    //
+    // PrevHash is null on the very first row. RowHash is computed on
+    // insert by AuditService and must never be modified afterwards.
+
+    /// <summary>Hex SHA-256 of the previous audit row's RowHash, or null
+    /// for the very first row. Used to chain rows together.</summary>
+    [MaxLength(64)]
+    public string? PrevHash { get; set; }
+
+    /// <summary>Hex SHA-256 of (PrevHash || serialised row content). Set
+    /// at insert time and immutable thereafter. Editing any field of this
+    /// row invalidates this hash on re-computation.</summary>
+    [MaxLength(64)]
+    public string? RowHash { get; set; }
 }

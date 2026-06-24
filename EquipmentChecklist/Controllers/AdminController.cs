@@ -743,6 +743,130 @@ public class AdminController : Controller
         return RedirectToAction("Devices");
     }
 
+    /// <summary>
+    /// Bulk authorise multiple devices in one paste. Same effect as
+    /// running <see cref="AddDevice(string, string?, string?, string?, string?, string?, string?, string?)"/>
+    /// many times, but designed for the rollout day when IT has 20 tablets
+    /// lined up on a desk and a CSV of their fingerprints.
+    /// </summary>
+    [HttpGet]
+    public async Task<IActionResult> BulkAddDevices()
+    {
+        ViewBag.Users = await _db.Users
+            .Where(u => u.IsActive)
+            .OrderBy(u => u.FullName)
+            .Select(u => new { u.Id, u.FullName, u.Email, u.EmployeeNumber })
+            .ToListAsync();
+        return View();
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> BulkAddDevices(string csv, bool defaultIsShared = true)
+    {
+        if (string.IsNullOrWhiteSpace(csv))
+        {
+            TempData["Error"] = "Paste at least one row of fingerprint,label,assigned-email.";
+            return RedirectToAction("BulkAddDevices");
+        }
+
+        // Parse the paste. Format per line: fingerprint,label,email
+        //   fingerprint = required
+        //   label       = optional (defaults to fingerprint prefix)
+        //   email       = optional (blank => shared device; literal "SHARED" or
+        //                  "ANY" also means shared so admins can be explicit)
+        // Lines starting with '#' are ignored (header / comments).
+        // Blank lines are ignored.
+        var adminId = _users.GetUserId(User);
+        var allUsers = await _db.Users
+            .Where(u => u.IsActive)
+            .Select(u => new { u.Id, u.Email })
+            .ToListAsync();
+        var userByEmail = allUsers
+            .Where(u => !string.IsNullOrEmpty(u.Email))
+            .ToDictionary(u => u.Email!.ToLowerInvariant(), u => u.Id);
+
+        var existingFingerprints = (await _db.AllowedDevices
+            .Select(d => d.DeviceFingerprint)
+            .ToListAsync()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var added       = 0;
+        var skippedDup  = 0;
+        var skippedBad  = new List<string>();
+        var skippedUser = new List<string>();
+        var now         = DateTime.UtcNow;
+
+        foreach (var rawLine in csv.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim().TrimEnd(',');
+            if (line.Length == 0 || line.StartsWith("#")) continue;
+
+            var parts = line.Split(',', StringSplitOptions.TrimEntries);
+            var fp    = parts.Length > 0 ? parts[0].ToLowerInvariant() : "";
+            var label = parts.Length > 1 ? parts[1] : null;
+            var email = parts.Length > 2 ? parts[2] : null;
+
+            if (string.IsNullOrWhiteSpace(fp) || fp.Length < 8)
+            {
+                skippedBad.Add(line);
+                continue;
+            }
+            if (existingFingerprints.Contains(fp))
+            {
+                skippedDup++;
+                continue;
+            }
+
+            // Resolve email → user id. Blank email OR explicit
+            // SHARED/ANY token means "shared device, any user can sign in".
+            string? assignedUserId = null;
+            if (!string.IsNullOrWhiteSpace(email)
+                && !email.Equals("SHARED", StringComparison.OrdinalIgnoreCase)
+                && !email.Equals("ANY",    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!userByEmail.TryGetValue(email.ToLowerInvariant(), out assignedUserId))
+                {
+                    skippedUser.Add(email);
+                    continue;
+                }
+            }
+            else if (!defaultIsShared && string.IsNullOrWhiteSpace(email))
+            {
+                // Admin chose "default is pinned" but didn't give an email
+                // for this row. Refuse rather than silently turning it into
+                // a shared device.
+                skippedBad.Add(line + "  (no email + default-is-pinned)");
+                continue;
+            }
+
+            _db.AllowedDevices.Add(new AllowedDevice
+            {
+                DeviceFingerprint = fp,
+                Label             = string.IsNullOrWhiteSpace(label)
+                                    ? fp.Substring(0, Math.Min(8, fp.Length)) + "…"
+                                    : label,
+                AssignedUserId    = assignedUserId,
+                ApprovedByAdminId = adminId,
+                CreatedAt         = now,
+                ApprovedAt        = now,
+                IsActive          = true,
+            });
+            existingFingerprints.Add(fp);   // guard against duplicates inside the paste itself
+            added++;
+        }
+
+        if (added > 0) await _db.SaveChangesAsync();
+
+        // Build a single status message capturing every category of skip
+        // so the admin doesn't have to scroll back through their paste to
+        // figure out what went in and what didn't.
+        var bits = new List<string> { $"{added} device(s) authorised" };
+        if (skippedDup  > 0) bits.Add($"{skippedDup} already-known fingerprint(s) skipped");
+        if (skippedBad.Count  > 0) bits.Add($"{skippedBad.Count} malformed row(s) skipped");
+        if (skippedUser.Count > 0) bits.Add($"{skippedUser.Count} unknown email(s): {string.Join(", ", skippedUser)}");
+        TempData["Success"] = string.Join(" · ", bits) + ".";
+        return RedirectToAction("Devices");
+    }
+
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> SetDeviceActive(int id, bool active)
     {
@@ -1436,6 +1560,151 @@ public class AdminController : Controller
     // and an actor email pre-filter so the per-user "what did Sipho do
     // this morning?" question is one click from the user list.
     [HttpGet]
+    /// <summary>
+    /// Verify the cryptographic hash-chain across the entire AuditEvents
+    /// table. Walks every row in Id order and confirms each row's
+    /// RowHash matches SHA-256 of (its PrevHash || its content fields).
+    /// Reports the first break, if any, so an admin / inspector can see
+    /// exactly where a tampering attempt occurred.
+    ///
+    /// <para>Use case: a DMR inspector asks "how do you know nobody has
+    /// edited your audit records since they were written?" The admin
+    /// runs this endpoint and shows the green "chain intact" result.</para>
+    /// </summary>
+    [HttpGet]
+    public async Task<IActionResult> VerifyAuditChain(CancellationToken ct)
+    {
+        var result = await _audit.VerifyChainAsync(ct);
+        return View(result);
+    }
+
+    // ── Outbox monitoring ───────────────────────────────────────────────────
+    /// <summary>
+    /// Operational view of the transactional outbox. Shows headline counts
+    /// (Draft / Sent / DeadLetter) and the most recent 50 messages with
+    /// status and last-error visible. The admin uses this to confirm SAP
+    /// (or whichever broker the IIntegrationPublisher is wired to) is
+    /// actually consuming what we're producing, and to retry any
+    /// permanently-failed messages by hand.
+    /// </summary>
+    [HttpGet]
+    public async Task<IActionResult> Outbox(CancellationToken ct)
+    {
+        var now      = DateTime.UtcNow;
+        var since24h = now.AddHours(-24);
+
+        var counts = new OutboxCounts
+        {
+            Draft        = await _db.OutboxMessages.CountAsync(m => m.Status == OutboxStatus.Draft, ct),
+            SentLast24h  = await _db.OutboxMessages.CountAsync(m => m.Status == OutboxStatus.Sent &&
+                                                                    m.ProcessedAt >= since24h, ct),
+            DeadLetter   = await _db.OutboxMessages.CountAsync(m => m.Status == OutboxStatus.DeadLetter, ct),
+            TotalAllTime = await _db.OutboxMessages.CountAsync(ct),
+            OldestDraft  = await _db.OutboxMessages
+                                .Where(m => m.Status == OutboxStatus.Draft)
+                                .OrderBy(m => m.CreatedAt)
+                                .Select(m => (DateTime?)m.CreatedAt)
+                                .FirstOrDefaultAsync(ct),
+        };
+
+        // Most recent 50 rows across all statuses — surfaces in-flight,
+        // recently-sent, AND dead-lettered together so the operator sees
+        // the activity stream at a glance. DeadLetter rows float visually
+        // via the badge colour, not separate filtering.
+        var recent = await _db.OutboxMessages
+            .OrderByDescending(m => m.Id)
+            .Take(50)
+            .ToListAsync(ct);
+
+        ViewBag.Counts = counts;
+        return View(recent);
+    }
+
+    /// <summary>
+    /// Move a DeadLetter row back to Draft so the OutboxPublishWorker
+    /// will pick it up on its next pass. Resets AttemptCount and
+    /// LastError. Use case: the admin fixed a transient issue (rotated
+    /// SAP credentials, restarted IBM MQ, etc.) and wants to replay
+    /// failed messages manually.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> RetryOutboxMessage(long id)
+    {
+        var row = await _db.OutboxMessages.FindAsync(id);
+        if (row == null)
+        {
+            TempData["Error"] = "Outbox message not found.";
+            return RedirectToAction("Outbox");
+        }
+
+        // Refuse to "retry" something that already succeeded — that would
+        // double-publish and downstream consumers might not be idempotent
+        // outside their normal retry window.
+        if (row.Status == OutboxStatus.Sent)
+        {
+            TempData["Error"] = $"Message #{id} is already Sent. Refusing to re-publish.";
+            return RedirectToAction("Outbox");
+        }
+
+        row.Status        = OutboxStatus.Draft;
+        row.AttemptCount  = 0;
+        row.LastError     = null;
+        row.NextAttemptAt = DateTime.UtcNow;   // fire on next worker pass
+        row.ProcessedAt   = null;
+        await _db.SaveChangesAsync();
+
+        await _audit.LogAsync(
+            "outbox.retried",
+            targetType: row.AggregateType,
+            targetId:   long.TryParse(row.AggregateId, out var aid) ? aid : null,
+            payload:    new { outboxId = row.Id, messageType = row.MessageType });
+
+        TempData["Success"] = $"Message #{id} reset to Draft. Worker will retry within a few seconds.";
+        return RedirectToAction("Outbox");
+    }
+
+    /// <summary>
+    /// Bulk-delete Sent outbox rows older than 30 days. Keeps the table
+    /// small after months of activity. DeadLetter rows are NEVER purged
+    /// — they need admin acknowledgement first.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> PurgeSentOutboxMessages()
+    {
+        var cutoff = DateTime.UtcNow.AddDays(-30);
+        var toDelete = await _db.OutboxMessages
+            .Where(m => m.Status == OutboxStatus.Sent && m.ProcessedAt < cutoff)
+            .ToListAsync();
+
+        if (toDelete.Count == 0)
+        {
+            TempData["Success"] = "Nothing to purge — no Sent rows older than 30 days.";
+            return RedirectToAction("Outbox");
+        }
+
+        _db.OutboxMessages.RemoveRange(toDelete);
+        await _db.SaveChangesAsync();
+
+        await _audit.LogAsync(
+            "outbox.purged",
+            targetType: "OutboxMessage",
+            targetId:   null,
+            payload:    new { count = toDelete.Count, olderThanDays = 30 });
+
+        TempData["Success"] = $"Purged {toDelete.Count} Sent message(s) older than 30 days.";
+        return RedirectToAction("Outbox");
+    }
+
+    /// <summary>Headline numbers for the Outbox admin page.</summary>
+    public class OutboxCounts
+    {
+        public int       Draft        { get; set; }
+        public int       SentLast24h  { get; set; }
+        public int       DeadLetter   { get; set; }
+        public int       TotalAllTime { get; set; }
+        public DateTime? OldestDraft  { get; set; }
+    }
+
     public async Task<IActionResult> Audit([FromQuery] ListFilter filter,
                                            [FromQuery] string? action = null,
                                            [FromQuery] string? actor  = null,
