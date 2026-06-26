@@ -570,6 +570,89 @@ public class SyncController : ControllerBase
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    //         Phase 6.7 — OPERATOR "AWAITING RE-CHECK" QUEUE
+    // ══════════════════════════════════════════════════════════════════════════
+    /// <summary>
+    /// Returns the machines this operator raised NO-GO on, that admin has
+    /// since cleared back to service, and where the operator hasn't done
+    /// a fresh checklist yet. Mobile dashboard renders these as a tile
+    /// at the top of the home screen — the visual companion to the
+    /// Phase 6.1 push notification (operator may have signed in on a
+    /// different device + missed the push).
+    ///
+    /// "Hasn't done a fresh checklist" means: no ChecklistSubmission by
+    /// this operator on this machine where SubmittedAt > ClearedAt. We
+    /// scope to clearances within the last 14 days so an old clearance
+    /// the operator silently ignored doesn't haunt them forever.
+    /// </summary>
+    [HttpGet("operator/awaiting-recheck")]
+    [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
+    public async Task<ActionResult<List<AwaitingRecheckDto>>> AwaitingRecheck()
+    {
+        var user = await CurrentUser();
+        if (user == null) return Unauthorized();
+
+        var cutoff = DateTime.UtcNow.AddDays(-14);
+
+        // Recent NO-GOs raised by this operator, with the machine in
+        // its current state. We only care about machines that have a
+        // ClearedAt > the operator's NO-GO submission AND no later
+        // submission by this operator on the same machine.
+        var myRecentNoGos = await _db.ChecklistSubmissions
+            .Include(s => s.Machine)
+            .Where(s => s.OperatorId == user.Id
+                     && s.Status     == ChecklistStatus.NoGo
+                     && s.SubmittedAt >= cutoff)
+            .OrderByDescending(s => s.SubmittedAt)
+            .ToListAsync();
+
+        if (myRecentNoGos.Count == 0)
+            return Ok(new List<AwaitingRecheckDto>());
+
+        // For each candidate machine, find the operator's most recent
+        // submission on that machine, and the machine's most recent
+        // clearance timestamp. If cleared-after-NO-GO AND no submission
+        // since clearance → it's awaiting re-check.
+        var machineIds = myRecentNoGos.Select(s => s.Machine.Id).Distinct().ToList();
+
+        var latestSubByMachine = await _db.ChecklistSubmissions
+            .Where(s => s.OperatorId == user.Id && machineIds.Contains(s.MachineId))
+            .GroupBy(s => s.MachineId)
+            .Select(g => new { MachineId = g.Key, LastAt = g.Max(s => s.SubmittedAt) })
+            .ToDictionaryAsync(x => x.MachineId, x => x.LastAt);
+
+        var now = DateTime.UtcNow;
+        var dto = new List<AwaitingRecheckDto>();
+        // Dedupe by machine — if the operator raised three NO-GOs on the
+        // same machine we still only show one tile.
+        var seenMachines = new HashSet<int>();
+        foreach (var s in myRecentNoGos)
+        {
+            if (!seenMachines.Add(s.Machine.Id))   continue;
+            if (!s.Machine.ClearedAt.HasValue)     continue;       // not yet cleared
+            if (s.Machine.IsImmobilised)           continue;       // back down again
+            if (s.Machine.ClearedAt.Value <= s.SubmittedAt) continue; // clearance is older than the NO-GO
+
+            var lastSubAt = latestSubByMachine.TryGetValue(s.Machine.Id, out var t) ? t : DateTime.MinValue;
+            if (lastSubAt > s.Machine.ClearedAt.Value) continue;   // already re-checked
+
+            dto.Add(new AwaitingRecheckDto
+            {
+                MachineId           = s.Machine.Id,
+                MachineNumber       = s.Machine.MachineNumber,
+                MachineName         = s.Machine.MachineName,
+                TypeDisplay         = s.Machine.TypeName ?? s.Machine.Type.ToString(),
+                OriginalNoGoAt      = s.SubmittedAt,
+                ClearedAt           = s.Machine.ClearedAt,
+                AdminClearanceNotes = s.Machine.AdminClearanceNotes,
+                HoursSinceCleared   = (int)(now - s.Machine.ClearedAt.Value).TotalHours
+            });
+        }
+
+        return Ok(dto);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     //                       RECENT SUBMISSIONS (role-aware)
     // ══════════════════════════════════════════════════════════════════════════
     [HttpGet("submissions/recent")]

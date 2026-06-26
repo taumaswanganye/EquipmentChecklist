@@ -127,6 +127,54 @@ else
 }
 else
 {
+    @* ── Phase 6.7 — "Awaiting your re-check" tile ──────────────────────
+       Machines this operator raised NO-GO on that admin has cleared but
+       the operator hasn't re-checked yet. Visual sibling of the
+       machine.cleared push notification — catches operators who missed
+       the push (different device, app closed, etc.). Tapping a row deep-
+       links straight to the checklist for that machine. *@
+    @if (awaitingRecheck is { Count: > 0 })
+    {
+        <div class="awaiting-recheck-card" style="background:linear-gradient(135deg,#ecfeff,#cffafe);border:1px solid #06b6d4;border-radius:12px;padding:14px 16px;margin-bottom:18px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+                <div>
+                    <strong style="color:#0e7490;font-size:14px;letter-spacing:.5px">✅ AWAITING YOUR RE-CHECK</strong>
+                    <div style="font-size:12px;color:#155e75;margin-top:2px">
+                        @awaitingRecheck.Count machine@(awaitingRecheck.Count == 1 ? "" : "s") fixed and signed off — fresh check needed before next use.
+                    </div>
+                </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+                @foreach (var m in awaitingRecheck)
+                {
+                    <a href="@($"/checklist/{m.MachineId}")"
+                       style="background:#fff;border:1px solid #cffafe;border-radius:8px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;text-decoration:none;color:inherit">
+                        <div>
+                            <strong style="font-size:14px;color:#0f172a">@m.MachineNumber</strong>
+                            <div style="font-size:11px;color:#64748b;margin-top:2px">
+                                @m.MachineName · @m.TypeDisplay
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(m.AdminClearanceNotes))
+                            {
+                                <div style="font-size:10px;color:#475569;margin-top:4px;font-style:italic">
+                                    "@m.AdminClearanceNotes"
+                                </div>
+                            }
+                        </div>
+                        <div style="text-align:right;white-space:nowrap">
+                            <div style="font-size:10px;color:#64748b">cleared</div>
+                            <div style="font-size:12px;font-weight:600;color:#0e7490">
+                                @(m.HoursSinceCleared < 1 ? "just now" :
+                                  m.HoursSinceCleared < 24 ? $"{m.HoursSinceCleared}h ago" :
+                                  $"{m.HoursSinceCleared / 24}d ago")
+                            </div>
+                        </div>
+                    </a>
+                }
+            </div>
+        </div>
+    }
+
 <h2 class="section-title">Recent Submissions</h2>
 
 @if (busy && recent is null)
@@ -309,6 +357,9 @@ else
     private SyncOperatorStatsDto?     stats;
     private MechanicStatsDto?         mechStats;
     private List<RecentSubmissionDto>? recent;
+    // Phase 6.7 — machines admin has cleared but operator hasn't re-checked.
+    // Null = not loaded yet (hide); empty list = loaded and nothing to show.
+    private List<AwaitingRecheckDto>? awaitingRecheck;
     private bool   busy   = true;
     private string error  = "";
     private int    currentPage = 1;
@@ -539,6 +590,14 @@ else
 
                 // Side-effect: keep the machine cache fresh so MyMachines page is instant.
                 try { var m = await Api.MyMachinesAsync(); if (m != null) await Cache.SaveMachinesAsync(m); } catch { }
+
+                // Phase 6.7 — fetch the awaiting-re-check list. Fire-and-
+                // tolerate-failure: the tile just stays hidden if the
+                // endpoint is unreachable. Don't await inside the join
+                // above because we want to keep this independent from
+                // stats/recent failure modes.
+                try { awaitingRecheck = await Api.AwaitingRecheckAsync() ?? new List<AwaitingRecheckDto>(); }
+                catch { /* leave previous list intact; tile hides only if null */ }
             }
         }
         catch (HttpRequestException)

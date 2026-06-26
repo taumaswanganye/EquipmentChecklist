@@ -1,31 +1,33 @@
 using EquipmentChecklist.Data;
 using EquipmentChecklist.DTOs;
 using EquipmentChecklist.Models;
-using EquipmentChecklist.Services.Integrations;
+using EquipmentChecklist.Services.Integrations;   // for IntegrationDefectPayload only
 using Microsoft.EntityFrameworkCore;
 
 namespace EquipmentChecklist.Services;
 
 public class ChecklistService
 {
-    private readonly ApplicationDbContext   _db;
-    private readonly NotificationService?   _notifications;
-    private readonly AuditService?          _audit;
-    private readonly IIntegrationPublisher? _integration;
+    private readonly ApplicationDbContext _db;
+    private readonly NotificationService? _notifications;
+    private readonly AuditService?        _audit;
 
-    // The notification + audit + integration services are optional so
-    // existing tests that construct `new ChecklistService(db)` don't need
-    // to change — they exercise pure status calc / persistence and aren't
-    // asserting on the side effects.
+    // The notification + audit services are optional so existing tests
+    // that construct `new ChecklistService(db)` don't need to change —
+    // they exercise pure status calc / persistence and aren't asserting
+    // on the side effects.
+    //
+    // IIntegrationPublisher used to live here too, but Phase 3's outbox
+    // pattern moved publishing to OutboxPublishWorker — this service
+    // now just writes OutboxMessage rows. If a future change brings the
+    // publisher back, add it as an optional ctor arg again.
     public ChecklistService(ApplicationDbContext db,
-                            NotificationService?   notifications = null,
-                            AuditService?          audit         = null,
-                            IIntegrationPublisher? integration   = null)
+                            NotificationService? notifications = null,
+                            AuditService?        audit         = null)
     {
         _db            = db;
         _notifications = notifications;
         _audit         = audit;
-        _integration   = integration;
     }
 
     /// <summary>
@@ -40,6 +42,29 @@ public class ChecklistService
             .FirstOrDefaultAsync(m => m.Id == dto.MachineId)
             ?? throw new Exception("Machine not found");
 
+        // ── Phase 4.6 — Auto-link re-checks ────────────────────────────
+        // If the most recent prior submission on this machine was
+        // anything other than a clean GO, AND it landed within the
+        // linkage window, we treat this new submission as a re-check of
+        // it. The link drives reporting ("first-time-fix rate") and the
+        // "RE-CHECK" badge in the supervisor + operator views.
+        //
+        // 24h is the default window — long enough that an overnight
+        // workshop turnaround still links, short enough that an
+        // unrelated NO-GO from last week doesn't accidentally chain.
+        // Tunable later via an AppSetting if mines want a longer or
+        // shorter window. The link is intentionally NOT made for prior
+        // GO submissions — a clean check followed by another clean check
+        // isn't a "re-check" in operational terms.
+        var linkageCutoff = DateTime.UtcNow.AddHours(-24);
+        var prior = await _db.ChecklistSubmissions
+            .Where(s => s.MachineId  == dto.MachineId
+                     && s.SubmittedAt >= linkageCutoff
+                     && s.Status     != ChecklistStatus.Go)
+            .OrderByDescending(s => s.SubmittedAt)
+            .Select(s => new { s.Id, s.Status })
+            .FirstOrDefaultAsync();
+
         var submission = new ChecklistSubmission
         {
             MachineId = dto.MachineId,
@@ -49,7 +74,8 @@ public class ChecklistService
             OperatorRemarks = dto.OperatorRemarks,
             FitnessDeclarationSigned = dto.FitnessDeclarationSigned,
             OperatorSignature = dto.OperatorSignature,
-            SubmittedAt = DateTime.UtcNow
+            SubmittedAt = DateTime.UtcNow,
+            OriginalSubmissionId = prior?.Id   // null when this is a fresh check
         };
 
         var submissionItems = dto.Items.Select(i => new SubmissionItem
@@ -188,6 +214,39 @@ public class ChecklistService
                         AttemptCount  = 0
                     });
                 }
+
+                // ── Phase 7.3 — Key Control physical interlock ──────────
+                // If this machine has a Key Control slot mapped, emit ONE
+                // immobilise message regardless of how many defects were
+                // raised — locking the same key twice is the cabinet's
+                // problem, not ours. The publisher reads KeyControl.Enabled
+                // at dispatch time; if it's false the NoOp publisher
+                // happily logs + returns and the outbox row marks Sent.
+                if (!string.IsNullOrWhiteSpace(machine.KeyControlSlotId))
+                {
+                    var firstDefectDescription = pendingOutbox.Count > 0
+                        ? pendingOutbox[0].Order.DefectDescription
+                        : "NO-GO submission";
+                    var kcPayload = new KeyControlPayload(
+                        MachineId:         machine.Id,
+                        MachineNumber:     machine.MachineNumber ?? "",
+                        SlotId:            machine.KeyControlSlotId,
+                        Reason:            $"NO-GO: {firstDefectDescription}",
+                        RequestedByUserId: operatorId,
+                        RequestedAtUtc:    now);
+                    _db.OutboxMessages.Add(new OutboxMessage
+                    {
+                        AggregateType = "Machine",
+                        AggregateId   = machine.Id.ToString(),
+                        MessageType   = KeyControlMessageTypes.Immobilise,
+                        PayloadJson   = System.Text.Json.JsonSerializer.Serialize(kcPayload),
+                        Status        = OutboxStatus.Draft,
+                        CreatedAt     = now,
+                        NextAttemptAt = now,
+                        AttemptCount  = 0
+                    });
+                }
+
                 await _db.SaveChangesAsync();
             }
         }
@@ -242,12 +301,18 @@ public class ChecklistService
             .Distinct()
             .ToListAsync();
 
+        // Notification wording reflects the Phase 4.7 awareness-only
+        // routing. NO-GO submissions DO NOT require supervisor approval
+        // (they auto-create DefectOrders that flow to the Planner queue)
+        // so the supervisor's notification is informational — "for
+        // awareness, no action needed from you." GO-BUT 24H still needs
+        // supervisor sign-off, so that notification stays action-style.
         var (kind, title, body) = submission.Status switch
         {
             ChecklistStatus.NoGo => (
                 NotificationKinds.SubmissionNoGo,
-                $"🚫 NO-GO submitted on {machine.MachineNumber}",
-                $"{machine.MachineName} immobilised — defect orders raised."
+                $"🚫 NO-GO on {machine.MachineNumber} — for awareness",
+                $"{machine.MachineName} immobilised. Defect now in Planner queue — no sign-off needed from you."
             ),
             ChecklistStatus.GoButRepair24H => (
                 NotificationKinds.SubmissionGoBut,

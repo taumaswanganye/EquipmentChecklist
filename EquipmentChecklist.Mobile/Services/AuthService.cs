@@ -22,7 +22,16 @@ public class AuthService
     private const string TOKEN_KEY = "eq_jwt";
     private const string EXP_KEY   = "eq_jwt_exp";          // unix seconds
     private const string USER_KEY  = "eq_user_json";
-    private const string BIO_KEY   = "eq_biometric_enabled"; // "1" / absent
+    // Phase 5.1 — BIO_KEY is now scoped per-email so a shared device
+    // (e.g. a Tab Active 5 at the dispatch counter) can carry biometric
+    // opt-ins for multiple operators independently. Old global key is
+    // kept here for transparent migration: if it exists, we treat it as
+    // a setting for the currently-signed-in user and rewrite.
+    private const string BIO_KEY_LEGACY = "eq_biometric_enabled";
+    private static string BioKeyFor(string? email)
+        => string.IsNullOrEmpty(email)
+            ? BIO_KEY_LEGACY
+            : "eq_biometric_enabled::" + email.Trim().ToLowerInvariant();
 
     private readonly BiometricUnlock _biometric;
     private readonly LocalCache      _cache;
@@ -268,8 +277,31 @@ public class AuthService
     //                             BIOMETRIC FLAG
     // ═════════════════════════════════════════════════════════════════════════
 
+    /// <summary>True if THIS user has opted into biometric on THIS
+    /// device. Per-email scoped (Phase 5.1) so a shared tablet doesn't
+    /// leak one operator's opt-in onto the next operator.</summary>
     public async Task<bool> IsBiometricEnabledAsync()
-        => (await SecureStorage.Default.GetAsync(BIO_KEY)) == "1";
+    {
+        // Try the per-email key first using the currently-signed-in user
+        // (or the cached email if we've restored a session).
+        var email = CurrentUser?.Email;
+        if (!string.IsNullOrEmpty(email))
+        {
+            var perEmail = await SecureStorage.Default.GetAsync(BioKeyFor(email));
+            if (perEmail == "1") return true;
+        }
+
+        // Legacy fallback: if a pre-Phase-5.1 install set the global
+        // BIO_KEY, treat it as belonging to the current user and migrate.
+        var legacy = await SecureStorage.Default.GetAsync(BIO_KEY_LEGACY);
+        if (legacy == "1" && !string.IsNullOrEmpty(email))
+        {
+            await SecureStorage.Default.SetAsync(BioKeyFor(email), "1");
+            SecureStorage.Default.Remove(BIO_KEY_LEGACY);
+            return true;
+        }
+        return false;
+    }
 
     /// <summary>
     /// True iff there's a persisted user record in SecureStorage AND the
@@ -282,30 +314,43 @@ public class AuthService
     /// </summary>
     public async Task<bool> HasBiometricUnlockableSessionAsync()
     {
-        var bioFlag = (await SecureStorage.Default.GetAsync(BIO_KEY)) == "1";
+        // IsBiometricEnabledAsync handles per-email lookup + legacy
+        // migration, so the right answer comes back regardless of which
+        // user is cached.
+        var bioFlag  = await IsBiometricEnabledAsync();
         var userJson = await SecureStorage.Default.GetAsync(USER_KEY);
         var hasUser  = !string.IsNullOrEmpty(userJson);
 
         if (bioFlag && !hasUser)
         {
-            // Stale BIO_KEY without a session to unlock — wipe it so
-            // future RefreshBiometricSessionStateAsync calls return false
-            // immediately and the explicit button stops appearing in this
-            // dead-end state. The user signs in with password, ticks the
-            // checkbox, and the flag comes back consistent.
-            SecureStorage.Default.Remove(BIO_KEY);
+            // Stale opt-in without a session to unlock — wipe it so the
+            // explicit button stops appearing in this dead-end state.
+            // Wipe both the per-email AND the legacy key for safety.
+            if (!string.IsNullOrEmpty(CurrentUser?.Email))
+                SecureStorage.Default.Remove(BioKeyFor(CurrentUser.Email));
+            SecureStorage.Default.Remove(BIO_KEY_LEGACY);
             return false;
         }
 
         return bioFlag && hasUser;
     }
 
+    /// <summary>Opt the CURRENT user into biometric on this device.
+    /// Per-email scoped (Phase 5.1). Falls back to legacy key if no
+    /// user is signed in (shouldn't happen in practice; defensive).</summary>
     public async Task EnableBiometricsAsync()
-        => await SecureStorage.Default.SetAsync(BIO_KEY, "1");
+    {
+        var key = BioKeyFor(CurrentUser?.Email);
+        await SecureStorage.Default.SetAsync(key, "1");
+    }
 
     public Task DisableBiometricsAsync()
     {
-        SecureStorage.Default.Remove(BIO_KEY);
+        // Remove BOTH the per-email and legacy global key. The legacy
+        // wipe protects against a stale flag from a pre-Phase-5.1 install
+        // that survived migration somehow.
+        SecureStorage.Default.Remove(BioKeyFor(CurrentUser?.Email));
+        SecureStorage.Default.Remove(BIO_KEY_LEGACY);
         return Task.CompletedTask;
     }
 

@@ -90,9 +90,14 @@ public class OutboxPublishWorker : BackgroundService
     public async Task DrainOnceAsync(CancellationToken ct)
     {
         using var scope = _scopes.CreateScope();
-        var db        = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var publisher = scope.ServiceProvider.GetRequiredService<IIntegrationPublisher>();
-        var config    = scope.ServiceProvider.GetRequiredService<ConfigurationService>();
+        var db         = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var publisher  = scope.ServiceProvider.GetRequiredService<IIntegrationPublisher>();
+        // Phase 7.3 — resolve the Key Control publisher from the same scope
+        // so it gets its own scoped ConfigurationService + HttpClientFactory.
+        // NoOpKeyControlPublisher is the default registration when
+        // KeyControl.Enabled is false (or unconfigured).
+        var keyControl = scope.ServiceProvider.GetRequiredService<IKeyControlPublisher>();
+        var config     = scope.ServiceProvider.GetRequiredService<ConfigurationService>();
 
         var maxRetries = await config.GetIntAsync("Outbox.MaxRetries", DefaultMaxRetries, ct);
 
@@ -113,7 +118,7 @@ public class OutboxPublishWorker : BackgroundService
             ct.ThrowIfCancellationRequested();
             try
             {
-                await DispatchAsync(publisher, row, ct);
+                await DispatchAsync(publisher, keyControl, row, ct);
                 row.Status        = OutboxStatus.Sent;
                 row.ProcessedAt   = DateTime.UtcNow;
                 row.LastError     = null;
@@ -183,7 +188,10 @@ public class OutboxPublishWorker : BackgroundService
     /// events does this system emit?" answerable by reading one switch.
     /// </summary>
     private static async Task DispatchAsync(
-        IIntegrationPublisher publisher, OutboxMessage row, CancellationToken ct)
+        IIntegrationPublisher publisher,
+        IKeyControlPublisher  keyControl,
+        OutboxMessage         row,
+        CancellationToken     ct)
     {
         switch (row.MessageType)
         {
@@ -193,6 +201,31 @@ public class OutboxPublishWorker : BackgroundService
                         $"Outbox row {row.Id} has unparseable DefectOrderCreated payload.");
                 await publisher.PublishDefectOrderCreatedAsync(payload, ct);
                 break;
+
+            // ── Phase 7.3 — Key Control physical interlock ───────────────
+            // ImmobiliseAsync is fired by ChecklistService.SubmitAsync when a
+            // NO-GO submission lands. UnlockAsync is fired by
+            // AdminController.ClearMachine when the admin returns the
+            // machine to service. Both share the same payload shape so the
+            // outbox message type is the only thing the dispatcher needs to
+            // route on.
+            case KeyControlMessageTypes.Immobilise:
+                {
+                    var kc = JsonSerializer.Deserialize<KeyControlPayload>(row.PayloadJson)
+                        ?? throw new InvalidOperationException(
+                            $"Outbox row {row.Id} has unparseable {KeyControlMessageTypes.Immobilise} payload.");
+                    await keyControl.ImmobiliseAsync(kc, ct);
+                    break;
+                }
+
+            case KeyControlMessageTypes.Unlock:
+                {
+                    var kc = JsonSerializer.Deserialize<KeyControlPayload>(row.PayloadJson)
+                        ?? throw new InvalidOperationException(
+                            $"Outbox row {row.Id} has unparseable {KeyControlMessageTypes.Unlock} payload.");
+                    await keyControl.UnlockAsync(kc, ct);
+                    break;
+                }
 
             default:
                 throw new NotSupportedException(

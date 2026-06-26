@@ -1,5 +1,11 @@
 @model List<EquipmentChecklist.Models.ApplicationUser>
 @using EquipmentChecklist.Models
+@{
+    // Phase 4.10 — Fleets list flows through from Employees.cshtml so
+    // the per-row dropdown can offer the right options. Empty list is
+    // fine (no fleets configured yet); the column header just shows "—".
+    var fleets = (ViewBag.Fleets as List<Fleet>) ?? new List<Fleet>();
+}
 
 @*
     Single-role employee table. Rendered once per tab in Employees.cshtml.
@@ -26,6 +32,7 @@ else
                 <th>Name</th>
                 <th>Employee #</th>
                 <th>Email</th>
+                <th>Fleet</th>
                 <th>Status</th>
                 <th style="text-align:right">Actions</th>
             </tr>
@@ -41,6 +48,33 @@ else
                     <td><strong>@user.FullName</strong></td>
                     <td style="color:var(--text-muted)">@user.EmployeeNumber</td>
                     <td style="color:var(--text-muted)">@user.Email</td>
+                    @* Phase 4.10 — inline Fleet picker. "Auto-submit on change"
+                       so the admin can re-tag a whole list of Artisans without
+                       having to click Save N times. The disabled "— None —"
+                       option is selected when the user has no fleet. *@
+                    <td>
+                        @if (fleets.Count == 0)
+                        {
+                            <span style="color:var(--text-muted);font-size:11px">no fleets configured</span>
+                        }
+                        else
+                        {
+                            <form method="post" action="/Admin/SetEmployeeFleet" style="margin:0">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="userId" value="@user.Id" />
+                                <select name="fleetId" class="form-control"
+                                        style="font-size:12px;padding:3px 6px;min-width:140px"
+                                        onchange="this.form.submit()">
+                                    <option value="">— None (floating) —</option>
+                                    @foreach (var f in fleets)
+                                    {
+                                        var sel = user.FleetId == f.Id ? "selected" : null;
+                                        <option value="@f.Id" selected="@sel">@f.Name</option>
+                                    }
+                                </select>
+                            </form>
+                        }
+                    </td>
                     <td>
                         @if (user.IsActive)
                         {

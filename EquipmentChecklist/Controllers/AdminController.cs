@@ -160,13 +160,41 @@ public class AdminController : Controller
         var typeName = model.TypeName.Trim();
         var resolved = MachineDisplayExtensions.TryResolveMachineType(typeName);
 
-        existing.MachineName   = model.MachineName.Trim();
-        existing.MachineNumber = model.MachineNumber.Trim();
-        existing.Type          = resolved ?? existing.Type;     // keep prior enum if no match
-        existing.TypeName      = typeName;
-        existing.Description   = model.Description?.Trim();
-        existing.IsActive      = model.IsActive;
+        // Phase 7.3 — Key Control slot change handling. Capture the
+        // ORIGINAL slot ID BEFORE the property is overwritten so the
+        // audit row can show the actual before/after pair (the admin
+        // commissioning a new cabinet wants this trail).
+        var newSlotId  = string.IsNullOrWhiteSpace(model.KeyControlSlotId)
+                           ? null
+                           : model.KeyControlSlotId.Trim();
+        var prevSlotId = existing.KeyControlSlotId;
+        var slotChanged = !string.Equals(prevSlotId, newSlotId, StringComparison.Ordinal);
+
+        existing.MachineName      = model.MachineName.Trim();
+        existing.MachineNumber    = model.MachineNumber.Trim();
+        existing.Type             = resolved ?? existing.Type;     // keep prior enum if no match
+        existing.TypeName         = typeName;
+        existing.Description      = model.Description?.Trim();
+        existing.IsActive         = model.IsActive;
+        existing.KeyControlSlotId = newSlotId;
         await _db.SaveChangesAsync();
+
+        if (slotChanged)
+        {
+            try
+            {
+                await _audit.LogAsync(
+                    "machine.keycontrol_slot_changed",
+                    targetType: "Machine",
+                    targetId:   existing.Id,
+                    payload:    new {
+                        machineNumber = existing.MachineNumber,
+                        previousSlot  = prevSlotId,
+                        newSlot       = newSlotId
+                    });
+            }
+            catch { /* audit failure must not block the save */ }
+        }
 
         TempData["Success"] = $"Machine {existing.MachineNumber} updated.";
         return RedirectToAction("Index");
@@ -386,7 +414,56 @@ public class AdminController : Controller
         var users = await _db.Users
             .OrderBy(u => u.FullName)
             .ToListAsync();
+        // Phase 4 — fleets list for the inline FleetId dropdown.
+        ViewBag.Fleets = await _db.Fleets
+            .Where(f => f.IsActive)
+            .OrderBy(f => f.Name)
+            .ToListAsync();
         return View(users);
+    }
+
+    /// <summary>
+    /// Phase 4 — assign a fleet (contractor) to a user. Mostly used for
+    /// tagging Artisans so the Control Room dispatch dropdown filters
+    /// them by the defect's machine fleet. Null = floating (eligible
+    /// for any dispatch).
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SetEmployeeFleet(string userId, int? fleetId)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            TempData["Error"] = "No user selected.";
+            return RedirectToAction("Employees");
+        }
+        var user = await _users.FindByIdAsync(userId);
+        if (user == null)
+        {
+            TempData["Error"] = "That user no longer exists.";
+            return RedirectToAction("Employees");
+        }
+        // Refuse a FleetId that doesn't exist or has been deactivated.
+        if (fleetId.HasValue)
+        {
+            var fleet = await _db.Fleets.FindAsync(fleetId.Value);
+            if (fleet == null || !fleet.IsActive)
+            {
+                TempData["Error"] = "Selected fleet is unknown or inactive.";
+                return RedirectToAction("Employees");
+            }
+        }
+
+        user.FleetId = fleetId;
+        await _users.UpdateAsync(user);
+
+        await _audit.LogAsync(
+            "user.fleet_changed",
+            targetType: "User",
+            targetId:   null,
+            payload:    new { userId, fleetId, byAdmin = User.Identity?.Name });
+
+        TempData["Success"] = $"Fleet updated for {user.FullName}.";
+        return RedirectToAction("Employees");
     }
 
     [HttpGet]
@@ -1522,6 +1599,38 @@ public class AdminController : Controller
         machine.ClearedAt               = DateTime.UtcNow;
         machine.AdminClearanceNotes     = string.IsNullOrWhiteSpace(clearanceNotes)
                                             ? null : clearanceNotes.Trim();
+
+        // ── Phase 7.3 — Key Control unlock outbox emission ──────────────
+        // Mirror the NO-GO immobilise emission on the way back out: if
+        // this machine has a Key Control slot mapped, write an unlock
+        // outbox row in the same transaction as the clearance flip.
+        // The OutboxPublishWorker delivers it; the NoOp publisher
+        // silently swallows when KeyControl.Enabled is false.
+        if (!string.IsNullOrWhiteSpace(machine.KeyControlSlotId))
+        {
+            var now = DateTime.UtcNow;
+            var kcPayload = new EquipmentChecklist.Services.Integrations.KeyControlPayload(
+                MachineId:         machine.Id,
+                MachineNumber:     machine.MachineNumber ?? "",
+                SlotId:            machine.KeyControlSlotId,
+                Reason:            string.IsNullOrEmpty(machine.AdminClearanceNotes)
+                                       ? "Admin clearance — back to service"
+                                       : $"Admin clearance — {machine.AdminClearanceNotes}",
+                RequestedByUserId: adminId,
+                RequestedAtUtc:    now);
+            _db.OutboxMessages.Add(new OutboxMessage
+            {
+                AggregateType = "Machine",
+                AggregateId   = machine.Id.ToString(),
+                MessageType   = EquipmentChecklist.Services.Integrations.KeyControlMessageTypes.Unlock,
+                PayloadJson   = System.Text.Json.JsonSerializer.Serialize(kcPayload),
+                Status        = OutboxStatus.Draft,
+                CreatedAt     = now,
+                NextAttemptAt = now,
+                AttemptCount  = 0
+            });
+        }
+
         await _db.SaveChangesAsync();
 
         // ── Audit ───────────────────────────────────────────────────────
@@ -1547,6 +1656,36 @@ public class AdminController : Controller
                                     ? "Your repair has been signed off — machine returned to service."
                                     : $"Signed off. Note: {machine.AdminClearanceNotes}",
                 relatedMachineId: machine.Id);
+        }
+
+        // ── Phase 6.1 — Notify the operator(s) who raised the NO-GO so
+        // they know the machine is back and a re-check is needed before
+        // the next shift uses it. Closes the loop: the person who
+        // flagged the problem is the first to hear when it's fixed.
+        //
+        // "Recent" = NO-GO submissions in the 30 days leading up to
+        // immobilisation. We dedupe by operator so an operator who
+        // raised three NO-GOs on the same machine only gets one ping.
+        var recentNoGoOperators = machine.Submissions
+            .Where(s => s.Status == ChecklistStatus.NoGo
+                     && s.SubmittedAt >= DateTime.UtcNow.AddDays(-30)
+                     && !string.IsNullOrEmpty(s.OperatorId))
+            .OrderByDescending(s => s.SubmittedAt)
+            .GroupBy(s => s.OperatorId!)
+            .Select(g => g.First())   // most recent per operator
+            .ToList();
+
+        foreach (var s in recentNoGoOperators)
+        {
+            await _notifications.PushAsync(
+                userId:              s.OperatorId!,
+                kind:                NotificationKinds.MachineCleared,
+                title:               $"✅ {machine.MachineNumber} ready for re-check",
+                body:                string.IsNullOrEmpty(machine.AdminClearanceNotes)
+                                        ? "The defect you raised has been fixed and signed off. Please run a fresh checklist before using the machine."
+                                        : $"Fixed and signed off. Admin note: {machine.AdminClearanceNotes}",
+                relatedSubmissionId: s.Id,
+                relatedMachineId:    machine.Id);
         }
 
         TempData["Success"] = $"{machine.MachineNumber} cleared and returned to service.";
@@ -1664,6 +1803,182 @@ public class AdminController : Controller
     }
 
     /// <summary>
+    /// Phase 7.4 — landing page for Key Control slot management.
+    /// Lists every active machine + its current slot ID, highlights
+    /// machines without a slot (so the admin can see at a glance which
+    /// machines are unprotected by the physical interlock). The same
+    /// page hosts the bulk CSV upload form.
+    /// </summary>
+    [HttpGet]
+    public async Task<IActionResult> KeyControlSlots()
+    {
+        var machines = await _db.Machines
+            .Include(m => m.Fleet)
+            .Where(m => m.IsActive)
+            .OrderBy(m => m.MachineNumber)
+            .ToListAsync();
+        return View(machines);
+    }
+
+    /// <summary>
+    /// Phase 7.4 — bulk CSV import of (MachineNumber, KeyControlSlotId)
+    /// pairs. Mines typically have 50–500 machines; this saves the admin
+    /// from clicking through every Edit form.
+    ///
+    /// <para>CSV format: two-column, optional header row. Header is
+    /// recognised by case-insensitive match on "MachineNumber" /
+    /// "machine_number" + "KeyControlSlotId" / "slot_id" etc. — if
+    /// neither column header is found we assume row 1 is data.</para>
+    ///
+    /// <para>Matching is by exact <c>Machine.MachineNumber</c>. Rows
+    /// that don't match a machine are SKIPPED with a count surfaced in
+    /// the result message — that's safer than auto-creating machines
+    /// from a slot list (which could insert junk records).</para>
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ImportKeyControlSlots(IFormFile? file)
+    {
+        if (file == null || file.Length == 0)
+        {
+            TempData["Error"] = "Select a CSV file to upload.";
+            return RedirectToAction("KeyControlSlots");
+        }
+        if (file.Length > 1024 * 1024)   // 1 MB
+        {
+            TempData["Error"] = "CSV file is larger than 1 MB. Trim or split it.";
+            return RedirectToAction("KeyControlSlots");
+        }
+
+        // Read the file once into memory — 1 MB cap means this is safe.
+        var lines = new List<string>();
+        using (var reader = new StreamReader(file.OpenReadStream()))
+        {
+            string? l;
+            while ((l = await reader.ReadLineAsync()) != null)
+            {
+                var trimmed = l.Trim();
+                if (!string.IsNullOrEmpty(trimmed)) lines.Add(trimmed);
+            }
+        }
+
+        if (lines.Count == 0)
+        {
+            TempData["Error"] = "CSV file is empty.";
+            return RedirectToAction("KeyControlSlots");
+        }
+
+        // Detect + skip header row.
+        var firstParts = lines[0].Split(',').Select(p => p.Trim().ToLowerInvariant()).ToArray();
+        var isHeader = firstParts.Any(p =>
+            p.Contains("machine") || p.Contains("slot") || p.Contains("number"));
+        var startIdx = isHeader ? 1 : 0;
+
+        // Bulk-load every machine by number once so the loop is O(n) not O(n²).
+        var machineByNumber = await _db.Machines
+            .Where(m => m.IsActive)
+            .ToDictionaryAsync(m => m.MachineNumber!, m => m, StringComparer.OrdinalIgnoreCase);
+
+        int updated   = 0;
+        int unchanged = 0;
+        int skipped   = 0;
+        var skippedNumbers = new List<string>();
+        var adminId   = _users.GetUserId(User);
+
+        for (int i = startIdx; i < lines.Count; i++)
+        {
+            var parts = lines[i].Split(',', 2);
+            if (parts.Length < 2) { skipped++; continue; }
+
+            var machineNumber = parts[0].Trim().Trim('"');
+            var slotId        = parts[1].Trim().Trim('"');
+
+            if (string.IsNullOrWhiteSpace(machineNumber)) { skipped++; continue; }
+            if (!machineByNumber.TryGetValue(machineNumber, out var machine))
+            {
+                skipped++;
+                if (skippedNumbers.Count < 10) skippedNumbers.Add(machineNumber);
+                continue;
+            }
+
+            var newSlot = string.IsNullOrWhiteSpace(slotId) ? null : slotId;
+            if (string.Equals(machine.KeyControlSlotId, newSlot, StringComparison.Ordinal))
+            {
+                unchanged++;
+                continue;
+            }
+
+            var prev = machine.KeyControlSlotId;
+            machine.KeyControlSlotId = newSlot;
+            updated++;
+
+            // One audit row per changed machine — same shape as the single-
+            // edit path uses, so a single AuditEvents query covers both.
+            try
+            {
+                await _audit.LogAsync(
+                    "machine.keycontrol_slot_changed",
+                    targetType: "Machine",
+                    targetId:   machine.Id,
+                    payload:    new {
+                        machineNumber = machine.MachineNumber,
+                        previousSlot  = prev,
+                        newSlot       = newSlot,
+                        bulk          = true
+                    });
+            }
+            catch { /* audit failure must not block the import */ }
+        }
+
+        await _db.SaveChangesAsync();
+
+        var msg = $"✅ Imported. Updated: {updated} · Unchanged: {unchanged} · Skipped: {skipped}.";
+        if (skippedNumbers.Count > 0)
+        {
+            msg += $" First skipped (no matching machine): {string.Join(", ", skippedNumbers)}";
+            if (skipped > skippedNumbers.Count) msg += $" (+{skipped - skippedNumbers.Count} more)";
+        }
+        TempData["Success"] = msg;
+        return RedirectToAction("KeyControlSlots");
+    }
+
+    /// <summary>
+    /// Phase 7.1 — fire the Daily Ops Digest right now, ad-hoc. Same
+    /// build + send path as the scheduled worker; the admin gets a
+    /// summary back showing how many recipients received the email
+    /// (or failed). Useful for verifying SMTP wiring after install or
+    /// for getting an updated digest mid-day without waiting for 06:00.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SendOpsDigestNow([FromServices] DailyOpsDigestWorker worker)
+    {
+        try
+        {
+            var result = await worker.RunOnceAsync();
+            if (result.Skipped)
+            {
+                TempData["Error"] = "Digest send was skipped — either disabled via " +
+                    "Ops.DailyDigest.Enabled or no recipients configured. Check " +
+                    "Admin → Settings → Operations.";
+            }
+            else if (result.Failed > 0)
+            {
+                TempData["Error"] = $"Sent {result.Sent} of {result.Sent + result.Failed} " +
+                    $"recipient(s); {result.Failed} failed. Check the application log + SMTP config.";
+            }
+            else
+            {
+                TempData["Success"] = $"✅ Digest sent to {result.Sent} recipient" +
+                    (result.Sent == 1 ? "" : "s") + ": " + string.Join(", ", result.Recipients);
+            }
+        }
+        catch (Exception ex)
+        {
+            TempData["Error"] = "Digest send failed: " + ex.Message;
+        }
+        return RedirectToAction("Settings");
+    }
+
+    /// <summary>
     /// Bulk-delete Sent outbox rows older than 30 days. Keeps the table
     /// small after months of activity. DeadLetter rows are NEVER purged
     /// — they need admin acknowledgement first.
@@ -1693,6 +2008,101 @@ public class AdminController : Controller
 
         TempData["Success"] = $"Purged {toDelete.Count} Sent message(s) older than 30 days.";
         return RedirectToAction("Outbox");
+    }
+
+    // ── Fleets (Phase 4) ──────────────────────────────────────────────────
+    /// <summary>
+    /// List + add UI for the Fleet (contractor) entity. New contractors
+    /// can be onboarded by typing the name + colour and clicking Save —
+    /// no code change required.
+    /// </summary>
+    [HttpGet]
+    public async Task<IActionResult> Fleets()
+    {
+        var fleets = await _db.Fleets
+            .OrderBy(f => !f.IsActive)
+            .ThenBy(f => f.Name)
+            .ToListAsync();
+        // Counts per fleet so the admin can see at a glance which ones
+        // are actually in use vs orphaned.
+        ViewBag.MachineCounts = await _db.Machines
+            .Where(m => m.FleetId != null)
+            .GroupBy(m => m.FleetId!.Value)
+            .Select(g => new { FleetId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.FleetId, x => x.Count);
+        ViewBag.UserCounts = await _db.Users
+            .Where(u => u.FleetId != null)
+            .GroupBy(u => u.FleetId!.Value)
+            .Select(g => new { FleetId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.FleetId, x => x.Count);
+        return View(fleets);
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> AddFleet(string name, string? contractorName, string? color)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            TempData["Error"] = "Fleet name is required.";
+            return RedirectToAction("Fleets");
+        }
+
+        var trimmed = name.Trim();
+        var existing = await _db.Fleets.FirstOrDefaultAsync(f => f.Name.ToLower() == trimmed.ToLower());
+        if (existing != null)
+        {
+            TempData["Error"] = $"A fleet named \"{trimmed}\" already exists (active: {existing.IsActive}).";
+            return RedirectToAction("Fleets");
+        }
+
+        // Normalise hex colour — accept "0E9488" or "#0E9488", store as
+        // "#0E9488" (with leading #) to match the format Razor styles use
+        // inline. Reject anything that doesn't look like a hex triple.
+        string? normalisedColor = null;
+        if (!string.IsNullOrWhiteSpace(color))
+        {
+            var c = color.Trim().TrimStart('#');
+            if (System.Text.RegularExpressions.Regex.IsMatch(c, "^[0-9A-Fa-f]{6}$"))
+                normalisedColor = "#" + c.ToUpperInvariant();
+            else
+            {
+                TempData["Error"] = $"Colour \"{color}\" isn't a valid 6-digit hex (e.g. 0E9488).";
+                return RedirectToAction("Fleets");
+            }
+        }
+
+        _db.Fleets.Add(new Fleet
+        {
+            Name           = trimmed,
+            ContractorName = string.IsNullOrWhiteSpace(contractorName) ? null : contractorName.Trim(),
+            Color          = normalisedColor,
+            CreatedAt      = DateTime.UtcNow,
+            IsActive       = true
+        });
+        await _db.SaveChangesAsync();
+
+        TempData["Success"] = $"✅ Fleet \"{trimmed}\" added.";
+        return RedirectToAction("Fleets");
+    }
+
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> SetFleetActive(int id, bool active)
+    {
+        var fleet = await _db.Fleets.FindAsync(id);
+        if (fleet == null)
+        {
+            TempData["Error"] = "Fleet not found.";
+            return RedirectToAction("Fleets");
+        }
+        if (fleet.IsActive == active)
+        {
+            TempData["Success"] = $"Fleet is already {(active ? "active" : "deactivated")}.";
+            return RedirectToAction("Fleets");
+        }
+        fleet.IsActive = active;
+        await _db.SaveChangesAsync();
+        TempData["Success"] = $"Fleet \"{fleet.Name}\" {(active ? "reactivated" : "deactivated")}.";
+        return RedirectToAction("Fleets");
     }
 
     /// <summary>Headline numbers for the Outbox admin page.</summary>

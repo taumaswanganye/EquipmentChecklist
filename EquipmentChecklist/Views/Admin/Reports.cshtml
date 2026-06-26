@@ -120,6 +120,85 @@
         { "Action",      "/Admin/Reports" }
     })
 
+@* ───────────── Phase 6.4 — OPERATIONAL QUEUE SNAPSHOT ─────────────
+   "What's stuck in the workflow right now?" — current depth of every
+   queue, each card clicking through to the relevant operations page.
+   Sits above the period KPIs because period KPIs are retrospective
+   (last 30 days) while these are operational (right now). *@
+@{
+    var q = dashboard.OperationalQueues;
+    var anyQueueAged = q.OldestPlannerDefectHours > 24 || q.OldestDispatchHours > 4;
+}
+<div style="margin-bottom:24px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+        <h3 style="margin:0;font-size:15px">🚦 Operational queue snapshot</h3>
+        <span style="font-size:11px;color:var(--text-muted)">
+            Live state — not scoped to the date filter. Click any tile to jump to that queue.
+        </span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px">
+        <a href="/Supervisor" style="text-decoration:none;color:inherit">
+            <div class="stat-card" style="border-top:3px solid #06b6d4;padding:12px;cursor:pointer">
+                <div class="stat-label" style="font-size:11px">Supervisor sign-off</div>
+                <div class="stat-value" style="font-size:24px;color:#06b6d4">@q.SupervisorPendingSignOff</div>
+                <div class="stat-sub" style="font-size:10px;color:var(--text-muted)">GO-BUT 24H/30D</div>
+            </div>
+        </a>
+        <a href="/Planner" style="text-decoration:none;color:inherit">
+            <div class="stat-card" style="border-top:3px solid #f59e0b;padding:12px;cursor:pointer">
+                <div class="stat-label" style="font-size:11px">Planner: defects</div>
+                <div class="stat-value" style="font-size:24px;color:#f59e0b">@q.PlannerPendingDefects</div>
+                <div class="stat-sub" style="font-size:10px;color:@(q.OldestPlannerDefectHours > 24 ? "#ef4444" : "var(--text-muted)")">
+                    @(q.PlannerPendingDefects == 0 ? "—" : $"oldest {q.OldestPlannerDefectHours}h")
+                </div>
+            </div>
+        </a>
+        <a href="/Planner" style="text-decoration:none;color:inherit">
+            <div class="stat-card" style="border-top:3px solid #14b8a6;padding:12px;cursor:pointer">
+                <div class="stat-label" style="font-size:11px">Planner: submissions</div>
+                <div class="stat-value" style="font-size:24px;color:#14b8a6">@q.PlannerPendingSubmissions</div>
+                <div class="stat-sub" style="font-size:10px;color:var(--text-muted)">last 48h, approved</div>
+            </div>
+        </a>
+        <a href="/ControlRoom" style="text-decoration:none;color:inherit">
+            <div class="stat-card" style="border-top:3px solid #8b5cf6;padding:12px;cursor:pointer">
+                <div class="stat-label" style="font-size:11px">Control Room dispatch</div>
+                <div class="stat-value" style="font-size:24px;color:#8b5cf6">@q.ControlRoomQueue</div>
+                <div class="stat-sub" style="font-size:10px;color:@(q.OldestDispatchHours > 4 ? "#ef4444" : "var(--text-muted)")">
+                    @(q.ControlRoomQueue == 0 ? "—" : $"oldest {q.OldestDispatchHours}h")
+                </div>
+            </div>
+        </a>
+        <a href="/ControlRoom" style="text-decoration:none;color:inherit">
+            <div class="stat-card" style="border-top:3px solid #0e7490;padding:12px;cursor:pointer">
+                <div class="stat-label" style="font-size:11px">Control Room ack inbox</div>
+                <div class="stat-value" style="font-size:24px;color:#0e7490">@q.ControlRoomAcknowledgeInbox</div>
+                <div class="stat-sub" style="font-size:10px;color:var(--text-muted)">approved · last 48h</div>
+            </div>
+        </a>
+        <a href="/Mechanic" style="text-decoration:none;color:inherit">
+            <div class="stat-card" style="border-top:3px solid #f97316;padding:12px;cursor:pointer">
+                <div class="stat-label" style="font-size:11px">Workshop: open</div>
+                <div class="stat-value" style="font-size:24px;color:#f97316">@q.WorkshopOpenDefects</div>
+                <div class="stat-sub" style="font-size:10px;color:var(--text-muted)">in repair</div>
+            </div>
+        </a>
+        <a href="/Admin/PendingClearances" style="text-decoration:none;color:inherit">
+            <div class="stat-card" style="border-top:3px solid #ef4444;padding:12px;cursor:pointer">
+                <div class="stat-label" style="font-size:11px">Admin clearance</div>
+                <div class="stat-value" style="font-size:24px;color:#ef4444">@q.AwaitingAdminClearance</div>
+                <div class="stat-sub" style="font-size:10px;color:var(--text-muted)">machines awaiting</div>
+            </div>
+        </a>
+    </div>
+    @if (anyQueueAged)
+    {
+        <p style="font-size:11px;color:#ef4444;margin:8px 0 0">
+            ⚠ One or more queues have aged items (Planner &gt; 24h or Dispatch &gt; 4h) — investigate before they breach SLA.
+        </p>
+    }
+</div>
+
 @* ───────────── KPI CARDS ───────────── *@
 <div class="stat-grid" style="margin-bottom:24px">
     <div class="stat-card info">
@@ -153,6 +232,71 @@
         <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">@k.AwaitingParts awaiting parts</div>
     </div>
 </div>
+
+@* ───────────── Phase 6.10 — FLEET PERFORMANCE SPLIT ─────────────
+   One row per fleet (Mota-Engil, Moolmans, Belfast Direct, …) with
+   submissions / GO-rate / NO-GO / open defects / avg resolution time
+   side-by-side. The visual bar shows GO-rate relative to 100% so
+   contractors compare at a glance. Period-scoped (matches the date
+   filter at the top) because comparing contractor performance is
+   naturally a window question. *@
+@if (dashboard.FleetPerformance.Any())
+{
+    <div class="chart-card" style="margin-top:20px">
+        <div class="chart-head">
+            <h3>Fleet performance</h3>
+            <p>Contractor scorecard for @dashboard.From.ToString("MMM d") → @dashboard.To.ToString("MMM d"). Open defects + average resolution are current-state.</p>
+        </div>
+        <table class="data-table" style="font-size:13px">
+            <thead>
+                <tr>
+                    <th>Fleet</th>
+                    <th style="text-align:right">Machines</th>
+                    <th style="text-align:right">Checks</th>
+                    <th>GO rate</th>
+                    <th style="text-align:right">GO-BUT</th>
+                    <th style="text-align:right">NO-GO</th>
+                    <th style="text-align:right">Open</th>
+                    <th style="text-align:right">Avg fix</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var f in dashboard.FleetPerformance)
+                {
+                    var goPct        = (int)Math.Round(f.GoRatePct);
+                    var goBarColor   = f.GoRatePct >= 90 ? "#16a34a"
+                                     : f.GoRatePct >= 75 ? "#f59e0b"
+                                     : "#ef4444";
+                    <tr>
+                        <td>
+                            <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:@f.FleetColor;margin-right:6px;vertical-align:middle"></span>
+                            <strong>@f.FleetName</strong>
+                        </td>
+                        <td style="text-align:right;font-family:var(--font-mono)">@f.MachineCount</td>
+                        <td style="text-align:right;font-family:var(--font-mono)">@f.Submissions</td>
+                        <td style="vertical-align:middle">
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <div style="background:#e5e7eb;border-radius:4px;height:10px;width:120px;overflow:hidden">
+                                    <div style="background:@goBarColor;height:100%;width:@(goPct)%"></div>
+                                </div>
+                                <strong style="font-family:var(--font-mono);color:@goBarColor;min-width:50px">@(f.GoRatePct.ToString("0.0"))%</strong>
+                            </div>
+                        </td>
+                        <td style="text-align:right;font-family:var(--font-mono);color:#06b6d4">@f.GoButCount</td>
+                        <td style="text-align:right;font-family:var(--font-mono);color:@(f.NoGoCount > 0 ? "#ef4444" : "var(--text-muted)");font-weight:@(f.NoGoCount > 0 ? "600" : "400")">@f.NoGoCount</td>
+                        <td style="text-align:right;font-family:var(--font-mono);color:@(f.OpenDefects > 0 ? "#f97316" : "var(--text-muted)")">@f.OpenDefects</td>
+                        <td style="text-align:right;font-family:var(--font-mono);color:var(--text-muted)">
+                            @(f.AvgResolutionHrs == 0 ? "—" : $"{f.AvgResolutionHrs:0.0}h")
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p style="font-size:10px;color:var(--text-muted);margin-top:8px;line-height:1.5">
+            GO-rate bar: green ≥ 90%, amber 75–89%, red &lt; 75%. "Avg fix" is the mean DispatchedAt → ResolvedAt time across defects closed in this period. "Open" is the current open-defect count for machines in this fleet — not period-scoped. The "(Unfleeted)" row aggregates machines that haven't been assigned to a contractor fleet yet.
+        </p>
+    </div>
+}
 
 @* ───────────── CHARTS ─────────────
    Chart.js 4.x via the same CDN scheme the rest of the app uses. The data
@@ -234,6 +378,85 @@
                     }
                 </tbody>
             </table>
+        }
+    </div>
+
+    @* ─── Phase 6.5 — Per-Artisan workshop load ──────────────────────
+       Sits alongside Top Operators in the same grid row. Sorted
+       descending by current open load so over-loaded artisans surface
+       at the top. The bar visually encodes load relative to the most-
+       loaded artisan — a quick "who needs help" read.
+       AwaitingParts is shown as a sub-bucket of OpenLoad: open includes
+       awaiting-parts, but the latter isn't actionable for the dispatcher
+       (artisan is blocked on procurement, not workload). *@
+    <div class="chart-card">
+        <div class="chart-head">
+            <h3>Artisan workshop load</h3>
+            <p>Current open jobcards per artisan + last 7 days throughput. Sorted by current load.</p>
+        </div>
+        @if (!dashboard.ArtisanLoad.Any())
+        {
+            <p style="color:var(--text-muted);text-align:center;padding:24px 0">
+                No active artisans found.
+            </p>
+        }
+        else
+        {
+            var maxLoad = dashboard.ArtisanLoad.Max(a => a.OpenLoad);
+            if (maxLoad == 0) maxLoad = 1;
+            <table class="data-table" style="font-size:12px">
+                <thead>
+                    <tr>
+                        <th>Artisan</th>
+                        <th style="text-align:right">Open</th>
+                        <th>Load</th>
+                        <th style="text-align:right">Closed 7d</th>
+                        <th style="text-align:right">Avg close</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var a in dashboard.ArtisanLoad)
+                    {
+                        var pctOfMax = (int)Math.Round(100.0 * a.OpenLoad / maxLoad);
+                        var barColor = a.OpenLoad >= 5 ? "#ef4444" : (a.OpenLoad >= 3 ? "#f59e0b" : "#14b8a6");
+                        <tr>
+                            <td>
+                                <strong>@a.ArtisanName</strong>
+                                <div style="font-size:10px;color:var(--text-muted);margin-top:2px">
+                                    #@a.EmployeeNumber
+                                    @if (!string.IsNullOrEmpty(a.FleetName))
+                                    {
+                                        <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;background:@(a.FleetColor ?? "#475569");color:#fff;margin-left:4px">
+                                            @a.FleetName
+                                        </span>
+                                    }
+                                </div>
+                            </td>
+                            <td style="text-align:right;font-weight:700;font-family:var(--font-mono);color:@barColor">
+                                @a.OpenLoad
+                                @if (a.AwaitingParts > 0)
+                                {
+                                    <div style="font-size:10px;color:var(--text-muted);font-weight:400">
+                                        @a.AwaitingParts wait-parts
+                                    </div>
+                                }
+                            </td>
+                            <td style="width:120px;vertical-align:middle">
+                                <div style="background:#e5e7eb;border-radius:4px;height:10px;overflow:hidden">
+                                    <div style="background:@barColor;height:100%;width:@(pctOfMax)%"></div>
+                                </div>
+                            </td>
+                            <td style="text-align:right;font-family:var(--font-mono);color:var(--text-muted)">@a.ClosedLast7d</td>
+                            <td style="text-align:right;font-family:var(--font-mono);color:var(--text-muted)">
+                                @(a.ClosedLast7d == 0 ? "—" : $"{a.AvgClosureHours:0.0}h")
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <p style="font-size:10px;color:var(--text-muted);margin-top:8px;line-height:1.5">
+                Bar colour: green ≤ 2 open · amber 3–4 open · red ≥ 5 open. "Avg close" is the mean time from dispatch to resolution across the artisan's closures in the last 7 days. "wait-parts" splits out jobcards parked on the parts queue, where the artisan is blocked on procurement rather than capacity.
+            </p>
         }
     </div>
 

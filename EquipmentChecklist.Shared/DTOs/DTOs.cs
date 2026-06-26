@@ -261,6 +261,23 @@ public class NoGoMachineDto
     public string? AssignedMechanic  { get; set; }
 }
 
+/// <summary>Phase 6.7 — a machine the operator raised NO-GO on, that
+/// admin has since cleared, and where the operator hasn't done a fresh
+/// re-check yet. Surfaced on the mobile dashboard as an "Awaiting your
+/// re-check" tile so operators who missed the push notification still
+/// see what's expected of them at start of shift.</summary>
+public class AwaitingRecheckDto
+{
+    public int       MachineId            { get; set; }
+    public string    MachineNumber        { get; set; } = "";
+    public string    MachineName          { get; set; } = "";
+    public string    TypeDisplay          { get; set; } = "";
+    public DateTime  OriginalNoGoAt       { get; set; }
+    public DateTime? ClearedAt            { get; set; }
+    public string?   AdminClearanceNotes  { get; set; }
+    public int       HoursSinceCleared    { get; set; }
+}
+
 public class SupervisorReviewDto
 {
     public int             SubmissionId           { get; set; }

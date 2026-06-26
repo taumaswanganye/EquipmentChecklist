@@ -214,7 +214,14 @@ SELECT
     (SELECT COUNT(*) FROM "SubmissionItems" si
         WHERE si."SubmissionId" = s."Id"
           AND si."Status" = 2)::int                 AS defect_count,
-    (SELECT COUNT(*) FROM "SubmissionItems" si)::int AS item_count_total
+    (SELECT COUNT(*) FROM "SubmissionItems" si)::int AS item_count_total,
+
+    -- Phase 4.6 — Re-check linkage. is_re_check makes dashboard filters
+    -- trivial ("show me only first-time submissions" or "show me only
+    -- re-checks"). original_submission_id is the FK back to the failed
+    -- submission this re-check supersedes — useful for drill-through.
+    (s."OriginalSubmissionId" IS NOT NULL)            AS is_re_check,
+    s."OriginalSubmissionId"                          AS original_submission_id
 FROM "ChecklistSubmissions" s
 JOIN "Machines"     m   ON m."Id"  = s."MachineId"
 LEFT JOIN "AspNetUsers" op  ON op."Id"  = s."OperatorId"
@@ -222,6 +229,33 @@ LEFT JOIN "AspNetUsers" sup ON sup."Id" = s."SupervisorId"
 LEFT JOIN "AspNetUsers" mech ON mech."Id" = s."MechanicId";
 COMMENT ON VIEW vw_fact_submissions IS
     'One row per checklist submission with operator/supervisor/mechanic/machine attributes pre-joined. Drives most dashboard pages.';
+
+
+-- ── vw_kpi_first_time_fix (Phase 4.6) ───────────────────────────────────
+-- First-time-fix rate: of all NO-GO + GO-BUT submissions that had a
+-- subsequent re-check within 24h, how many came back GO on the first
+-- re-check? This is the single most important reliability metric a
+-- maintenance manager cares about — "when we fix something, does it
+-- stay fixed?" Per-machine and per-operator slices supported by the
+-- view's columns; aggregate however the dashboard needs.
+DROP VIEW IF EXISTS vw_kpi_first_time_fix CASCADE;
+CREATE VIEW vw_kpi_first_time_fix AS
+SELECT
+    orig.machine_id,
+    orig.machine_number,
+    orig.machine_name,
+    orig.operator_id,
+    orig.operator_name,
+    orig.submitted_date                              AS original_date,
+    orig.status_label                                AS original_status,
+    recheck.status_label                             AS recheck_status,
+    (recheck.status_label = 'GO')                    AS first_time_fix
+FROM vw_fact_submissions orig
+JOIN vw_fact_submissions recheck
+  ON recheck.original_submission_id = orig.submission_id
+WHERE orig.status_label IN ('NO-GO', 'GO-BUT 24H', 'GO-BUT 30D');
+COMMENT ON VIEW vw_kpi_first_time_fix IS
+    'One row per (failed submission, its first re-check) pair. first_time_fix=TRUE means the repair held on the very next pre-shift check.';
 
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -308,14 +342,88 @@ SELECT
     (d."ResolvedAt" IS NULL)                        AS is_open,
     (d."ResolvedAt" IS NULL
         AND d."AssignedMechanicId" IS NULL)         AS is_unassigned,
-    (d."MechanicSignature" IS NOT NULL)             AS has_mechanic_signature
+    (d."MechanicSignature" IS NOT NULL)             AS has_mechanic_signature,
+
+    -- ── Phase 3 workflow columns ─────────────────────────────────────────
+    -- Each timestamp is set as the defect crosses the corresponding stage.
+    -- workflow_stage is a derived enum-text so dashboards don't have to
+    -- re-compute it. Reads top-to-bottom in the order the work happens.
+    d."PlannerCapturedAt"                           AS planner_captured_at,
+    d."PlannerCapturedById"                         AS planner_captured_by_id,
+    planner."FullName"                              AS planner_captured_by_name,
+    d."JobCardNumber"                               AS jobcard_number,
+    d."DispatchedAt"                                AS dispatched_at,
+    d."DispatchedById"                              AS dispatched_by_id,
+    dispatcher."FullName"                           AS dispatched_by_name,
+    (CASE
+        WHEN d."ResolvedAt"        IS NOT NULL THEN 'Resolved'
+        WHEN d."DispatchedAt"      IS NOT NULL THEN 'Artisan working'
+        WHEN d."PlannerCapturedAt" IS NOT NULL THEN 'Awaiting dispatch'
+        ELSE                                            'Awaiting planner'
+     END)                                           AS workflow_stage,
+
+    -- Stage-to-stage latency in hours. Null for the stages a defect hasn't
+    -- reached yet. Useful for "how long did the Planner sit on this?".
+    CASE WHEN d."PlannerCapturedAt" IS NOT NULL THEN
+            EXTRACT(EPOCH FROM (d."PlannerCapturedAt" - d."CreatedAt"))/3600.0
+         ELSE NULL END                              AS hours_in_planner_queue,
+    CASE WHEN d."DispatchedAt" IS NOT NULL AND d."PlannerCapturedAt" IS NOT NULL THEN
+            EXTRACT(EPOCH FROM (d."DispatchedAt" - d."PlannerCapturedAt"))/3600.0
+         ELSE NULL END                              AS hours_in_dispatch_queue,
+    CASE WHEN d."ResolvedAt" IS NOT NULL AND d."DispatchedAt" IS NOT NULL THEN
+            EXTRACT(EPOCH FROM (d."ResolvedAt" - d."DispatchedAt"))/3600.0
+         ELSE NULL END                              AS hours_with_artisan
 FROM "DefectOrders" d
 JOIN "ChecklistSubmissions" s ON s."Id"  = d."SubmissionId"
 JOIN "Machines"     m   ON m."Id"  = s."MachineId"
-LEFT JOIN "AspNetUsers" op  ON op."Id"  = s."OperatorId"
-LEFT JOIN "AspNetUsers" mech ON mech."Id" = d."AssignedMechanicId";
+LEFT JOIN "AspNetUsers" op         ON op."Id"         = s."OperatorId"
+LEFT JOIN "AspNetUsers" mech       ON mech."Id"       = d."AssignedMechanicId"
+LEFT JOIN "AspNetUsers" planner    ON planner."Id"    = d."PlannerCapturedById"
+LEFT JOIN "AspNetUsers" dispatcher ON dispatcher."Id" = d."DispatchedById";
 COMMENT ON VIEW vw_fact_defect_orders IS
-    'One row per defect order with status, ageing, and resolution-time metrics.';
+    'One row per defect order with workflow-stage, latency, and resolution metrics.';
+
+
+-- ── vw_kpi_planner_queue (Phase 3) ──────────────────────────────────────
+-- Snapshot of the Planner inbox. Drives the SHE / planning dashboards'
+-- "defects waiting capture" KPI plus the median-age-in-queue metric.
+DROP VIEW IF EXISTS vw_kpi_planner_queue CASCADE;
+CREATE VIEW vw_kpi_planner_queue AS
+SELECT
+    COUNT(*)                                          AS pending_count,
+    COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (NOW() - "CreatedAt"))/3600.0 > 24)
+                                                      AS pending_over_24h,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (
+        ORDER BY EXTRACT(EPOCH FROM (NOW() - "CreatedAt"))/3600.0)
+                                                      AS median_hours_waiting,
+    MIN("CreatedAt")                                  AS oldest_pending_at
+FROM "DefectOrders"
+WHERE "PlannerCapturedAt" IS NULL
+  AND "RepairStatus" <> 3;   -- not Completed
+COMMENT ON VIEW vw_kpi_planner_queue IS
+    'Headline numbers for the Planner queue — pending count, aged-over-24h, median wait, oldest.';
+
+
+-- ── vw_kpi_dispatch_queue (Phase 3) ─────────────────────────────────────
+-- Same shape as vw_kpi_planner_queue but for the Control Room dispatch
+-- queue. Threshold is 4 hours (vs Planner's 24h) — dispatch should be
+-- much faster because the jobcard is already approved and ready to work.
+DROP VIEW IF EXISTS vw_kpi_dispatch_queue CASCADE;
+CREATE VIEW vw_kpi_dispatch_queue AS
+SELECT
+    COUNT(*)                                          AS pending_count,
+    COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (NOW() - "PlannerCapturedAt"))/3600.0 > 4)
+                                                      AS pending_over_4h,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (
+        ORDER BY EXTRACT(EPOCH FROM (NOW() - "PlannerCapturedAt"))/3600.0)
+                                                      AS median_hours_waiting,
+    MIN("PlannerCapturedAt")                          AS oldest_pending_at
+FROM "DefectOrders"
+WHERE "PlannerCapturedAt" IS NOT NULL
+  AND "DispatchedAt"      IS NULL
+  AND "RepairStatus"      <> 3;
+COMMENT ON VIEW vw_kpi_dispatch_queue IS
+    'Headline numbers for the Control Room dispatch queue.';
 
 
 -- ════════════════════════════════════════════════════════════════════════════

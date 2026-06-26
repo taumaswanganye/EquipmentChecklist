@@ -71,6 +71,12 @@ public class ApplicationUser : IdentityUser
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    /// <summary>Phase 4 — fleet membership for Artisans. Nullable so
+    /// pre-Phase-4 users stay valid; null means "any fleet" and the
+    /// Control Room sees the artisan in every dispatch dropdown.</summary>
+    public int?   FleetId { get; set; }
+    public Fleet? Fleet   { get; set; }
+
     // Navigation
     public ICollection<ChecklistSubmission> Submissions { get; set; } = new List<ChecklistSubmission>();
 
@@ -109,6 +115,24 @@ public class Machine
     public ApplicationUser? ClearedByAdmin { get; set; }
     public DateTime? ClearedAt { get; set; }
     [MaxLength(500)] public string? AdminClearanceNotes { get; set; }
+
+    /// <summary>Phase 4 — fleet (contractor) that operates / maintains
+    /// this machine. Drives which Artisans the Control Room can dispatch
+    /// defects on this machine to. Nullable so pre-Phase-4 machines stay
+    /// valid and dispatchable to any Artisan.</summary>
+    public int?   FleetId { get; set; }
+    public Fleet? Fleet   { get; set; }
+
+    /// <summary>Phase 7.3 — opaque slot identifier in the mine's physical
+    /// Key Control cabinet (Traka / Morse Watchmans / KEYper / etc.).
+    /// Set per-machine via Admin → Machines edit (or a bulk CSV upload).
+    /// When set, NO-GO submissions emit a <c>keycontrol.immobilise</c>
+    /// outbox message so the cabinet physically locks the key. When NULL
+    /// the system silently skips the lock (no cabinet wired up for this
+    /// machine yet — typical during phased rollout where some machines
+    /// have slots and some don't).</summary>
+    [MaxLength(50)]
+    public string? KeyControlSlotId { get; set; }
 
     // Navigation
     public ICollection<MachineAssignment> Assignments { get; set; } = new List<MachineAssignment>();
@@ -198,6 +222,40 @@ public class ChecklistSubmission
     public string? RejectedMechanicId { get; set; }
     public ApplicationUser? RejectedMechanic { get; set; }
 
+    /// <summary>Phase 4 — Original submission this is a re-check of.
+    /// Populated when an operator submits a fresh checklist on a machine
+    /// that previously failed (NO-GO or GO-BUT) within the linkage
+    /// window. Lets reporting show "Truck 04 was NO-GO Mon, RE-CHECKED
+    /// clean Tue by same operator" as a single story, and lets us
+    /// compute first-time-fix rates per machine / per operator.</summary>
+    public int? OriginalSubmissionId { get; set; }
+    public ChecklistSubmission? OriginalSubmission { get; set; }
+
+    /// <summary>Phase 4.B — When the Planner logged this approved
+    /// submission into the shift system. Null = awaiting capture. Only
+    /// meaningful for supervisor-approved submissions; defects have their
+    /// own capture step on DefectOrder.PlannerCapturedAt. Lets the
+    /// Planner queue surface both defect-capture AND clean-checklist-
+    /// logging in one view.</summary>
+    public DateTime? CapturedAt { get; set; }
+
+    /// <summary>Phase 4.B — Which Planner captured this submission.</summary>
+    [MaxLength(450)]
+    public string? CapturedByPlannerId { get; set; }
+
+    /// <summary>Phase 7.6 — When the Control Room (Lugisani) acknowledged
+    /// this supervisor-approved submission. Null = still in the
+    /// acknowledge inbox. Independent of <see cref="CapturedAt"/> — the
+    /// Planner and Control Room act in parallel on the same submission;
+    /// neither blocks the other. Per the user's spec, supervisor-approved
+    /// checklists route to BOTH roles.</summary>
+    public DateTime? AcknowledgedAt { get; set; }
+
+    /// <summary>Phase 7.6 — Which Control Room dispatcher acknowledged
+    /// this submission. FK to AspNetUsers.</summary>
+    [MaxLength(450)]
+    public string? AcknowledgedByControlRoomId { get; set; }
+
     public bool IsSyncedToCloud { get; set; } = true; // false when submitted offline
 
     public ICollection<SubmissionItem> Items { get; set; } = new List<SubmissionItem>();
@@ -273,6 +331,87 @@ public class DefectOrder
     [MaxLength(500)] public string? ResolutionNotes { get; set; }
     /// <summary>Mechanic's drawn signature captured when the defect is closed (base64 PNG data URL).</summary>
     public string? MechanicSignature { get; set; }
+
+    // ── Phase 3 workflow columns ──────────────────────────────────────
+    // Workflow stage is implicit from these nullable timestamps:
+    //   PlannerCapturedAt == null
+    //     → in Planner queue (Walter captures + creates jobcard).
+    //   PlannerCapturedAt != null && DispatchedAt == null
+    //     → in Control Room queue (Lugisani dispatches an Artisan).
+    //   DispatchedAt != null && ResolvedAt == null
+    //     → in Artisan queue (Johan / David fixes the machine).
+    //   ResolvedAt != null
+    //     → done — operator can re-check the machine.
+    //
+    // Backward compat: existing rows have these NULL, which puts them
+    // all in the Planner queue. If you don't want to migrate historical
+    // rows through the new workflow, run a one-off UPDATE to set
+    // PlannerCapturedAt = CreatedAt for completed historical defects.
+
+    /// <summary>Set when the Plant Maintenance Planner has reviewed the
+    /// defect and created the corresponding SAP jobcard. Until set, the
+    /// defect sits in /Planner/Index.</summary>
+    public DateTime? PlannerCapturedAt { get; set; }
+
+    /// <summary>FK to AspNetUsers — which Planner clicked Capture.</summary>
+    [MaxLength(450)]
+    public string? PlannerCapturedById { get; set; }
+
+    /// <summary>External jobcard ID returned by SAP (or stamped manually
+    /// by the Planner if SAP is offline / not yet integrated). Surfaced
+    /// to the Control Room and the Artisan so they can cross-reference.</summary>
+    [MaxLength(40)]
+    public string? JobCardNumber { get; set; }
+
+    /// <summary>Set when the Control Room has dispatched an Artisan.
+    /// Together with <see cref="AssignedMechanicId"/> this marks the
+    /// transition from "queued for dispatch" to "in the workshop".</summary>
+    public DateTime? DispatchedAt { get; set; }
+
+    /// <summary>FK to AspNetUsers — which Control Room dispatcher made
+    /// the assignment. Audit-only; not used for routing.</summary>
+    [MaxLength(450)]
+    public string? DispatchedById { get; set; }
+}
+
+// ─── Phase 4 — Fleet / Contractor ──────────────────────────────────────
+//
+// A Fleet groups machines and people by who operates / maintains them.
+// In SA coal mining you typically have one in-house fleet plus one or
+// more outsourced contractor fleets (Mota-Engil, Moolmans, Murray &
+// Roberts Cementation, etc.). The fleet membership of a defect's
+// MACHINE drives which ARTISANS the Control Room is allowed to dispatch
+// it to — Mota-Engil defects go to Mota-Engil artisans, Moolmans to
+// Moolmans. Without this segregation you end up with contractor
+// disputes about who owns a particular jobcard.
+//
+// The legacy world (pre-Phase 4) lives on harmlessly because both
+// Machine.FleetId and ApplicationUser.FleetId are nullable. A machine
+// without a fleet is dispatchable to any artisan (the old behaviour).
+//
+public class Fleet
+{
+    public int Id { get; set; }
+
+    /// <summary>Display name used everywhere — "Mota-Engil", "Moolmans",
+    /// "Belfast Direct". Kept short for sidebar / badge use.</summary>
+    [Required, MaxLength(60)]
+    public string Name { get; set; } = "";
+
+    /// <summary>Full contractor legal entity name — "Mota-Engil South
+    /// Africa (Pty) Ltd". Optional; populated when the fleet represents
+    /// an outsourced contractor rather than the mine itself.</summary>
+    [MaxLength(120)]
+    public string? ContractorName { get; set; }
+
+    /// <summary>Hex colour without the # for the fleet's badge / pill in
+    /// the UI. Defaults to a neutral slate so unset rows still render.</summary>
+    [MaxLength(7)]
+    public string? Color { get; set; }
+
+    public bool IsActive { get; set; } = true;
+
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
 // ─── Tracks offline submissions that need to be synced to the cloud. ─────────────────────────────────────────────────────
@@ -377,6 +516,15 @@ public static class NotificationKinds
     public const string SubmissionRejected = "submission.rejected";
     /// <summary>Mechanic completed a defect repair; recipient is the operator.</summary>
     public const string DefectResolved     = "defect.resolved";
+
+    /// <summary>
+    /// Control Room dispatched a defect to a specific Artisan (Phase 3).
+    /// Recipient is the Artisan. The notification body carries the
+    /// machine number + defect description; the action URL deep-links to
+    /// the Mechanic defect-detail page so the Artisan can claim and
+    /// start work in one tap.
+    /// </summary>
+    public const string DefectAssigned     = "defect.assigned";
 
     /// <summary>
     /// A queued action drained from a mobile client lost the race with

@@ -221,6 +221,9 @@ builder.Services.AddAuthorization(opt =>
     opt.AddPolicy("Supervisor",  p => p.RequireRole("Admin", "Supervisor"));
     opt.AddPolicy("Mechanic",    p => p.RequireRole("Admin", "Mechanic"));
     opt.AddPolicy("Operator",    p => p.RequireRole("Admin", "Operator", "Supervisor", "Mechanic"));
+    // Phase 3 roles.
+    opt.AddPolicy("Planner",     p => p.RequireRole("Admin", "Planner"));
+    opt.AddPolicy("ControlRoom", p => p.RequireRole("Admin", "ControlRoom"));
 });
 
 // ── App services ──────────────────────────────────────────────────────────────
@@ -247,6 +250,26 @@ builder.Services.AddScoped<EquipmentChecklist.Services.Integrations.IIntegration
 // builder.Services.AddScoped<EquipmentChecklist.Services.Integrations.IIntegrationPublisher,
 //                            EquipmentChecklist.Services.Integrations.SapPmIntegrationPublisher>();
 
+// ── Phase 7.3 — Key Control physical interlock ───────────────────────────────
+// Named HTTP client for the cabinet vendor. 10s timeout because Key Control
+// vendors are usually on-premise (cabinet + LAN segment) — anything slower
+// than 10s suggests a network problem worth surfacing as a retry.
+builder.Services.AddHttpClient(
+    EquipmentChecklist.Services.Integrations.VendorKeyControlPublisher.HttpClientName, c => {
+    c.Timeout = TimeSpan.FromSeconds(10);
+});
+
+// Default registration is the NoOp publisher so the rest of the system can
+// always emit lock/unlock outbox messages without those messages dead-lettering.
+// To enable real Key Control: comment out the NoOp line + uncomment the Vendor
+// line. KeyControl.Enabled / BaseUrl / ApiKey live in AppSettings so the admin
+// can flip them on at runtime without a redeploy (provided the vendor
+// implementation is what's wired).
+builder.Services.AddScoped<EquipmentChecklist.Services.Integrations.IKeyControlPublisher,
+                          EquipmentChecklist.Services.Integrations.NoOpKeyControlPublisher>();
+// builder.Services.AddScoped<EquipmentChecklist.Services.Integrations.IKeyControlPublisher,
+//                            EquipmentChecklist.Services.Integrations.VendorKeyControlPublisher>();
+
 // ── Transactional outbox worker ───────────────────────────────────────────────
 // Drains OutboxMessages every 5 seconds. ChecklistService writes outbox rows
 // in the same DB transaction as DefectOrder creation; this worker is the only
@@ -259,6 +282,17 @@ builder.Services.AddHostedService<EquipmentChecklist.Services.Integrations.Outbo
 // notifications to operator + supervisor + mine manager + SHE officer per
 // the addresses configured in Mine: and Email: settings.
 builder.Services.AddHostedService<CompetencyExpiryWorker>();
+
+// Phase 7.1 — daily ops digest dispatcher. Runs at the hour configured by
+// Ops.DailyDigest.HourUtc (default 06:00 UTC), builds a yesterday-on-the-
+// mine HTML summary, and emails it to the recipients listed in
+// Ops.DailyDigest.Recipients (fallback: mine manager + SHE officer).
+// Registered both as a scoped service (so the Admin "Send digest now"
+// action can resolve it directly) AND as a hosted service so the daily
+// schedule fires automatically.
+builder.Services.AddScoped<OpsDigestService>();
+builder.Services.AddSingleton<DailyOpsDigestWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DailyOpsDigestWorker>());
 
 builder.Services.AddControllersWithViews();
 builder.Services.AddEndpointsApiExplorer();
@@ -460,6 +494,101 @@ static async Task SeedRolesAndAdminAsync(WebApplication app)
         "CREATE INDEX IF NOT EXISTS \"IX_OutboxMessages_Status_NextAttemptAt\" " +
         "ON \"OutboxMessages\" (\"Status\", \"NextAttemptAt\");");
 
+    // ── Phase 4 — Fleet entity + FleetId FKs ──────────────────────────
+    // Fleet groups Machines + Artisans (and any other user role) by
+    // contractor. Added via the bootstrap pattern so existing rows in
+    // Machines / AspNetUsers stay valid with NULL FleetId. The seed
+    // pass below adds three default fleets — "Belfast Direct" (in-house),
+    // "Mota-Engil", "Moolmans" — so the Control Room dropdown isn't
+    // empty out of the box.
+    await cloudDb.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS "Fleets" (
+            "Id"             serial PRIMARY KEY,
+            "Name"           character varying(60)  NOT NULL,
+            "ContractorName" character varying(120) NULL,
+            "Color"          character varying(7)   NULL,
+            "IsActive"       boolean                NOT NULL DEFAULT TRUE,
+            "CreatedAt"      timestamp with time zone NOT NULL
+        );
+        """);
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Fleets_Name\" ON \"Fleets\" (\"Name\");");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"Machines\"    ADD COLUMN IF NOT EXISTS \"FleetId\" integer NULL;");
+
+    // Phase 7.3 — Key Control physical interlock slot identifier.
+    // NULL = no cabinet wired up for this machine (phased rollout).
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"Machines\"    ADD COLUMN IF NOT EXISTS \"KeyControlSlotId\" varchar(50) NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"AspNetUsers\" ADD COLUMN IF NOT EXISTS \"FleetId\" integer NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE INDEX IF NOT EXISTS \"IX_Machines_FleetId\"     ON \"Machines\"    (\"FleetId\");");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE INDEX IF NOT EXISTS \"IX_AspNetUsers_FleetId\"  ON \"AspNetUsers\" (\"FleetId\");");
+
+    // Seed three default fleets on first boot. Pattern matches
+    // SeedAppSettings — only inserts if the row doesn't already exist,
+    // so re-runs and admin renames are preserved.
+    if (!await cloudDb.Fleets.AnyAsync())
+    {
+        cloudDb.Fleets.AddRange(
+            new Fleet { Name = "Belfast Direct", ContractorName = "Belfast Coal Mine (in-house)",
+                        Color = "#0E9488", CreatedAt = DateTime.UtcNow },
+            new Fleet { Name = "Mota-Engil", ContractorName = "Mota-Engil South Africa (Pty) Ltd",
+                        Color = "#D97706", CreatedAt = DateTime.UtcNow },
+            new Fleet { Name = "Moolmans", ContractorName = "Aveng Moolmans (Pty) Ltd",
+                        Color = "#8B5CF6", CreatedAt = DateTime.UtcNow });
+        await cloudDb.SaveChangesAsync();
+    }
+
+    // ── Phase 4.B — ChecklistSubmission capture-by-Planner columns ────
+    // Tracks the Planner logging an approved (clean OR GO-BUT)
+    // submission into their shift system. Closes the "no-defect route"
+    // gap where the Planner needs to capture every shift's submissions
+    // for production reporting even when no defect was raised.
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"ChecklistSubmissions\" ADD COLUMN IF NOT EXISTS \"CapturedAt\"          timestamp with time zone NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"ChecklistSubmissions\" ADD COLUMN IF NOT EXISTS \"CapturedByPlannerId\" character varying(450) NULL;");
+
+    // Phase 7.6 — Control Room acknowledge inbox (parallel to Planner
+    // capture). Same null-defaults-and-stamp pattern as CapturedAt.
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"ChecklistSubmissions\" ADD COLUMN IF NOT EXISTS \"AcknowledgedAt\"             timestamp with time zone NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"ChecklistSubmissions\" ADD COLUMN IF NOT EXISTS \"AcknowledgedByControlRoomId\" character varying(450) NULL;");
+
+    // ── Phase 4.6 — ChecklistSubmission.OriginalSubmissionId ──────────
+    // Links a re-check back to the submission it's replacing. Nullable
+    // so historical submissions stay valid. The auto-link logic in
+    // ChecklistService.ProcessSubmissionAsync populates it whenever the
+    // operator submits a fresh check on a machine whose most recent
+    // submission was non-GO and is still within the linkage window.
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"ChecklistSubmissions\" ADD COLUMN IF NOT EXISTS \"OriginalSubmissionId\" integer NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "CREATE INDEX IF NOT EXISTS \"IX_ChecklistSubmissions_OriginalSubmissionId\" " +
+        "ON \"ChecklistSubmissions\" (\"OriginalSubmissionId\");");
+
+    // ── Phase 3 — DefectOrder workflow columns ────────────────────────
+    // Planner / Control Room workflow stages are implicit from these
+    // nullable timestamps. Added via the same idempotent ALTER pattern
+    // so re-runs are harmless. Existing rows have NULL and therefore
+    // appear in the Planner queue on first deploy — see the comment in
+    // Models.cs for the one-off backfill UPDATE if you want to push
+    // historical defects directly to Resolved.
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"DefectOrders\" ADD COLUMN IF NOT EXISTS \"PlannerCapturedAt\"  timestamp with time zone NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"DefectOrders\" ADD COLUMN IF NOT EXISTS \"PlannerCapturedById\" character varying(450) NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"DefectOrders\" ADD COLUMN IF NOT EXISTS \"JobCardNumber\"      character varying(40)  NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"DefectOrders\" ADD COLUMN IF NOT EXISTS \"DispatchedAt\"        timestamp with time zone NULL;");
+    await cloudDb.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"DefectOrders\" ADD COLUMN IF NOT EXISTS \"DispatchedById\"      character varying(450) NULL;");
+
     // ── Audit hash-chain columns ──────────────────────────────────────
     // Add PrevHash + RowHash to the existing AuditEvents table without
     // needing an EF migration. ALTER ... ADD COLUMN IF NOT EXISTS is
@@ -494,6 +623,20 @@ static async Task SeedRolesAndAdminAsync(WebApplication app)
                         ?? "admin@belfast.co.za";
     var adminPassword = await configService.GetAsync("Auth.SeededAdminPassword")
                         ?? "Admin@123";
+    // ── Seed all role records ─────────────────────────────────────────
+    // Historically the Admin role was created implicitly when the seeded
+    // admin user got AddToRoleAsync — but that left the other roles
+    // (Supervisor, Mechanic, Planner, ControlRoom, Operator) only
+    // existing AFTER the first user with that role was added. New in
+    // Phase 3: seed every role explicitly so they're always in
+    // AspNetRoles and can be assigned cleanly from /Admin/Employees.
+    string[] allRoles = { "Admin", "Supervisor", "Mechanic", "Operator", "Planner", "ControlRoom" };
+    foreach (var roleName in allRoles)
+    {
+        if (!await roleManager.RoleExistsAsync(roleName))
+            await roleManager.CreateAsync(new IdentityRole(roleName));
+    }
+
     if (await userManager.FindByEmailAsync(adminEmail) == null)
     {
         var admin = new ApplicationUser
@@ -633,6 +776,35 @@ static async Task SeedAppSettingsAsync(IServiceProvider services)
         "Number of publish attempts before an outbox row is moved to DeadLetter. " +
         "5 ≈ 32 seconds of exponential backoff. Raise to ~10 for ~17 minutes if SAP " +
         "outage windows are typically longer than that.");
+
+    // ── Phase 7.3 — Key Control physical interlock ────────────────────
+    await config.SeedAsync("KeyControl.Enabled", "Integrations", "false",
+        "Master switch for the physical Key Control cabinet integration. " +
+        "Leave false until the vendor publisher is wired up + slot IDs are " +
+        "populated on Machines.");
+    await config.SeedAsync("KeyControl.BaseUrl", "Integrations", "",
+        "Base URL of the Key Control cabinet's web service. Example: " +
+        "https://traka01.belfast.local — leave blank when KeyControl.Enabled = false.");
+    await config.SeedAsync("KeyControl.ApiKey", "Integrations", "",
+        "Bearer token / API key for authenticating to the Key Control cabinet. " +
+        "Stored masked in the admin UI; never logged.",
+        isSecret: true);
+    await config.SeedAsync("KeyControl.LockEndpoint", "Integrations", "/api/keys/lock",
+        "Path appended to BaseUrl for the lock-slot request. Vendor-specific.");
+    await config.SeedAsync("KeyControl.UnlockEndpoint", "Integrations", "/api/keys/unlock",
+        "Path appended to BaseUrl for the unlock-slot request. Vendor-specific.");
+
+    // ── Phase 7.1 — Daily Ops Digest ──────────────────────────────────
+    await config.SeedAsync("Ops.DailyDigest.Enabled", "Operations", "true",
+        "Master switch for the daily ops digest email. Set to false to silence " +
+        "the email without removing the worker.");
+    await config.SeedAsync("Ops.DailyDigest.HourUtc", "Operations", "6",
+        "Hour of day (UTC) the digest fires. 6 UTC ≈ 08:00 SAST, before first " +
+        "shift handover. Valid 0–23.");
+    await config.SeedAsync("Ops.DailyDigest.Recipients", "Operations", "",
+        "Comma- or semicolon-separated list of email addresses to receive the " +
+        "daily ops digest. If blank, falls back to Mine.MineManagerEmail + " +
+        "Mine.SheOfficerEmail.");
 }
 
 static async Task SeedChecklistTemplatesAsync(ApplicationDbContext db)

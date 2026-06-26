@@ -18,6 +18,9 @@ public class WizardMachineData
     /// <summary>Resolved enum value (0 when the typed value isn't a known type).</summary>
     public int    MachineType   { get; set; }
     public string Description   { get; set; } = "";
+    /// <summary>Phase 4.10 — fleet (contractor) assignment. Null = any
+    /// Artisan eligible (pre-Phase-4 behaviour preserved).</summary>
+    public int?   FleetId       { get; set; }
     public List<WizardItemData> Items { get; set; } = new();
 }
 
@@ -83,6 +86,12 @@ public class MachineWizardController : Controller
     {
         HttpContext.Session.Remove(SessionKey);   // fresh start
         ViewBag.TypeSuggestions = await GetTypeSuggestionsAsync();
+        // Phase 4.10 — Fleet (contractor) options for the new dropdown.
+        // Only active fleets so deactivated contractors don't appear.
+        ViewBag.Fleets = await _db.Fleets
+            .Where(f => f.IsActive)
+            .OrderBy(f => f.Name)
+            .ToListAsync();
         return View(new WizardMachineData());
     }
 
@@ -91,6 +100,10 @@ public class MachineWizardController : Controller
     public async Task<IActionResult> Step1Post(WizardMachineData vm)
     {
         ViewBag.TypeSuggestions = await GetTypeSuggestionsAsync();
+        ViewBag.Fleets = await _db.Fleets
+            .Where(f => f.IsActive)
+            .OrderBy(f => f.Name)
+            .ToListAsync();
 
         if (string.IsNullOrWhiteSpace(vm.MachineName) ||
             string.IsNullOrWhiteSpace(vm.MachineNumber) ||
@@ -121,6 +134,7 @@ public class MachineWizardController : Controller
         {
             MachineName   = vm.MachineName.Trim(),
             MachineNumber = machineNumber,
+            FleetId       = vm.FleetId,
             TypeName      = typeName,
             MachineType   = machineType,
             Description   = vm.Description?.Trim() ?? "",
@@ -258,6 +272,7 @@ public class MachineWizardController : Controller
             Type          = (MachineType)w.MachineType,
             TypeName      = string.IsNullOrWhiteSpace(w.TypeName) ? null : w.TypeName.Trim(),
             Description   = w.Description,
+            FleetId       = w.FleetId,    // Phase 4.10 — fleet from wizard Step 1
             IsActive      = true
         };
         _db.Machines.Add(machine);

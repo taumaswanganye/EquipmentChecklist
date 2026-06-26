@@ -97,6 +97,33 @@
                     <textarea name="Description" class="form-control" rows="3"
                               placeholder="Brief description of this vehicle/machine...">@Model?.Description</textarea>
                 </div>
+
+                @* Phase 4.10 — Fleet (contractor) assignment. Drives which
+                   Artisans the Control Room can dispatch defects on this
+                   machine to. "— None (any Artisan) —" preserves the
+                   pre-Phase-4 behaviour where every Artisan is eligible. *@
+                @{
+                    var fleets = (ViewBag.Fleets as List<EquipmentChecklist.Models.Fleet>)
+                                  ?? new List<EquipmentChecklist.Models.Fleet>();
+                }
+                @if (fleets.Count > 0)
+                {
+                    <div class="form-group" style="margin:0;grid-column:1/-1">
+                        <label class="form-label">Fleet (contractor)</label>
+                        <select name="FleetId" class="form-control">
+                            <option value="">— None (any Artisan can be dispatched) —</option>
+                            @foreach (var f in fleets)
+                            {
+                                var sel = Model?.FleetId == f.Id ? "selected" : null;
+                                <option value="@f.Id" selected="@sel">@f.Name</option>
+                            }
+                        </select>
+                        <small style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">
+                            Mota-Engil machine → only Mota-Engil Artisans appear in the Control Room dispatch dropdown.
+                            Leave blank for in-house machines or until contractor allocation is decided.
+                        </small>
+                    </div>
+                }
             </div>
 
             <div style="padding:16px 24px;display:flex;justify-content:flex-end;border-top:1px solid var(--steel-border)">

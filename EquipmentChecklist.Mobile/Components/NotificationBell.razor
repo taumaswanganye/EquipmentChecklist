@@ -196,15 +196,60 @@
             await Notifs.MarkReadAsync(n.Id);
         }
 
-        // Deep-link to the relevant view if we have one.
-        if (n.RelatedSubmissionId.HasValue)
+        // Deep-link to the kind-specific landing page. New notification
+        // kinds added in Phase 3 (defect.assigned, planner.rejected, etc.)
+        // get their own case below — otherwise we fall back to the
+        // catch-all submissions list, which is at least sensible.
+        Close();
+        switch (n.Kind)
         {
-            Close();
-            Nav.NavigateTo("/submissions");
-        }
-        else
-        {
-            Close();
+            // Phase 3 — Control Room dispatched a defect to this Artisan.
+            // RelatedSubmissionId is the operator's original NO-GO check;
+            // the Mechanic defect-detail page derives the DefectOrder.Id
+            // from it.
+            case "defect.assigned":
+                if (n.RelatedSubmissionId.HasValue)
+                    Nav.NavigateTo($"/mechanic/defect/{n.RelatedSubmissionId.Value}");
+                else
+                    Nav.NavigateTo("/mechanic");
+                break;
+
+            case "defect.resolved":
+                if (n.RelatedSubmissionId.HasValue)
+                    Nav.NavigateTo($"/submissions/{n.RelatedSubmissionId.Value}");
+                else
+                    Nav.NavigateTo("/submissions");
+                break;
+
+            // Phase 6.1 — Admin has cleared a machine back into service.
+            // For the operator who originally raised the NO-GO, the next
+            // useful action is doing a fresh checklist on that machine.
+            // Deep-link straight to it. Mechanics get the same kind but
+            // their useful next action is their defects list, so route
+            // by whether RelatedSubmissionId is set (operators get one;
+            // mechanics get only RelatedMachineId).
+            case "machine.cleared":
+                if (n.RelatedSubmissionId.HasValue && n.RelatedMachineId.HasValue)
+                    Nav.NavigateTo($"/checklist/{n.RelatedMachineId.Value}");
+                else if (n.RelatedMachineId.HasValue)
+                    Nav.NavigateTo("/mechanic");
+                else
+                    Nav.NavigateTo("/machines");
+                break;
+
+            case "competency.expiring":
+            case "competency.expired":
+                // Competency chip lives on the machine card — landing
+                // there gives the operator immediate visual confirmation.
+                Nav.NavigateTo("/machines");
+                break;
+
+            default:
+                // Legacy / unknown kinds — fall back to the submissions
+                // list if we've got a submission Id, otherwise just close.
+                if (n.RelatedSubmissionId.HasValue)
+                    Nav.NavigateTo("/submissions");
+                break;
         }
     }
 

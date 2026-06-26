@@ -1,0 +1,130 @@
+@model List<EquipmentChecklist.Models.Fleet>
+@{
+    ViewData["Title"] = "Fleets";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var machineCounts = (Dictionary<int, int>)ViewBag.MachineCounts;
+    var userCounts    = (Dictionary<int, int>)ViewBag.UserCounts;
+
+    int MachineCount(int id) => machineCounts.TryGetValue(id, out var n) ? n : 0;
+    int UserCount   (int id) => userCounts   .TryGetValue(id, out var n) ? n : 0;
+}
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h2 class="page-title">🏗 Fleets</h2>
+        <p class="page-subtitle">
+            Contractor or in-house groups that tie a machine to the Artisans allowed to maintain it.
+            Drives the Control Room's dispatch filter — Mota-Engil defects only show Mota-Engil Artisans.
+        </p>
+    </div>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
+
+@* ── Add fleet form ──────────────────────────────────────────────── *@
+<div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-radius:8px;padding:18px;margin-bottom:24px">
+    <h3 style="font-size:14px;margin:0 0 12px">Add a fleet</h3>
+    <form method="post" action="/Admin/AddFleet" style="display:grid;grid-template-columns:1fr 2fr 130px auto;gap:10px;align-items:end">
+        @Html.AntiForgeryToken()
+        <div>
+            <label class="form-label" style="font-size:11px">Name</label>
+            <input type="text" name="name" class="form-control" required maxlength="60"
+                   placeholder="e.g. Mota-Engil" autocomplete="off" />
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">Contractor (optional)</label>
+            <input type="text" name="contractorName" class="form-control" maxlength="120"
+                   placeholder="e.g. Mota-Engil South Africa (Pty) Ltd" autocomplete="off" />
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">Colour (hex)</label>
+            <input type="text" name="color" class="form-control" maxlength="7"
+                   placeholder="#0E9488" autocomplete="off"
+                   style="font-family:ui-monospace,monospace" />
+        </div>
+        <button type="submit" class="btn btn-primary">+ Add</button>
+    </form>
+</div>
+
+@* ── Fleet list ──────────────────────────────────────────────────── *@
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:40px;color:var(--text-muted)">
+        <p>No fleets yet. Add one above to start grouping machines + Artisans by contractor.</p>
+    </div>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Contractor</th>
+                <th>Colour</th>
+                <th style="text-align:right">Machines</th>
+                <th style="text-align:right">Users</th>
+                <th>Created</th>
+                <th>Status</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var f in Model)
+            {
+                <tr style="@(f.IsActive ? "" : "opacity:.55")">
+                    <td><strong>@f.Name</strong></td>
+                    <td style="font-size:12px;color:var(--text-muted)">
+                        @(f.ContractorName ?? "—")
+                    </td>
+                    <td>
+                        @if (!string.IsNullOrEmpty(f.Color))
+                        {
+                            <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:@f.Color;color:#fff">@f.Name</span>
+                            <span style="font-size:10px;color:var(--text-muted);margin-left:6px;font-family:ui-monospace,monospace">@f.Color</span>
+                        }
+                        else
+                        {
+                            <span style="font-size:11px;color:var(--text-muted)">— default —</span>
+                        }
+                    </td>
+                    <td style="text-align:right;font-family:ui-monospace,monospace">@MachineCount(f.Id)</td>
+                    <td style="text-align:right;font-family:ui-monospace,monospace">@UserCount(f.Id)</td>
+                    <td style="font-size:11px;color:var(--text-muted)">@f.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd")</td>
+                    <td>
+                        @if (f.IsActive)
+                        {
+                            <span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:600;background:#16a34a;color:#fff">ACTIVE</span>
+                        }
+                        else
+                        {
+                            <span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:600;background:#475569;color:#fff">INACTIVE</span>
+                        }
+                    </td>
+                    <td>
+                        <form method="post" action="/Admin/SetFleetActive" style="margin:0;display:inline">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="id" value="@f.Id" />
+                            <input type="hidden" name="active" value="@(f.IsActive ? "false" : "true")" />
+                            <button type="submit" class="btn btn-ghost btn-sm" style="font-size:11px">
+                                @(f.IsActive ? "Deactivate" : "Reactivate")
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <p style="font-size:11px;color:var(--text-muted);margin-top:12px;line-height:1.6">
+        Tag machines on the <a href="/Admin/MachineWizard" style="color:var(--teal)">Machine Wizard</a> page and Artisans on <a href="/Admin/Employees" style="color:var(--teal)">Admin → Employees</a> by setting their fleet.
+        Machines without a fleet are dispatchable to any Artisan (pre-Phase-4 behaviour preserved).
+        Artisans without a fleet are treated as "floating" — eligible for any dispatch dropdown.
+    </p>
+}

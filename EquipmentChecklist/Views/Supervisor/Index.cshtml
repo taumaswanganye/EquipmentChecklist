@@ -48,12 +48,21 @@
                 .Select(w => char.ToUpperInvariant(w[0])));
 }
 
+@{
+    // Phase 7.5 — clean GO submissions awaiting Supervisor approval.
+    // Rendered as a separate "Quick Approve" lane above the sign-off cards
+    // so the cognitive load is split: scan + click for clean GO; read +
+    // sign for GO-BUT.
+    var pendingGoApprovals  = (List<ChecklistSubmission>)(ViewBag.PendingGoApprovals ?? new List<ChecklistSubmission>());
+    var approvedGoToday     = (int)(ViewBag.ApprovedGoToday ?? 0);
+}
+
 @* ───────────── PAGE HEAD ───────────── *@
 <div class="sq-head">
     <div>
         <h2 class="page-title">✍️ Sign-Off Queue</h2>
         <p class="page-subtitle">
-            GO-BUT submissions from your operators awaiting your approval.
+            Submissions from your operators awaiting your approval. Clean GO at the top (click to approve), GO-BUT below (signature required).
         </p>
     </div>
     @if (totalUnfiltered > 0)
@@ -81,6 +90,81 @@
                 </div>
             }
         </div>
+    }
+</div>
+
+@* ──────── Phase 7.5 — Clean GO Quick Approve lane ────────
+   Sits above the sign-off cards because clean GO is the higher-volume,
+   lower-cognitive-load action. Click-only — no signature required, no
+   reject (clean GO has nothing to reject; if it's not actually clean
+   the operator would have raised it as GO-BUT / NO-GO). Bulk-approve
+   button mirrors the Phase 6.2 Planner pattern. *@
+<div style="margin-bottom:24px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <h3 style="margin:0;font-size:15px">
+            ✅ Quick Approve · Clean GO
+            <span style="font-weight:400;color:var(--text-muted);font-size:12px">
+                · @pendingGoApprovals.Count pending · @approvedGoToday approved today
+            </span>
+        </h3>
+        @if (pendingGoApprovals.Count > 0)
+        {
+            <form method="post" action="/Supervisor/ApproveAllGo" style="margin:0"
+                  onsubmit="return confirm('Approve all @pendingGoApprovals.Count clean GO submission(s) from your team?');">
+                @Html.AntiForgeryToken()
+                <button type="submit" class="btn btn-primary btn-sm">
+                    Approve all @pendingGoApprovals.Count
+                </button>
+            </form>
+        }
+    </div>
+    @if (pendingGoApprovals.Count == 0)
+    {
+        <div style="background:rgba(34,197,94,.04);border:1px dashed #16a34a40;border-radius:8px;padding:18px;text-align:center;color:var(--text-muted)">
+            <span style="font-size:24px">✨</span>
+            <p style="margin:6px 0 0;font-size:12px">All clean GO submissions from your team in the last 48 hours have been reviewed.</p>
+        </div>
+    }
+    else
+    {
+        <table class="data-table" style="font-size:13px">
+            <thead>
+                <tr>
+                    <th>Submitted</th>
+                    <th>Machine</th>
+                    <th>Operator</th>
+                    <th style="text-align:right">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in pendingGoApprovals)
+                {
+                    var ageHours = (DateTime.UtcNow - s.SubmittedAt).TotalHours;
+                    var ageColor = ageHours > 24 ? "#ef4444" : ageHours > 8 ? "#f59e0b" : "var(--text-muted)";
+                    <tr>
+                        <td style="font-size:12px;white-space:nowrap;color:@ageColor">
+                            @s.SubmittedAt.ToLocalTime().ToString("MM-dd HH:mm")
+                            <div style="font-size:10px">@($"{ageHours:0.0}h ago")</div>
+                        </td>
+                        <td>
+                            <strong>@s.Machine.MachineNumber</strong>
+                            <div style="font-size:11px;color:var(--text-muted)">@s.Machine.MachineName</div>
+                        </td>
+                        <td style="font-size:12px">@(s.Operator?.FullName ?? "—")</td>
+                        <td style="text-align:right">
+                            <form method="post" action="/Supervisor/ApproveGo" style="margin:0;display:inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="id" value="@s.Id" />
+                                <button type="submit" class="btn btn-ghost btn-sm" style="color:#16a34a">Approve</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.6">
+            Per the mine SOP, every operator submission requires explicit Supervisor approval before flowing to Planner. Clean GO needs only a click (no signature) — there's no risk transfer because the machine is fine.
+        </p>
     }
 </div>
 
@@ -152,6 +236,18 @@ else
                 <div class="sq-top-right">
                     <span class="sq-age @ageCls">⏱ @ageLbl</span>
                     <span class="sq-badge">⚠ GO-BUT</span>
+                    @* Phase 4.6 — RE-CHECK chip when this submission was
+                       auto-linked to a prior NO-GO / GO-BUT on the same
+                       machine within the linkage window. Tells the
+                       supervisor at a glance "this isn't a fresh issue
+                       — they already tried to fix it once." *@
+                    @if (s.OriginalSubmissionId.HasValue)
+                    {
+                        <span class="sq-badge" style="background:#0e9488;color:#fff"
+                              title="This submission is the follow-up check after submission #@s.OriginalSubmissionId">
+                            🔁 RE-CHECK of #@s.OriginalSubmissionId
+                        </span>
+                    }
                 </div>
             </header>
 

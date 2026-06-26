@@ -28,5 +28,19 @@
     </array>
     <key>XSAppIconAssets</key>
     <string>Assets.xcassets/appicon.appiconset</string>
+    <!--
+      Phase 8.7 — Bluetooth LE peer-alert.
+      NSBluetoothAlwaysUsageDescription: shown once on first BLE access.
+      UIBackgroundModes: allows the CoreBluetooth central + peripheral
+      managers to keep running while the app is backgrounded — without
+      these, iOS suspends BLE the moment the user switches apps.
+    -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Equipment Checklist uses Bluetooth to alert nearby tablets when a NO-GO is raised offline.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>bluetooth-central</string>
+        <string>bluetooth-peripheral</string>
+    </array>
 </dict>
 </plist>

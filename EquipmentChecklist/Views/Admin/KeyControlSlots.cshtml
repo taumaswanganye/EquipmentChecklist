@@ -1,0 +1,154 @@
+@model List<EquipmentChecklist.Models.Machine>
+@{
+    ViewData["Title"] = "Key Control — Slot Mapping";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var mapped   = Model.Count(m => !string.IsNullOrWhiteSpace(m.KeyControlSlotId));
+    var unmapped = Model.Count - mapped;
+}
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h2 class="page-title">🔐 Key Control Slot Mapping</h2>
+        <p class="page-subtitle">
+            Map each machine to its physical slot in the Key Control cabinet (Traka, Morse Watchmans, KEYper, etc.).
+            When a NO-GO is raised on a mapped machine, the cabinet slot locks automatically — the operator can't grab the key even if they bypass the app.
+        </p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a href="/Admin" class="btn btn-ghost">← Back to Machines</a>
+    </div>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
+
+<div class="stat-grid" style="margin-bottom:24px">
+    <div class="stat-card info">
+        <div class="stat-label">Active machines</div>
+        <div class="stat-value">@Model.Count</div>
+    </div>
+    <div class="stat-card go">
+        <div class="stat-label">Mapped to slot</div>
+        <div class="stat-value">@mapped</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">interlock active on NO-GO</div>
+    </div>
+    <div class="stat-card @(unmapped > 0 ? "nogo" : "")">
+        <div class="stat-label">Unmapped</div>
+        <div class="stat-value">@unmapped</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">software interlock only</div>
+    </div>
+</div>
+
+@* ── Bulk CSV upload card ────────────────────────────────────────── *@
+<div class="chart-card" style="margin-bottom:24px">
+    <div class="chart-head">
+        <h3>📥 Bulk import slot mapping</h3>
+        <p>Upload a CSV to map machines in batch. Faster than editing each machine individually when you're commissioning the cabinet for the first time.</p>
+    </div>
+    <form method="post" action="/Admin/ImportKeyControlSlots" enctype="multipart/form-data"
+          style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:0 4px">
+        @Html.AntiForgeryToken()
+        <div class="form-group" style="flex:1;min-width:240px;margin:0">
+            <label class="form-label">CSV file</label>
+            <input type="file" name="file" accept=".csv,text/csv" required class="form-control" />
+        </div>
+        <button type="submit" class="btn btn-primary">Import</button>
+    </form>
+    <div style="margin-top:14px;padding:12px 14px;background:#f8fafc;border-radius:8px;font-size:12px;color:#475569;line-height:1.7">
+        <strong>Format:</strong> two columns — <code>MachineNumber, KeyControlSlotId</code> — with an optional header row.
+        <br/>
+        <strong>Example:</strong>
+        <pre style="margin:6px 0 0;font-size:11px;background:#fff;padding:8px;border-radius:4px;border:1px solid #e5e7eb">MachineNumber,KeyControlSlotId
+ADT-04,SLOT-042
+ADT-05,SLOT-043
+GRD-01,SLOT-101
+LDV-12,</pre>
+        Leave the slot ID blank to CLEAR an existing mapping. Rows whose MachineNumber doesn't match an active machine are skipped — they won't auto-create machines.
+    </div>
+</div>
+
+@* ── Current mapping table ───────────────────────────────────────── *@
+<div class="chart-card">
+    <div class="chart-head">
+        <h3>Current mapping</h3>
+        <p>Every active machine. Unmapped rows show a warning chip and are listed first.</p>
+    </div>
+
+    @if (!Model.Any())
+    {
+        <p style="color:var(--text-muted);text-align:center;padding:24px 0">
+            No active machines yet. Add machines on the Fleet Machines page first.
+        </p>
+    }
+    else
+    {
+        @* Sort: unmapped first (the admin's action list), then alpha by machine number. *@
+        var sorted = Model
+            .OrderBy(m => string.IsNullOrWhiteSpace(m.KeyControlSlotId) ? 0 : 1)
+            .ThenBy(m => m.MachineNumber, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Machine</th>
+                    <th>Type</th>
+                    <th>Fleet</th>
+                    <th>Slot ID</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var m in sorted)
+                {
+                    var hasSlot = !string.IsNullOrWhiteSpace(m.KeyControlSlotId);
+                    <tr style="@(hasSlot ? "" : "background:rgba(239,68,68,.03)")">
+                        <td>
+                            <strong>@m.MachineNumber</strong>
+                            <div style="font-size:11px;color:var(--text-muted)">@m.MachineName</div>
+                        </td>
+                        <td style="font-size:12px;color:var(--text-muted)">
+                            @(string.IsNullOrEmpty(m.TypeName) ? m.Type.ToString() : m.TypeName)
+                        </td>
+                        <td>
+                            @if (m.Fleet != null)
+                            {
+                                <span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;background:@(m.Fleet.Color ?? "#475569");color:#fff">
+                                    @m.Fleet.Name
+                                </span>
+                            }
+                            else
+                            {
+                                <span style="font-size:11px;color:var(--text-muted)">—</span>
+                            }
+                        </td>
+                        <td>
+                            @if (hasSlot)
+                            {
+                                <span style="font-family:ui-monospace,monospace;font-size:13px;font-weight:600;color:#0e7490">
+                                    @m.KeyControlSlotId
+                                </span>
+                            }
+                            else
+                            {
+                                <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:#ef4444;color:#fff">UNMAPPED</span>
+                            }
+                        </td>
+                        <td style="text-align:right">
+                            <a href="/Admin/EditMachine/@m.Id" class="btn btn-ghost btn-sm">Edit</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:12px;line-height:1.6">
+            Unmapped machines still get the software-level immobilisation (DB flag flips on NO-GO, the operator can't pass the pre-shift check) — they just don't get the additional physical key-cabinet interlock. During phased rollout this is fine. For full coverage, map every machine.
+        </p>
+    }
+</div>

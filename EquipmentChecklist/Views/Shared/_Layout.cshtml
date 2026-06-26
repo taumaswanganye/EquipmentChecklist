@@ -16,10 +16,14 @@
         .Select(w => w[0].ToString().ToUpper())
         .Aggregate("", (a, b) => a + b) ?? "?";
 
-    var isAdmin      = User.IsInRole("Admin");
-    var isSupervisor = User.IsInRole("Supervisor") || isAdmin;
-    var isMechanic   = User.IsInRole("Mechanic")   || isAdmin;
-    var isOperator   = User.IsInRole("Operator");
+    var isAdmin       = User.IsInRole("Admin");
+    var isSupervisor  = User.IsInRole("Supervisor") || isAdmin;
+    var isMechanic    = User.IsInRole("Mechanic")   || isAdmin;
+    var isOperator    = User.IsInRole("Operator");
+    // Phase 3 roles. Admin sees both pipelines so they can monitor the
+    // queues without needing a second account.
+    var isPlanner     = User.IsInRole("Planner")     || isAdmin;
+    var isControlRoom = User.IsInRole("ControlRoom") || isAdmin;
     var path         = Context.Request.Path.Value ?? "";
 
     // Pending-clearance count for the admin sidebar badge. One indexed
@@ -28,6 +32,39 @@
     var pendingClearances = isAdmin
         ? await Db.Machines.AsNoTracking().CountAsync(m => m.AwaitingAdminClearance)
         : 0;
+
+    // ── Phase 3+4 sidebar badges ──────────────────────────────────────
+    // Each lane sees the count for THEIR queue. Admin sees them all so
+    // they can monitor at a glance without role-switching. Each query is
+    // a single indexed COUNT(*) over the workflow timestamps — cheap.
+    // Wrapped in try/catch so a stale schema (column not yet added) on
+    // a freshly-pulled dev DB doesn't kill the layout — the badge just
+    // doesn't render in that case.
+    int plannerPending = 0, controlRoomPending = 0, outboxDeadLetter = 0;
+    try
+    {
+        if (isPlanner)
+        {
+            plannerPending = await Db.DefectOrders.AsNoTracking()
+                .CountAsync(d => d.PlannerCapturedAt == null
+                              && d.RepairStatus      != EquipmentChecklist.Models.RepairStatus.Completed);
+        }
+        if (isControlRoom)
+        {
+            controlRoomPending = await Db.DefectOrders.AsNoTracking()
+                .CountAsync(d => d.PlannerCapturedAt != null
+                              && d.DispatchedAt      == null
+                              && d.RepairStatus      != EquipmentChecklist.Models.RepairStatus.Completed);
+        }
+        if (isAdmin)
+        {
+            // Dead-letter is the only outbox state that needs admin
+            // attention — Draft + Sent are healthy / drained.
+            outboxDeadLetter = await Db.OutboxMessages.AsNoTracking()
+                .CountAsync(m => m.Status == EquipmentChecklist.Models.OutboxStatus.DeadLetter);
+        }
+    }
+    catch { /* schema not migrated yet — badges silently skip */ }
 }
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -111,6 +148,43 @@
             font-size: 10px; font-weight: 800;
             padding: 2px 7px; border-radius: 999px;
             min-width: 18px; text-align: center;
+        }
+
+        /* ─── Phase 7.2 — Collapsible nav groups ────────────────────────
+           Native <details>/<summary> with a styled chevron. Each group
+           saves its open/closed state to localStorage keyed by data-group
+           so the admin's preference survives navigation. */
+        .nav-group { margin: 0; padding: 0; }
+        .nav-group summary {
+            /* Strip the default disclosure-triangle marker so we can use
+               our own chevron — works in every modern browser. */
+            list-style: none; cursor: pointer;
+            user-select: none;
+            display: flex; align-items: center;
+            padding: 8px 20px;
+            color: var(--text-muted, #94a3b8);
+            font-size: 11px; font-weight: 700;
+            letter-spacing: .5px; text-transform: uppercase;
+            border-radius: 4px;
+            transition: background .12s;
+        }
+        .nav-group summary::-webkit-details-marker { display: none; }
+        .nav-group summary > span:first-child { flex: 1; }
+        .nav-group summary:hover { background: rgba(255,255,255,.04); color: #cbd5e1; }
+        .nav-chevron {
+            font-size: 12px; transition: transform .15s ease;
+            color: var(--text-faint, #475569);
+        }
+        .nav-group[open] > summary .nav-chevron { transform: rotate(180deg); }
+        /* Items inside a group get a subtle left indent so the visual
+           hierarchy is obvious without being noisy. */
+        .nav-group .nav-item {
+            padding-left: 30px;
+            font-size: 13px;
+        }
+        .nav-group .nav-item .nav-icon {
+            margin-right: 8px;
+            opacity: .85;
         }
     </style>
 </head>
@@ -270,9 +344,10 @@
             @if (isMechanic)
             {
                 <div class="nav-divider"></div>
-                <div class="nav-section-label">Mechanic</div>
+                @* Label says "Artisan" — internal role name stays "Mechanic" *@
+                <div class="nav-section-label">Artisan</div>
                 <a href="/Mechanic" class="nav-item @(path=="/Mechanic"?"active":"")">
-                    <span class="nav-icon">🔧</span> Defect Orders
+                    <span class="nav-icon">🔧</span> My Defects
                 </a>
                 <a href="/Mechanic/MyOperators" class="nav-item @(path.StartsWith("/Mechanic/MyOperators")?"active":"")">
                     <span class="nav-icon">👷</span> My Operators
@@ -282,45 +357,71 @@
                 </a>
             }
 
-            @if (isAdmin)
+            @* ── Phase 3 — Planner ────────────────────────────────── *@
+            @if (isPlanner)
             {
                 <div class="nav-divider"></div>
+                <div class="nav-section-label">Planner</div>
+                <a href="/Planner" class="nav-item @(path.StartsWith("/Planner")?"active":"") @(plannerPending > 0 ? "has-badge" : "")">
+                    <span class="nav-icon">📋</span> Defect Capture
+                    @if (plannerPending > 0)
+                    {
+                        <span class="nav-badge">@(plannerPending > 99 ? "99+" : plannerPending.ToString())</span>
+                    }
+                </a>
+            }
+
+            @* ── Phase 3 — Control Room ───────────────────────────── *@
+            @if (isControlRoom)
+            {
+                <div class="nav-divider"></div>
+                <div class="nav-section-label">Control Room</div>
+                <a href="/ControlRoom" class="nav-item @(path.StartsWith("/ControlRoom")?"active":"") @(controlRoomPending > 0 ? "has-badge" : "")">
+                    <span class="nav-icon">🚦</span> Dispatch Queue
+                    @if (controlRoomPending > 0)
+                    {
+                        <span class="nav-badge">@(controlRoomPending > 99 ? "99+" : controlRoomPending.ToString())</span>
+                    }
+                </a>
+            }
+
+            @if (isAdmin)
+            {
+                @* ── Administration sidebar — reorganised into collapsible groups ──
+                   14 admin links was too long; the eye couldn't find anything.
+                   New structure:
+                     • Daily actions stay always-visible at top (Machines + Pending
+                       Clearance with badge + Reports + Audit Trail).
+                     • Three collapsible groups for the rest, using native
+                       <details>/<summary> so it works with zero JS dependencies.
+                     • localStorage remembers which groups the admin opened — a
+                       config-heavy admin who lives in Settings + Fleets won't
+                       have to re-expand them every page load.
+                   The .StartsWith path checks for each group AUTO-OPEN the group
+                   when the user is currently on a page inside it, so the active
+                   item is always visible regardless of saved state. *@
+
+                var inPeoplePath  = path.StartsWith("/Admin/Employee") || path.StartsWith("/Admin/Admin")
+                                 || path.StartsWith("/Admin/CreateAdmin") || path.StartsWith("/Admin/Devices")
+                                 || path.StartsWith("/Admin/AddDevice") || path.StartsWith("/Admin/Competencies")
+                                 || path.StartsWith("/Admin/OperatorCompetency") || path.StartsWith("/Admin/AddCompetency")
+                                 || path.StartsWith("/Admin/Assignment");
+                var inConfigPath  = path.StartsWith("/Admin/Settings") || path.StartsWith("/Admin/SaveSetting")
+                                 || path.StartsWith("/Admin/Fleets") || path.StartsWith("/Admin/AddFleet")
+                                 || path.StartsWith("/Admin/SetFleetActive") || path.StartsWith("/Admin/Upload")
+                                 || path.StartsWith("/Admin/IconLibrary")
+                                 || path.StartsWith("/Admin/KeyControlSlots") || path.StartsWith("/Admin/ImportKeyControlSlots");
+                var inIntegPath   = path.StartsWith("/Admin/Outbox") || path.StartsWith("/Admin/RetryOutbox")
+                                 || path.StartsWith("/Admin/PurgeSent") || path.StartsWith("/Admin/Mechanic/Cart");
+
+                <div class="nav-divider"></div>
                 <div class="nav-section-label">Administration</div>
+
+                @* Always-visible daily-action items at the top of the section.
+                   Pending Clearance carries a badge; Reports + Audit are the
+                   manager's daily landing spots. *@
                 <a href="/Admin" class="nav-item @(path=="/Admin"?"active":"")">
-                    <span class="nav-icon">🚜</span> Fleet Machines
-                </a>
-                <a href="/Admin/Employees" class="nav-item @(path.StartsWith("/Admin/Employee")?"active":"")">
-                    <span class="nav-icon">👷</span> Employees
-                </a>
-                @* "Admins" is its own nav entry — not nested under Employees —
-                   because it's the doorway to granting full system access and
-                   should be obvious to find when the office admin is out. *@
-                <a href="/Admin/Admins" class="nav-item @(path.StartsWith("/Admin/Admin") || path.StartsWith("/Admin/CreateAdmin") ? "active" : "")">
-                    <span class="nav-icon">🛡</span> Admins
-                </a>
-                <a href="/Admin/Devices" class="nav-item @(path.StartsWith("/Admin/Devices") || path.StartsWith("/Admin/AddDevice") ? "active" : "")">
-                    <span class="nav-icon">📱</span> Devices
-                </a>
-                <a href="/Admin/Competencies" class="nav-item @(path.StartsWith("/Admin/Competencies") || path.StartsWith("/Admin/OperatorCompetency") || path.StartsWith("/Admin/AddCompetency") ? "active" : "")">
-                    <span class="nav-icon">🎓</span> Competencies
-                </a>
-                <a href="/Admin/Settings" class="nav-item @(path.StartsWith("/Admin/Settings") || path.StartsWith("/Admin/SaveSetting") ? "active" : "")">
-                    <span class="nav-icon">⚙</span> Settings
-                </a>
-                <a href="/Admin/Outbox" class="nav-item @(path.StartsWith("/Admin/Outbox") || path.StartsWith("/Admin/RetryOutbox") || path.StartsWith("/Admin/PurgeSent") ? "active" : "")">
-                    <span class="nav-icon">📤</span> Outbox
-                </a>
-                <a href="/Admin/Assignments" class="nav-item @(path.StartsWith("/Admin/Assignment")?"active":"")">
-                    <span class="nav-icon">🔗</span> Assignments
-                </a>
-                <a href="/Admin/Mechanic/Cart" class="nav-item @(path.StartsWith("/Admin/Mechanic/Cart")?"active":"")">
-                    <span class="nav-icon">📦</span> Order Parts
-                </a>
-                <a href="/Admin/UploadTemplate" class="nav-item @(path.StartsWith("/Admin/Upload")?"active":"")">
-                    <span class="nav-icon">📤</span> Upload Template
-                </a>
-                <a href="/Admin/IconLibrary" class="nav-item @(path.StartsWith("/Admin/IconLibrary")?"active":"")">
-                    <span class="nav-icon">🖼️</span> Icon Library
+                    <span class="nav-icon">🚜</span> Machines
                 </a>
                 <a href="/Admin/PendingClearances"
                    class="nav-item @(path.StartsWith("/Admin/PendingClear")?"active":"") @(pendingClearances > 0 ? "has-badge" : "")"
@@ -337,6 +438,81 @@
                 <a href="/Admin/Audit" class="nav-item @(path.StartsWith("/Admin/Audit")?"active":"")">
                     <span class="nav-icon">📜</span> Audit Trail
                 </a>
+
+                @* ── Group: People & Access ─────────────────────────── *@
+                <details class="nav-group" data-group="people" @(inPeoplePath ? "open" : "")>
+                    <summary class="nav-group-header">
+                        <span><span class="nav-icon">👥</span> People &amp; Access</span>
+                        <span class="nav-chevron">▾</span>
+                    </summary>
+                    <a href="/Admin/Employees" class="nav-item @(path.StartsWith("/Admin/Employee")?"active":"")">
+                        <span class="nav-icon">👷</span> Employees
+                    </a>
+                    <a href="/Admin/Admins" class="nav-item @(path.StartsWith("/Admin/Admin") || path.StartsWith("/Admin/CreateAdmin") ? "active" : "")">
+                        <span class="nav-icon">🛡</span> Admins
+                    </a>
+                    <a href="/Admin/Devices" class="nav-item @(path.StartsWith("/Admin/Devices") || path.StartsWith("/Admin/AddDevice") ? "active" : "")">
+                        <span class="nav-icon">📱</span> Devices
+                    </a>
+                    <a href="/Admin/Competencies" class="nav-item @(path.StartsWith("/Admin/Competencies") || path.StartsWith("/Admin/OperatorCompetency") || path.StartsWith("/Admin/AddCompetency") ? "active" : "")">
+                        <span class="nav-icon">🎓</span> Competencies
+                    </a>
+                    <a href="/Admin/Assignments" class="nav-item @(path.StartsWith("/Admin/Assignment")?"active":"")">
+                        <span class="nav-icon">🔗</span> Assignments
+                    </a>
+                </details>
+
+                @* ── Group: Configuration ───────────────────────────── *@
+                <details class="nav-group" data-group="config" @(inConfigPath ? "open" : "")>
+                    <summary class="nav-group-header">
+                        <span><span class="nav-icon">⚙️</span> Configuration</span>
+                        <span class="nav-chevron">▾</span>
+                    </summary>
+                    <a href="/Admin/Settings" class="nav-item @(path.StartsWith("/Admin/Settings") || path.StartsWith("/Admin/SaveSetting") ? "active" : "")">
+                        <span class="nav-icon">⚙</span> Settings
+                    </a>
+                    <a href="/Admin/Fleets" class="nav-item @(path.StartsWith("/Admin/Fleets") || path.StartsWith("/Admin/AddFleet") || path.StartsWith("/Admin/SetFleetActive") ? "active" : "")">
+                        <span class="nav-icon">🏗</span> Fleets
+                    </a>
+                    <a href="/Admin/UploadTemplate" class="nav-item @(path.StartsWith("/Admin/Upload")?"active":"")">
+                        <span class="nav-icon">📤</span> Upload Template
+                    </a>
+                    <a href="/Admin/IconLibrary" class="nav-item @(path.StartsWith("/Admin/IconLibrary")?"active":"")">
+                        <span class="nav-icon">🖼️</span> Icon Library
+                    </a>
+                    <a href="/Admin/KeyControlSlots" class="nav-item @(path.StartsWith("/Admin/KeyControlSlots") || path.StartsWith("/Admin/ImportKeyControlSlots") ? "active" : "")">
+                        <span class="nav-icon">🔐</span> Key Control Slots
+                    </a>
+                </details>
+
+                @* ── Group: Integrations & Workshop ─────────────────── *@
+                <details class="nav-group" data-group="integ" @((inIntegPath || outboxDeadLetter > 0) ? "open" : "")>
+                    <summary class="nav-group-header">
+                        <span><span class="nav-icon">🔌</span> Integrations</span>
+                        <span class="nav-chevron">▾</span>
+                        @if (outboxDeadLetter > 0)
+                        {
+                            @* Surface the dead-letter badge on the COLLAPSED group
+                               header too — so a closed Integrations group doesn't
+                               hide the operational alert. *@
+                            <span class="nav-badge" style="background:#ef4444;margin-left:auto;margin-right:6px">
+                                @(outboxDeadLetter > 99 ? "99+" : outboxDeadLetter.ToString())
+                            </span>
+                        }
+                    </summary>
+                    <a href="/Admin/Outbox" class="nav-item @(path.StartsWith("/Admin/Outbox") || path.StartsWith("/Admin/RetryOutbox") || path.StartsWith("/Admin/PurgeSent") ? "active" : "") @(outboxDeadLetter > 0 ? "has-badge" : "")">
+                        <span class="nav-icon">📤</span> SAP Outbox
+                        @if (outboxDeadLetter > 0)
+                        {
+                            <span class="nav-badge" style="background:#ef4444">
+                                @(outboxDeadLetter > 99 ? "99+" : outboxDeadLetter.ToString())
+                            </span>
+                        }
+                    </a>
+                    <a href="/Admin/Mechanic/Cart" class="nav-item @(path.StartsWith("/Admin/Mechanic/Cart")?"active":"")">
+                        <span class="nav-icon">📦</span> Order Parts
+                    </a>
+                </details>
 
                 @if (Env.IsDevelopment())
                 {
@@ -670,5 +846,35 @@ document.addEventListener('DOMContentLoaded', function () {
     })();
     </script>
 }
+
+@* ─── Phase 7.2 — persist nav-group open/closed state ───────────────
+   Each <details data-group="X"> auto-saves its open/closed state to
+   localStorage under nav-group-X. On page load we restore the saved
+   state UNLESS the server-side Razor has force-opened the group via
+   the in*Path checks (because the user is currently on a page inside
+   that group — active items must stay visible). Safe to inline because
+   it's <50 lines and runs only when an admin is logged in. *@
+<script>
+    (function () {
+        var groups = document.querySelectorAll('.nav-group[data-group]');
+        if (!groups.length) return;
+        groups.forEach(function (g) {
+            var key = 'nav-group-' + g.getAttribute('data-group');
+            // If Razor force-opened (active-route override), don't clobber
+            // it with the cached value — write the current state back so
+            // future visits remember.
+            if (g.hasAttribute('open')) {
+                try { localStorage.setItem(key, '1'); } catch (e) {}
+            } else {
+                var saved = null;
+                try { saved = localStorage.getItem(key); } catch (e) {}
+                if (saved === '1') g.setAttribute('open', '');
+            }
+            g.addEventListener('toggle', function () {
+                try { localStorage.setItem(key, g.open ? '1' : '0'); } catch (e) {}
+            });
+        });
+    })();
+</script>
 </body>
 </html>

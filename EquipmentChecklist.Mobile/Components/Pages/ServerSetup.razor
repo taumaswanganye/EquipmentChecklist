@@ -1,0 +1,200 @@
+@page "/setup"
+@layout EquipmentChecklist.Mobile.Components.Layout.MinimalLayout
+@using Microsoft.Maui.Storage
+@inject NavigationManager Nav
+
+@*
+    Phase 5.2 — first-launch / one-off server URL setup.
+
+    Stores the configured API base URL in Preferences (synchronous
+    storage; SecureStorage isn't and MauiProgram needs to read it
+    synchronously when wiring the HttpClient). After saving, the app
+    must restart so the HttpClient.BaseAddress picks up the new value
+    — we use Application.Current.Quit() as a polite force-restart.
+
+    The compile-time default lives in MauiProgram.cs and is used until
+    this page has saved a value. Means a fresh APK on a fresh device
+    works against the default deployment without setup; only mines
+    that move the server elsewhere need to touch this screen.
+*@
+
+<div class="setup-shell">
+    <div class="setup-card">
+        <div class="brand">
+            <div class="brand-icon">⚙</div>
+            <h1>Server Setup</h1>
+            <p>Point this device at your mine's API.</p>
+        </div>
+
+        @if (!string.IsNullOrEmpty(saveMessage))
+        {
+            <div class="alert @(saveError ? "alert-err" : "alert-ok")">
+                @saveMessage
+            </div>
+        }
+
+        <label>Current setting</label>
+        <div class="current-url" title="@currentUrl">@currentUrl</div>
+
+        <label>New API base URL</label>
+        <input @bind="newUrl" type="url" autocomplete="off"
+               placeholder="https://api.belfastmine.co.za/" />
+        <small class="hint">
+            Include the protocol and trailing slash.
+            Example: <code>https://api.belfastmine.co.za/</code> or
+            <code>https://192.168.1.42:55025/</code> on the LAN.
+        </small>
+
+        <button class="primary" @onclick="SaveAsync" disabled="@busy">
+            @(busy ? "Saving…" : "Save")
+        </button>
+
+        @if (savedNeedsRestart)
+        {
+            <div class="restart-block">
+                <strong>Saved. Restart the app to apply.</strong>
+                <p>The new URL takes effect after the app re-launches.</p>
+                <button class="ghost" @onclick="RestartAsync">↻ Restart now</button>
+            </div>
+        }
+
+        <a class="back-link" @onclick="GoBack" @onclick:preventDefault>← Back to sign in</a>
+    </div>
+</div>
+
+<style>
+    .setup-shell {
+        min-height: 100vh;
+        display: flex; align-items: center; justify-content: center;
+        background: #0b1726;
+        padding: 24px;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    .setup-card {
+        background: #111c2e; color: #e5e7eb;
+        border: 1px solid #1f2a3a; border-radius: 14px;
+        padding: 32px 24px; width: 100%; max-width: 380px;
+    }
+    .brand        { text-align: center; margin-bottom: 20px; }
+    .brand-icon   {
+        width: 56px; height: 56px; margin: 0 auto 10px;
+        background: #1f3a93; color: #fff; border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 28px;
+    }
+    .brand h1     { font-size: 18px; margin: 0; }
+    .brand p      { font-size: 12px; color: #94a3b8; margin: 4px 0 0; }
+
+    label         { display: block; font-size: 11px; color: #94a3b8;
+                    margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .4px; }
+    .current-url  {
+        background: #0b1726; border: 1px dashed #243246;
+        color: #fbbf24; font-family: ui-monospace, monospace;
+        padding: 10px 12px; border-radius: 6px;
+        font-size: 12px; word-break: break-all;
+    }
+    input         {
+        width: 100%; box-sizing: border-box;
+        padding: 11px 12px; background: #0b1726;
+        border: 1px solid #243246; color: #e5e7eb;
+        border-radius: 8px; font-size: 14px;
+        font-family: ui-monospace, monospace;
+    }
+    .hint         { display:block; font-size: 11px; color:#64748b; margin-top:6px; line-height:1.5; }
+    .hint code    { color:#fbbf24; }
+
+    button.primary {
+        margin-top: 18px; width: 100%; padding: 12px;
+        background: #1f3a93; color: #fff; border: none;
+        border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer;
+    }
+    button.primary:disabled { opacity: .55; cursor: not-allowed; }
+    button.ghost {
+        margin-top: 10px; width: 100%; padding: 10px;
+        background: transparent; color: #fbbf24;
+        border: 1px solid #b45309; border-radius: 8px;
+        font-size: 13px; cursor: pointer;
+    }
+
+    .alert        { padding: 10px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 12px; }
+    .alert-ok     { background: #0a3320; border:1px solid #16a34a; color:#bbf7d0; }
+    .alert-err    { background: #450a0a; border:1px solid #7f1d1d; color:#fecaca; }
+
+    .restart-block {
+        margin-top: 18px; padding: 14px;
+        background: #0a3320; border: 1px solid #16a34a;
+        border-radius: 8px; color: #bbf7d0; font-size: 13px;
+    }
+    .restart-block strong { display: block; margin-bottom: 4px; }
+    .restart-block p      { font-size: 12px; margin: 4px 0 10px; color:#86efac; line-height:1.5; }
+
+    .back-link {
+        display: block; text-align: center; margin-top: 18px;
+        font-size: 12px; color: #94a3b8; cursor: pointer; text-decoration: none;
+    }
+</style>
+
+@code {
+    private string currentUrl = "";
+    private string newUrl     = "";
+    private bool   busy;
+    private bool   savedNeedsRestart;
+    private string saveMessage = "";
+    private bool   saveError;
+
+    protected override void OnInitialized()
+    {
+        // Read whatever's already in Preferences. Empty / unset shows
+        // as "(not configured)" — the compile-time default is what the
+        // HttpClient is actually using in that case.
+        currentUrl = Preferences.Default.Get("api_base_url", "(not configured — using compile-time default)");
+        newUrl     = currentUrl.StartsWith("(") ? "" : currentUrl;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (busy) return;
+        busy = true;
+        saveError = false;
+        saveMessage = "";
+        try
+        {
+            var trimmed = (newUrl ?? "").Trim();
+            // Basic sanity check — must be http(s) and parseable as Uri.
+            if (string.IsNullOrEmpty(trimmed)
+                || !(trimmed.StartsWith("http://") || trimmed.StartsWith("https://"))
+                || !Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+            {
+                saveError = true;
+                saveMessage = "Enter a full URL starting with http:// or https://";
+                return;
+            }
+            if (!trimmed.EndsWith("/")) trimmed += "/";
+
+            Preferences.Default.Set("api_base_url", trimmed);
+            currentUrl = trimmed;
+            savedNeedsRestart = true;
+            saveMessage = "✓ Saved. Restart the app to apply.";
+            await Task.CompletedTask;
+        }
+        catch (Exception ex)
+        {
+            saveError = true;
+            saveMessage = "Could not save: " + ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private void RestartAsync()
+    {
+        // No clean "restart" API on MAUI; quit politely and the user
+        // re-opens (which on most Android devices happens automatically
+        // when they tap the app icon again). Windows works the same way.
+        try { Application.Current?.Quit(); } catch { /* best effort */ }
+    }
+
+    private void GoBack() => Nav.NavigateTo("/login");
+}

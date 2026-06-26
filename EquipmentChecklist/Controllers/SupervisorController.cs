@@ -16,6 +16,7 @@ public class SupervisorController : Controller
     private readonly UserManager<ApplicationUser> _users;
     private readonly EmailService                 _email;
     private readonly NotificationService           _notifications;
+    private readonly AuditService                  _audit;
     private readonly ILogger<SupervisorController> _log;
 
     public SupervisorController(ApplicationDbContext db,
@@ -23,6 +24,7 @@ public class SupervisorController : Controller
                                 UserManager<ApplicationUser> users,
                                 EmailService email,
                                 NotificationService notifications,
+                                AuditService audit,
                                 ILogger<SupervisorController> log)
     {
         _db    = db;
@@ -30,6 +32,7 @@ public class SupervisorController : Controller
         _users = users;
         _email = email;
         _notifications = notifications;
+        _audit = audit;
         _log   = log;
     }
 
@@ -89,16 +92,162 @@ public class SupervisorController : Controller
             .Take(PAGE_SIZE)
             .ToList();
 
+        // ── Phase 7.5 — Clean GO quick-approve lane ───────────────────────
+        // Per the user's spec, clean GO submissions also require explicit
+        // Supervisor review + approval before they route to Planner. We
+        // query a SECOND lane (separate from the GO-BUT sign-off lane
+        // above) so the supervisor can scan + click without confusing it
+        // with the defect-acceptance flow.
+        //
+        // Window: 48h. The supervisor catches up after every shift; rows
+        // older than 48h are stale enough that the right action is "investigate
+        // why they were ignored" rather than auto-approving them late.
+        var goCutoff = DateTime.UtcNow.AddHours(-48);
+        var pendingGoApprovals = await _db.ChecklistSubmissions
+            .Include(s => s.Machine)
+            .Include(s => s.Operator)
+            .Where(s => s.Status == ChecklistStatus.Go
+                     && s.SupervisorSignedAt == null
+                     && s.SubmittedAt >= goCutoff
+                     && assignedOperatorIds.Contains(s.OperatorId))
+            .OrderBy(s => s.SubmittedAt)
+            .Take(100)
+            .ToListAsync();
+
         // Pass available mechanics so supervisor can pick who to assign on reject
-        ViewBag.Mechanics       = await _users.GetUsersInRoleAsync("Mechanic");
-        ViewBag.Filter          = filter;
-        ViewBag.TotalUnfiltered = loaded.Count;
-        ViewBag.TotalFiltered   = pending.Count;
-        ViewBag.Page            = page;
-        ViewBag.TotalPages      = totalPages;
-        ViewBag.PageSize        = PAGE_SIZE;
+        ViewBag.Mechanics            = await _users.GetUsersInRoleAsync("Mechanic");
+        ViewBag.Filter               = filter;
+        ViewBag.TotalUnfiltered      = loaded.Count;
+        ViewBag.TotalFiltered        = pending.Count;
+        ViewBag.Page                 = page;
+        ViewBag.TotalPages           = totalPages;
+        ViewBag.PageSize             = PAGE_SIZE;
+        ViewBag.PendingGoApprovals   = pendingGoApprovals;
+        ViewBag.ApprovedGoToday      = await _db.ChecklistSubmissions
+            .CountAsync(s => s.Status == ChecklistStatus.Go
+                          && s.SupervisorSignedAt != null
+                          && s.SupervisorSignedAt >= DateTime.UtcNow.Date
+                          && assignedOperatorIds.Contains(s.OperatorId));
 
         return View(pageSlice);
+    }
+
+    // ─── Phase 7.5 — Clean GO Quick Approve ──────────────────────────────────
+    /// <summary>
+    /// Approve a clean GO submission. Click-only — no signature pad — because
+    /// there's no risk transfer (machine is fine, no defect). Stamps
+    /// <c>SupervisorSignedAt + SupervisorId</c> which is what the Planner
+    /// query checks for before showing the submission on the capture list.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ApproveGo(int id)
+    {
+        var supervisorId = _users.GetUserId(User)!;
+        var sub = await _db.ChecklistSubmissions
+            .Include(s => s.Machine)
+            .FirstOrDefaultAsync(s => s.Id == id);
+        if (sub == null)
+        {
+            TempData["Error"] = "Submission not found.";
+            return RedirectToAction("Index");
+        }
+        if (sub.Status != ChecklistStatus.Go)
+        {
+            TempData["Error"] = $"Submission #{id} isn't a clean GO — use the standard sign-off flow.";
+            return RedirectToAction("Index");
+        }
+        if (sub.SupervisorSignedAt != null)
+        {
+            TempData["Error"] = $"Submission #{id} was already approved at {sub.SupervisorSignedAt:yyyy-MM-dd HH:mm}.";
+            return RedirectToAction("Index");
+        }
+
+        sub.SupervisorSignedAt = DateTime.UtcNow;
+        sub.SupervisorId       = supervisorId;
+        await _db.SaveChangesAsync();
+
+        try
+        {
+            await _audit.LogAsync(
+                "supervisor.go_approved",
+                targetType: "ChecklistSubmission",
+                targetId:   sub.Id,
+                payload:    new {
+                    machineNumber = sub.Machine.MachineNumber,
+                    supervisor    = User.Identity?.Name
+                });
+        }
+        catch { /* audit failure must not block approval */ }
+
+        TempData["Success"] = $"✅ Approved clean GO for {sub.Machine.MachineNumber}.";
+        return RedirectToAction("Index");
+    }
+
+    /// <summary>
+    /// Bulk-approve every clean GO submission currently visible to this
+    /// supervisor. End-of-shift one-click pattern — same shape as the
+    /// Planner's "Capture all" button (Phase 6.2). Writes one audit row
+    /// per submission with <c>bulk: true</c> so investigators can later
+    /// distinguish bulk-approvals from individual reviews.
+    /// </summary>
+    [HttpPost, ValidateAntiForgeryToken]
+    public async Task<IActionResult> ApproveAllGo()
+    {
+        var supervisorId = _users.GetUserId(User)!;
+        var isAdmin = User.IsInRole("Admin");
+
+        List<string> assignedOperatorIds = isAdmin
+            ? await _db.Users.Select(u => u.Id).ToListAsync()
+            : await _db.OperatorSupervisorAssignments
+                .Where(a => a.SupervisorId == supervisorId && a.IsActive)
+                .Select(a => a.OperatorId)
+                .ToListAsync();
+
+        var goCutoff = DateTime.UtcNow.AddHours(-48);
+        var batch = await _db.ChecklistSubmissions
+            .Include(s => s.Machine)
+            .Where(s => s.Status == ChecklistStatus.Go
+                     && s.SupervisorSignedAt == null
+                     && s.SubmittedAt >= goCutoff
+                     && assignedOperatorIds.Contains(s.OperatorId))
+            .ToListAsync();
+
+        if (batch.Count == 0)
+        {
+            TempData["Error"] = "Nothing to approve — your clean GO queue is already clear.";
+            return RedirectToAction("Index");
+        }
+
+        var now = DateTime.UtcNow;
+        foreach (var s in batch)
+        {
+            s.SupervisorSignedAt = now;
+            s.SupervisorId       = supervisorId;
+        }
+        await _db.SaveChangesAsync();
+
+        // One audit row per submission so the trail still shows exactly
+        // which submissions were approved and when. Hash chain is serialised
+        // inside AuditService so this loop is safe + the chain stays intact.
+        foreach (var s in batch)
+        {
+            try
+            {
+                await _audit.LogAsync(
+                    "supervisor.go_approved",
+                    targetType: "ChecklistSubmission",
+                    targetId:   s.Id,
+                    payload:    new {
+                        machineNumber = s.Machine.MachineNumber,
+                        supervisor    = User.Identity?.Name,
+                        bulk          = true
+                    });
+            }
+            catch { /* never break the bulk on a single audit failure */ }
+        }
+
+        TempData["Success"] = $"✅ Bulk-approved {batch.Count} clean GO submission{(batch.Count == 1 ? "" : "s")}.";
+        return RedirectToAction("Index");
     }
 
     // ── Review Specific Submission ────────────────────────────────────────────

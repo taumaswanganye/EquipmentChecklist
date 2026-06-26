@@ -89,6 +89,21 @@ else
                         </button>
                     </form>
                 }
+                @* Phase 7.1 — fire the Daily Ops Digest ad-hoc. Same build +
+                   send path as the 06:00 worker; the admin can use this to
+                   verify the digest renders correctly right after configuring
+                   Ops.DailyDigest.Recipients, or to get an updated digest
+                   mid-day without waiting for tomorrow morning. *@
+                @if (string.Equals(group.Key, "Operations", StringComparison.OrdinalIgnoreCase))
+                {
+                    <form method="post" action="/Admin/SendOpsDigestNow" style="margin:0"
+                          onsubmit="return confirm('Build and send the Daily Ops Digest right now? Uses the current recipient list.');">
+                        @Html.AntiForgeryToken()
+                        <button type="submit" class="btn btn-ghost btn-sm" title="Build + send the digest using yesterday's data + current recipient list">
+                            📨 Send digest now
+                        </button>
+                    </form>
+                }
             </div>
             @foreach (var s in group.OrderBy(x => x.Key))
             {

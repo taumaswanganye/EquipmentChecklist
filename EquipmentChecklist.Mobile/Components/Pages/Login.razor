@@ -3,11 +3,12 @@
 @layout EquipmentChecklist.Mobile.Components.Layout.MinimalLayout
 @using EquipmentChecklist.Mobile.Services
 @using Microsoft.AspNetCore.Components.Web
-@inject ApiClient         Api
-@inject AuthService       Auth
-@inject BiometricUnlock   Bio
-@inject DeviceFingerprint Fingerprint
-@inject NavigationManager Nav
+@inject ApiClient                              Api
+@inject AuthService                            Auth
+@inject BiometricUnlock                        Bio
+@inject DeviceFingerprint                      Fingerprint
+@inject NavigationManager                      Nav
+@inject Microsoft.JSInterop.IJSRuntime         JS
 
 <div class="login-shell">
     <div class="login-card">
@@ -23,13 +24,19 @@
         }
 
         @* Device-not-authorised callout. Shows the operator their
-           fingerprint so they can read it out to the admin. The admin
-           pastes it into Admin → Devices → "Authorise a device". *@
+           fingerprint AND a QR code (Phase 5.3) so the admin can scan
+           it with their phone or web cam instead of reading hex over
+           the radio. Forty-second job per device vs three minutes of
+           radio back-and-forth. *@
         @if (deviceProblem && !string.IsNullOrEmpty(localFingerprint))
         {
             <div class="device-block">
                 <strong>This device is not authorised.</strong>
-                <p>Show this code to your administrator so they can register your device:</p>
+                <p>Show this QR code OR the text below to your administrator so they can register your device:</p>
+                @* QR canvas. JS renders into it once the page is shown. *@
+                <div class="qr-wrap">
+                    <canvas id="fpQr" width="180" height="180"></canvas>
+                </div>
                 <div class="fp-box">@localFingerprint</div>
                 <p class="hint">After they've added it, tap Sign In again.</p>
             </div>
@@ -74,6 +81,12 @@
 
         <p class="hint">
             Use the same email and password you use for the web app.
+        </p>
+        @* Phase 5.2 — server URL setup link. Tap once on first install
+           to point the device at the right API; never need to touch
+           again unless the server moves. *@
+        <p class="hint" style="margin-top:18px">
+            <a href="/setup" style="color:#64748b;text-decoration:none">⚙ Server URL settings</a>
         </p>
     </div>
 </div>
@@ -174,6 +187,11 @@
         border: 1px dashed #f59e0b; margin: 6px 0;
         letter-spacing: .5px;
     }
+    .qr-wrap {
+        background: #ffffff; padding: 10px; border-radius: 8px;
+        display: inline-block; margin: 8px 0; width: auto;
+    }
+    .qr-wrap canvas { display: block; }
 
     .bio-toggle {
         display:flex; align-items:center; gap:8px; cursor:pointer;
@@ -264,6 +282,62 @@
     /// didn't happen (cancelled, dismissed) or when the user has just
     /// signed out and wants back in without re-typing a password.
     /// </summary>
+    /// <summary>
+    /// Phase 5.3 — render the device fingerprint as a QR code into the
+    /// #fpQr canvas. Loads qrcode-generator from a CDN on first use (the
+    /// library is ~3KB and unchanged for years). Re-renders on every
+    /// after-render pass while deviceProblem is true so the QR updates
+    /// if the fingerprint changes (rare but possible if the admin
+    /// re-issues a device).
+    /// </summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (deviceProblem && !string.IsNullOrEmpty(localFingerprint))
+        {
+            try
+            {
+                // Inline JS — first call injects the library tag if not
+                // already loaded, then renders. Idempotent on re-renders.
+                await JS.InvokeVoidAsync("eval", QR_INLINE_JS, localFingerprint);
+            }
+            catch
+            {
+                // QR is a convenience, not critical — the hex string is
+                // still on screen. Swallow rather than disrupt sign-in.
+            }
+        }
+    }
+
+    /// <summary>Minified inline JS that draws a QR code into #fpQr using
+    /// the qrcode-generator CDN library. The library is fetched once and
+    /// cached on window so subsequent calls are instant.</summary>
+    private const string QR_INLINE_JS = @"
+(function(text){
+    var draw = function(){
+        var c = document.getElementById('fpQr');
+        if (!c || !window.qrcode) return;
+        var qr = window.qrcode(0, 'M');
+        qr.addData(text);
+        qr.make();
+        var size  = c.width;
+        var count = qr.getModuleCount();
+        var px    = Math.max(1, Math.floor(size / count));
+        var ctx   = c.getContext('2d');
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, size, size);
+        ctx.fillStyle = '#000000';
+        for (var r = 0; r < count; r++)
+            for (var col = 0; col < count; col++)
+                if (qr.isDark(r, col))
+                    ctx.fillRect(col * px, r * px, px, px);
+    };
+    if (window.qrcode) { draw(); return; }
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
+    s.onload = draw;
+    document.head.appendChild(s);
+})(arguments[0]);";
+
     private async Task TriggerBiometricAsync()
     {
         if (busy) return;

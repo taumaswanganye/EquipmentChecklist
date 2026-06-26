@@ -41,6 +41,12 @@
 
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />
+    <!--
+      Phase 8.8 — Bluetooth capability for the BLE peer-alert publisher
+      and watcher. UWP-style capability name; no runtime dialog needed
+      on Windows, the user grants implicitly when they install the app.
+    -->
+    <DeviceCapability Name="bluetooth" />
   </Capabilities>
 
 </Package>

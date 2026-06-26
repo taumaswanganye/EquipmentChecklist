@@ -1,5 +1,6 @@
 ﻿using EquipmentChecklist.Mobile.Services;
 using Microsoft.Extensions.Logging;
+using Microsoft.Maui.LifecycleEvents;
 using Plugin.Maui.Audio;
 
 namespace EquipmentChecklist.Mobile;
@@ -14,6 +15,54 @@ public static class MauiProgram
 			.ConfigureFonts(fonts =>
 			{
 				fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");
+			})
+			// Phase 8.6 — platform lifecycle hooks bridged into our own
+			// AppLifecycleService. Each platform fires its native resume
+			// event; we relay to the same C# event so subscribers (e.g.
+			// MainLayout's permission banner refresh) get one signal
+			// regardless of platform.
+			.ConfigureLifecycleEvents(events =>
+			{
+#if ANDROID
+				events.AddAndroid(android => android.OnResume(activity =>
+				{
+					try
+					{
+						var lifecycle = IPlatformApplication.Current?.Services
+							.GetService<AppLifecycleService>();
+						lifecycle?.RaiseResumed();
+					}
+					catch { /* lifecycle handler must never throw */ }
+				}));
+#endif
+#if WINDOWS
+				events.AddWindows(windows => windows.OnActivated((window, args) =>
+				{
+					// Windows fires Activated on every focus change; we
+					// only relay when the activation kind is the app
+					// returning from background (kind == CodeActivated
+					// for foreground resume).
+					try
+					{
+						var lifecycle = IPlatformApplication.Current?.Services
+							.GetService<AppLifecycleService>();
+						lifecycle?.RaiseResumed();
+					}
+					catch { }
+				}));
+#endif
+#if IOS || MACCATALYST
+				events.AddiOS(ios => ios.OnActivated(app =>
+				{
+					try
+					{
+						var lifecycle = IPlatformApplication.Current?.Services
+							.GetService<AppLifecycleService>();
+						lifecycle?.RaiseResumed();
+					}
+					catch { }
+				}));
+#endif
 			});
 
 		builder.Services.AddMauiBlazorWebView();
@@ -47,6 +96,49 @@ public static class MauiProgram
 		// invoked from pages on commit-style actions.
 		builder.Services.AddSingleton<ToastService>();
 		builder.Services.AddSingleton<HapticService>();
+		// Phase 8.6 — App lifecycle event bus. Singleton so all subscribers
+		// see the same Resumed event; raised from ConfigureLifecycleEvents
+		// above.
+		builder.Services.AddSingleton<AppLifecycleService>();
+
+		// Phase 8.1 — Loud Alert mode for offline NO-GO. Coordinates siren
+		// (JS Web Audio) + continuous vibration + full-screen red flash.
+		// Scoped because it touches IJSRuntime which is per-circuit, but
+		// the StateChanged event lets MainLayout react globally.
+		builder.Services.AddScoped<UrgentAlertService>();
+
+		// Phase 8.2 — Bluetooth LE peer-to-peer urgent broadcast.
+		// Platform-conditional registration: Android gets the real
+		// publisher backed by BluetoothLeAdvertiser + BluetoothLeScanner;
+		// Windows + iOS fall back to the NoOp until those platforms get
+		// their own per-platform implementations. Singleton because the
+		// BLE adapter is process-wide and there's no per-circuit state.
+#if ANDROID
+		builder.Services.AddSingleton<IPeerAlertService,
+			EquipmentChecklist.Mobile.Platforms.Android.PeerAlertPublisherAndroid>();
+		// Phase 8.4 — runtime permission orchestration. Android-only;
+		// iOS + Windows use the NoOp.
+		builder.Services.AddSingleton<IPeerAlertPermissions,
+			EquipmentChecklist.Mobile.Platforms.Android.PeerAlertPermissionsAndroid>();
+#elif WINDOWS
+		// Phase 8.8 — Surface Pro target. Windows BLE doesn't need a
+		// foreground service shim or runtime permission dialogs; just
+		// the bluetooth capability in Package.appxmanifest.
+		builder.Services.AddSingleton<IPeerAlertService,
+			EquipmentChecklist.Mobile.Platforms.Windows.PeerAlertPublisherWindows>();
+		builder.Services.AddSingleton<IPeerAlertPermissions, NoOpPeerAlertPermissions>();
+#elif IOS || MACCATALYST
+		// Phase 8.7 — iOS / iPadOS. Requires NSBluetoothAlwaysUsageDescription
+		// + UIBackgroundModes (bluetooth-central, bluetooth-peripheral) in
+		// Info.plist. Background operation is heavily rate-limited by iOS
+		// — see the PeerAlertPublisherIos class comments for details.
+		builder.Services.AddSingleton<IPeerAlertService,
+			EquipmentChecklist.Mobile.Platforms.iOS.PeerAlertPublisherIos>();
+		builder.Services.AddSingleton<IPeerAlertPermissions, NoOpPeerAlertPermissions>();
+#else
+		builder.Services.AddSingleton<IPeerAlertService, NoOpPeerAlertService>();
+		builder.Services.AddSingleton<IPeerAlertPermissions, NoOpPeerAlertPermissions>();
+#endif
 		// Real-time notification feed — SignalR client + inbox HTTP fallback.
 		// Subscribes to AuthService.SignedIn/SignedOut to start/stop the
 		// connection automatically; pages just inject and bind to the
@@ -90,16 +182,40 @@ public static class MauiProgram
 		// ════════════════════════════════════════════════════════════════
 
 		// ┌──────────────────────────────────────────────────────────────┐
-		// │  CHANGE THIS to your dev PC's LAN IP when testing on a        │
-		// │  physical phone. Leave as "10.0.2.2" for the Android emulator.│
+		// │  COMPILE-TIME FALLBACK ONLY. The real URL is read from        │
+		// │  Preferences at startup (Phase 5.2 — set via /setup page on   │
+		// │  the device). One APK now fits any deployment; admins point   │
+		// │  each device at the right server through the in-app UI.       │
 		// └──────────────────────────────────────────────────────────────┘
 		const string DevHostIp = "192.168.8.179";//"10.0.2.2";   // ← e.g. "192.168.1.42" for physical phone
 
 #if ANDROID
-		const string ApiBaseUrl = "https://" + DevHostIp + ":55025/";
+		const string DefaultApiBaseUrl = "https://" + DevHostIp + ":55025/";
 #else
-		const string ApiBaseUrl = "https://localhost:55025/";
+		const string DefaultApiBaseUrl = "https://localhost:55025/";
 #endif
+
+		// Read the per-device URL from Preferences (sync — Preferences is
+		// the synchronous storage; SecureStorage isn't and we'd need to
+		// block here). Falls back to the compile-time default if the user
+		// hasn't run the /setup page yet. Changing this requires an app
+		// restart because the HttpClient.BaseAddress is bound at DI time.
+		string ApiBaseUrl;
+		try
+		{
+			ApiBaseUrl = Microsoft.Maui.Storage.Preferences.Default
+				.Get("api_base_url", DefaultApiBaseUrl);
+			if (string.IsNullOrWhiteSpace(ApiBaseUrl))
+				ApiBaseUrl = DefaultApiBaseUrl;
+			if (!ApiBaseUrl.EndsWith("/")) ApiBaseUrl += "/";
+		}
+		catch
+		{
+			// Preferences can throw on first launch on some platforms.
+			// Falling back to the compile-time default keeps the app
+			// launchable even if Preferences is broken.
+			ApiBaseUrl = DefaultApiBaseUrl;
+		}
 		// AuthFailureHandler is a transient DelegatingHandler that watches
 		// every API response for the server's "X-Auth-Failure: user_deactivated"
 		// header and triggers AuthService.HandleRemoteDeactivationAsync the

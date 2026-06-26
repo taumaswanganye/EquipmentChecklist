@@ -1,0 +1,528 @@
+@model List<EquipmentChecklist.Models.DefectOrder>
+@using EquipmentChecklist.Models
+@using EquipmentChecklist.Controllers
+@{
+    ViewData["Title"] = "Control Room — Dispatch Queue";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+    var artisansAll        = (IEnumerable<ControlRoomController.ArtisanOption>)ViewBag.Artisans;
+    var recentlyDispatched = (List<DefectOrder>)ViewBag.RecentlyDispatched;
+    var statusBoard        = (List<ControlRoomController.StatusBoardRow>)(ViewBag.StatusBoard ?? new List<ControlRoomController.StatusBoardRow>());
+    var stats              = ViewBag.Stats;
+
+    // Filter artisans against a defect's fleet. If the machine has no
+    // fleet, ALL artisans are eligible (pre-Phase-4 behaviour). If the
+    // machine HAS a fleet, only artisans with the matching FleetId OR
+    // artisans with no FleetId (treated as "floating" / works any fleet)
+    // are eligible. This is the operational rule the user asked for:
+    // Mota-Engil machines → Mota-Engil artisans (or floating ones).
+    IEnumerable<ControlRoomController.ArtisanOption> EligibleFor(int? machineFleetId)
+        => machineFleetId == null
+            ? artisansAll
+            : artisansAll.Where(a => a.FleetId == null || a.FleetId == machineFleetId);
+
+    // Phase 6.3 — return eligible Artisans sorted by current open-defect
+    // load ascending, then by display name for stable tie-breaks. The
+    // first item in the resulting list is the "suggested" Artisan and
+    // becomes the dropdown's pre-selected option. The dispatcher can
+    // still pick any other Artisan with a single click — the sort just
+    // removes a decision when there's an obvious answer.
+    IList<ControlRoomController.ArtisanOption> SuggestedOrder(int? machineFleetId)
+        => EligibleFor(machineFleetId)
+            .OrderBy(a => a.OpenLoad)
+            .ThenBy(a => a.Display, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+}
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+    <div>
+        <h2 class="page-title">🚦 Dispatch Queue</h2>
+        <p class="page-subtitle">
+            Planner-captured jobcards waiting for an Artisan to be dispatched.
+            Pick an Artisan from the dropdown and click Dispatch.
+        </p>
+    </div>
+</div>
+
+@if (TempData["Success"] != null)
+{
+    <div class="alert alert-success" style="margin-bottom:14px">@TempData["Success"]</div>
+}
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger" style="margin-bottom:14px;white-space:pre-wrap">@TempData["Error"]</div>
+}
+
+<div class="stat-grid" style="margin-bottom:24px">
+    <div class="stat-card info">
+        <div class="stat-label">Pending dispatch</div>
+        <div class="stat-value">@stats.Pending</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">jobcards awaiting Artisan</div>
+    </div>
+    <div class="stat-card @(stats.Stale4h > 0 ? "nogo" : "")">
+        <div class="stat-label">Aged &gt; 4h</div>
+        <div class="stat-value">@stats.Stale4h</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">should be dispatched fast</div>
+    </div>
+    <div class="stat-card go">
+        <div class="stat-label">Dispatched today</div>
+        <div class="stat-value">@stats.DispatchedToday</div>
+        <div class="stat-sub" style="color:var(--text-muted);font-size:11px;margin-top:4px">throughput</div>
+    </div>
+</div>
+
+@if (!artisansAll.Any())
+{
+    <div class="alert alert-warning" style="margin-bottom:14px;display:flex;gap:12px;align-items:flex-start">
+        <span style="font-size:22px;flex-shrink:0">⚠</span>
+        <div>
+            <strong>No active Artisans found.</strong>
+            <p style="font-size:12px;margin:4px 0 0;line-height:1.6">
+                You need at least one user with the Mechanic role (UI label: Artisan) before you can dispatch.
+                Go to <a href="/Admin/Employees" style="color:var(--teal)">Admin → Employees</a> to create one.
+            </p>
+        </div>
+    </div>
+}
+
+@if (!Model.Any())
+{
+    <div style="text-align:center;padding:60px;color:var(--text-muted)">
+        <div style="font-size:48px;margin-bottom:12px">✅</div>
+        <p>Dispatch queue is clear. No jobcards waiting for an Artisan.</p>
+    </div>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Captured</th>
+                <th>Machine</th>
+                <th>Jobcard #</th>
+                <th>Defect</th>
+                <th>Critical?</th>
+                <th>Dispatch to Artisan</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var d in Model)
+            {
+                var ageHours = d.PlannerCapturedAt.HasValue
+                    ? (DateTime.UtcNow - d.PlannerCapturedAt.Value).TotalHours
+                    : 0;
+                // Phase 6.11 — same three-tier aging as Planner, but
+                // tighter thresholds because dispatch SLA is hours, not
+                // days. Stale > 4h, ageing > 1h. Red left-border + STALE
+                // chip so the dispatcher's eye lands on the items that
+                // matter without parsing every row's age.
+                var isStale  = ageHours > 4;
+                var isAgeing = ageHours > 1 && !isStale;
+                var rowStyle = isStale  ? "background:rgba(239,68,68,.08);border-left:4px solid #ef4444"
+                             : isAgeing ? "background:rgba(245,158,11,.06);border-left:4px solid #f59e0b"
+                             : "";
+                var isCritical = d.SubmissionItem?.TemplateItem?.IsNoGoItem ?? false;
+                <tr style="@rowStyle">
+                    <td style="font-size:12px;color:var(--text-muted);white-space:nowrap">
+                        @d.PlannerCapturedAt?.ToLocalTime().ToString("MM-dd HH:mm")
+                        <div style="font-size:10px">@($"{ageHours:0.0}h ago")</div>
+                        @if (isStale)
+                        {
+                            <span style="display:inline-block;margin-top:3px;padding:1px 6px;border-radius:8px;font-size:9px;font-weight:700;background:#ef4444;color:#fff;letter-spacing:.5px">STALE</span>
+                        }
+                        else if (isAgeing)
+                        {
+                            <span style="display:inline-block;margin-top:3px;padding:1px 6px;border-radius:8px;font-size:9px;font-weight:700;background:#f59e0b;color:#fff;letter-spacing:.5px">AGEING</span>
+                        }
+                    </td>
+                    <td>
+                        <strong>@d.Submission.Machine.MachineNumber</strong>
+                        <div style="font-size:11px;color:var(--text-muted)">@d.Submission.Machine.MachineName</div>
+                        @if (d.Submission.Machine.Fleet != null)
+                        {
+                            <div style="margin-top:4px">
+                                <span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;background:@(d.Submission.Machine.Fleet.Color ?? "#475569");color:#fff">
+                                    @d.Submission.Machine.Fleet.Name
+                                </span>
+                            </div>
+                        }
+                    </td>
+                    <td style="font-family:ui-monospace,monospace;font-size:12px;color:#fbbf24">
+                        @(d.JobCardNumber ?? "—")
+                    </td>
+                    <td style="font-size:13px;max-width:300px">
+                        @d.DefectDescription
+                    </td>
+                    <td style="text-align:center">
+                        @if (isCritical)
+                        {
+                            <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:#ef4444;color:#fff">NO-GO</span>
+                        }
+                        else
+                        {
+                            <span style="font-size:11px;color:var(--text-muted)">—</span>
+                        }
+                    </td>
+                    <td>
+                        @{
+                            // Phase 6.3 — sort eligible Artisans by current
+                            // open-defect load so the lightest-loaded one is
+                            // first and becomes the default selection. Show
+                            // "(N open)" on every option and mark the
+                            // suggested one with a ★ so the dispatcher knows
+                            // why the default is what it is.
+                            var eligible = SuggestedOrder(d.Submission.Machine.FleetId);
+                        }
+                        <form method="post" action="/ControlRoom/Dispatch" style="margin:0;display:flex;gap:6px;align-items:center">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="id" value="@d.Id" />
+                            <select name="artisanId" class="form-control"
+                                    style="font-size:12px;padding:4px 8px;min-width:220px" required>
+                                @for (int idx = 0; idx < eligible.Count; idx++)
+                                {
+                                    var a = eligible[idx];
+                                    var label = idx == 0
+                                        ? $"★ {a.Display} — {a.OpenLoad} open"
+                                        : $"{a.Display} — {a.OpenLoad} open";
+                                    <option value="@a.Id" selected="@(idx == 0)">@label</option>
+                                }
+                            </select>
+                            <button type="submit" class="btn btn-primary btn-sm" disabled="@(eligible.Count == 0)">Dispatch</button>
+                            <button type="button" class="btn btn-ghost btn-sm" style="font-size:11px;color:#f59e0b"
+                                    onclick="document.getElementById('esc-@d.Id').style.display='flex'">
+                                Escalate
+                            </button>
+                        </form>
+                        @* Escalation form — surfaced when no Artisan is available
+                           or the jobcard has been stuck waiting too long. The
+                           defect stays in the queue (so it's still visible) but
+                           every admin gets a notification so somebody can
+                           intervene (cancel leave, page maintenance manager, etc.). *@
+                        <form id="esc-@d.Id" method="post" action="/ControlRoom/Escalate"
+                              style="display:none;margin-top:6px;gap:6px;align-items:center"
+                              onsubmit="return confirm('Escalate this defect? All admins will be notified that Control Room couldn\\'t dispatch.');">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="id" value="@d.Id" />
+                            <input type="text" name="reason" required maxlength="300"
+                                   placeholder="Why are you escalating? (e.g. No Mota-Engil Artisan on shift)"
+                                   class="form-control" autocomplete="off"
+                                   style="font-size:12px;flex:1;padding:4px 8px" />
+                            <button type="submit" class="btn btn-ghost btn-sm" style="color:#f59e0b">Confirm escalate</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <p style="font-size:11px;color:var(--text-muted);margin-top:12px;line-height:1.6">
+        Once dispatched, the Artisan gets an in-app notification and the jobcard appears in their <code>/Mechanic</code> defects queue.
+        Fleet membership shown on each row drives the Artisan dropdown filter — Mota-Engil machines only show Mota-Engil Artisans (plus any floating-fleet Artisans).
+        The ★ marks the Artisan in the eligible fleet with the lightest current open-defect load; they're pre-selected as the default but you can pick anyone else with one click.
+    </p>
+}
+
+@* ── Phase 7.6 — Approved-submissions acknowledge inbox ──────────────
+   Parallel to the dispatch queue above. Supervisor-approved checklists
+   (clean GO + signed-off GO-BUT) appear here for Lugisani to single-
+   click acknowledge into his shift situational awareness. Independent
+   of the Planner's capture queue — both roles act on the same approved
+   submission without blocking each other. *@
+@{
+    var pendingAcknowledge   = (List<ChecklistSubmission>)(ViewBag.PendingAcknowledge   ?? new List<ChecklistSubmission>());
+    var acknowledgedToday    = (int)(ViewBag.AcknowledgedToday   ?? 0);
+}
+<div style="margin-top:28px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <h3 style="margin:0;font-size:15px">
+            📋 Approved-submissions inbox
+            <span style="font-weight:400;color:var(--text-muted);font-size:12px">
+                · @pendingAcknowledge.Count pending · @acknowledgedToday acknowledged today
+            </span>
+        </h3>
+        @if (pendingAcknowledge.Count > 0)
+        {
+            <form method="post" action="/ControlRoom/AcknowledgeAll" style="margin:0"
+                  onsubmit="return confirm('Acknowledge all @pendingAcknowledge.Count supervisor-approved submission(s)?');">
+                @Html.AntiForgeryToken()
+                <button type="submit" class="btn btn-primary btn-sm">
+                    Acknowledge all @pendingAcknowledge.Count
+                </button>
+            </form>
+        }
+    </div>
+    @if (pendingAcknowledge.Count == 0)
+    {
+        <div style="background:rgba(34,197,94,.04);border:1px dashed #16a34a40;border-radius:8px;padding:18px;text-align:center;color:var(--text-muted)">
+            <span style="font-size:24px">📭</span>
+            <p style="margin:6px 0 0;font-size:12px">Inbox is clear. All supervisor-approved submissions in the last 48 hours have been acknowledged.</p>
+        </div>
+    }
+    else
+    {
+        <table class="data-table" style="font-size:13px">
+            <thead>
+                <tr>
+                    <th>Submitted</th>
+                    <th>Machine</th>
+                    <th>Operator</th>
+                    <th>Status</th>
+                    <th>Supervisor approved</th>
+                    <th style="text-align:right">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in pendingAcknowledge)
+                {
+                    var (bg, label) = s.Status switch {
+                        ChecklistStatus.Go                  => ("#16a34a", "GO"),
+                        ChecklistStatus.GoButRepair24H      => ("#06b6d4", "GO-BUT 24H"),
+                        ChecklistStatus.GoTillNextService   => ("#06b6d4", "GO-BUT 30D"),
+                        _                                   => ("#64748b", s.Status.ToString())
+                    };
+                    var ageHours = (DateTime.UtcNow - s.SubmittedAt).TotalHours;
+                    var ageColor = ageHours > 24 ? "#ef4444" : ageHours > 8 ? "#f59e0b" : "var(--text-muted)";
+                    <tr>
+                        <td style="font-size:12px;white-space:nowrap;color:@ageColor">
+                            @s.SubmittedAt.ToLocalTime().ToString("MM-dd HH:mm")
+                            <div style="font-size:10px">@($"{ageHours:0.0}h ago")</div>
+                        </td>
+                        <td>
+                            <strong>@s.Machine.MachineNumber</strong>
+                            <div style="font-size:11px;color:var(--text-muted)">@s.Machine.MachineName</div>
+                        </td>
+                        <td style="font-size:12px">@(s.Operator?.FullName ?? "—")</td>
+                        <td>
+                            <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:@bg;color:#fff">@label</span>
+                        </td>
+                        <td style="font-size:11px;color:var(--text-muted)">
+                            @s.SupervisorSignedAt?.ToLocalTime().ToString("MM-dd HH:mm")
+                        </td>
+                        <td style="text-align:right">
+                            <form method="post" action="/ControlRoom/Acknowledge" style="margin:0;display:inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="id" value="@s.Id" />
+                                <button type="submit" class="btn btn-ghost btn-sm" style="color:#0e7490">Acknowledge</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.6">
+            Per the mine SOP, supervisor-approved checklists route to both the Planner (for jobcard / shift-log capture) and the Control Room (for situational awareness). Acknowledging here adds the submission to your shift handover record. Use "Acknowledge all" at end of shift to clear the inbox in one click.
+        </p>
+    }
+</div>
+
+@* ── Recently dispatched (Reassign target) ─────────────────────────────
+   Surfaces the past-24h dispatches with a Reassign control per row.
+   Used when the originally-dispatched Artisan went off-shift or is
+   otherwise unavailable. The list is intentionally short (last 24h)
+   because older in-flight defects are visible on /Mechanic. ────────── *@
+@if (recentlyDispatched != null && recentlyDispatched.Count > 0)
+{
+    <h3 style="font-size:15px;margin:28px 0 10px">🔄 Recently dispatched (last 24h)</h3>
+    <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;line-height:1.6">
+        Use the dropdown to reassign if the original Artisan is unavailable. The new Artisan gets an in-app notification; the old assignment is replaced.
+    </p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Dispatched</th>
+                <th>Machine</th>
+                <th>Jobcard #</th>
+                <th>Currently with</th>
+                <th>Reassign to</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var d in recentlyDispatched)
+            {
+                // Phase 6.3 — Reassignment dropdown also sorted by load
+                // so the dispatcher's first-choice replacement is the
+                // freest Artisan in the same fleet. The current assignee
+                // is excluded (reassigning to themselves is a no-op).
+                var eligible = SuggestedOrder(d.Submission.Machine.FleetId)
+                                .Where(a => a.Id != d.AssignedMechanicId)
+                                .ToList();
+                <tr>
+                    <td style="font-size:12px;color:var(--text-muted);white-space:nowrap">
+                        @d.DispatchedAt?.ToLocalTime().ToString("MM-dd HH:mm")
+                    </td>
+                    <td>
+                        <strong>@d.Submission.Machine.MachineNumber</strong>
+                        @if (d.Submission.Machine.Fleet != null)
+                        {
+                            <div style="margin-top:3px">
+                                <span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;background:@(d.Submission.Machine.Fleet.Color ?? "#475569");color:#fff">
+                                    @d.Submission.Machine.Fleet.Name
+                                </span>
+                            </div>
+                        }
+                    </td>
+                    <td style="font-family:ui-monospace,monospace;font-size:12px;color:#fbbf24">
+                        @(d.JobCardNumber ?? "—")
+                    </td>
+                    <td style="font-size:12px">
+                        @(d.AssignedMechanic?.FullName ?? "—")
+                    </td>
+                    <td>
+                        @if (eligible.Count == 0)
+                        {
+                            <span style="font-size:11px;color:var(--text-muted)">no other Artisan available</span>
+                        }
+                        else
+                        {
+                            <form method="post" action="/ControlRoom/Reassign" style="margin:0;display:flex;gap:6px;align-items:center;flex-wrap:wrap"
+                                  onsubmit="return confirm('Reassign this defect to the selected Artisan? The new Artisan will be notified; the current Artisan can see it disappear from their queue.');">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="id" value="@d.Id" />
+                                <select name="newArtisanId" class="form-control"
+                                        style="font-size:12px;padding:4px 8px;min-width:200px" required>
+                                    @for (int idx = 0; idx < eligible.Count; idx++)
+                                    {
+                                        var a = eligible[idx];
+                                        var label = idx == 0
+                                            ? $"★ {a.Display} — {a.OpenLoad} open"
+                                            : $"{a.Display} — {a.OpenLoad} open";
+                                        <option value="@a.Id" selected="@(idx == 0)">@label</option>
+                                    }
+                                </select>
+                                <input type="text" name="reason" maxlength="200"
+                                       placeholder="Reason (optional)"
+                                       class="form-control"
+                                       style="font-size:12px;padding:4px 8px;width:160px" />
+                                <button type="submit" class="btn btn-ghost btn-sm">Reassign</button>
+                            </form>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@* ── Phase 4.B — Shift Status Board ────────────────────────────────────
+   Read-only situational awareness. Every active machine + its most
+   recent submission in the last 24h, colour-coded by status. Closes
+   the "no-defect route → routed to Control room" gap from the
+   original process flow: the dispatcher sees what's happening on the
+   ENTIRE fleet, not just the defects in their queue. ─────────────── *@
+<h3 style="font-size:15px;margin:32px 0 8px">
+    📺 Shift Status Board
+    <span style="font-weight:400;color:var(--text-muted);font-size:12px">
+        · last 24h · @stats.FleetOperational green · @stats.FleetGoBut amber · @stats.FleetNoGo red · @stats.FleetStale stale
+    </span>
+</h3>
+<p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;line-height:1.6">
+    Every active machine's most recent pre-shift check in the last 24 hours. Grey = no check in the window (machine wasn't operated, or operator forgot — investigate). No actions on this section; pure situational awareness.
+</p>
+
+@if (statusBoard.Count == 0)
+{
+    <div style="text-align:center;padding:30px;color:var(--text-muted)">
+        <p>No active machines in the fleet yet.</p>
+    </div>
+}
+else
+{
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">
+        @foreach (var row in statusBoard)
+        {
+            var (bg, label, fg) =
+                row.LatestSubmission == null
+                    ? ("#475569", "STALE — no check", "#ffffff")
+                : row.LatestSubmission.Status switch {
+                    ChecklistStatus.Go                => ("#16a34a", "GO",         "#ffffff"),
+                    ChecklistStatus.GoButRepair24H    => ("#f59e0b", "GO-BUT 24H", "#0d1729"),
+                    ChecklistStatus.GoTillNextService => ("#f59e0b", "GO-BUT 30D", "#0d1729"),
+                    ChecklistStatus.NoGo              => ("#ef4444", "NO-GO",      "#ffffff"),
+                    _                                 => ("#475569", "Pending",    "#ffffff")
+                };
+            <div style="background:var(--steel-mid);border:1px solid var(--steel-border);border-left:6px solid @bg;border-radius:6px;padding:10px 12px">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+                    <strong style="font-size:13px">@row.Machine.MachineNumber</strong>
+                    @if (row.Machine.Fleet != null)
+                    {
+                        <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;background:@(row.Machine.Fleet.Color ?? "#475569");color:#fff">@row.Machine.Fleet.Name</span>
+                    }
+                </div>
+                <div style="font-size:10px;color:var(--text-muted);margin-top:2px">@row.Machine.MachineName</div>
+                <div style="margin-top:8px">
+                    <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:@bg;color:@fg">@label</span>
+                </div>
+                @if (row.LatestSubmission != null)
+                {
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:4px">
+                        @row.LatestSubmission.SubmittedAt.ToLocalTime().ToString("MM-dd HH:mm")
+                        · @(row.LatestSubmission.Operator?.FullName ?? "—")
+                    </div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@* ──────── Phase 6.6 — Live queue-depth polling ────────
+   Same pattern as Planner/Index — polls every 30s, surfaces a banner
+   when the dispatch queue grows. Identical UX so dispatchers and
+   planners get a consistent "new items waiting" signal across roles. *@
+<div id="qd-banner" style="display:none;position:fixed;bottom:18px;right:18px;z-index:1000;background:#0f172a;color:#fff;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:12px 16px;font-size:13px;max-width:320px">
+    <div style="display:flex;align-items:center;gap:10px">
+        <div style="font-size:18px">🔔</div>
+        <div style="flex:1">
+            <div style="font-weight:600">Dispatch queue updated</div>
+            <div id="qd-msg" style="font-size:11px;color:#cbd5e1;margin-top:2px">New items waiting</div>
+        </div>
+        <button type="button" onclick="location.reload()"
+                style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer">
+            Refresh
+        </button>
+        <button type="button" onclick="document.getElementById('qd-banner').style.display='none'"
+                style="background:transparent;color:#94a3b8;border:none;font-size:18px;cursor:pointer;padding:0 4px"
+                aria-label="Dismiss">×</button>
+    </div>
+</div>
+
+<script>
+    (function () {
+        var baseline = {
+            pending: @((int)stats.Pending),
+            stale4h: @((int)stats.Stale4h)
+        };
+        var banner = document.getElementById('qd-banner');
+        var msg    = document.getElementById('qd-msg');
+        var autoRefreshTimer = null;
+
+        function check() {
+            fetch('/ControlRoom/QueueDepth', { credentials: 'same-origin' })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (d) {
+                    if (!d) return;
+                    var delta = d.pending - baseline.pending;
+                    if (delta > 0) {
+                        msg.textContent = '+' + delta + ' new jobcard(s) since you opened this page.';
+                        banner.style.display = 'block';
+                        if (!autoRefreshTimer) {
+                            autoRefreshTimer = setTimeout(function () { location.reload(); }, 5 * 60 * 1000);
+                        }
+                    } else if (d.pending < baseline.pending) {
+                        // A different dispatcher cleared items; silently
+                        // re-baseline so the banner doesn't fire on the
+                        // next "real" arrival comparing to a stale value.
+                        baseline.pending = d.pending;
+                    }
+                    // Also flag if stale4h went up — a jobcard breaching the
+                    // 4-hour internal SLA is something the dispatcher should
+                    // notice even if the total queue didn't grow.
+                    if (d.stale4h > baseline.stale4h) {
+                        msg.textContent = (delta > 0 ? '+' + delta + ' new · ' : '') +
+                                          d.stale4h + ' breached 4h SLA';
+                        banner.style.display = 'block';
+                    }
+                })
+                .catch(function () { /* offline — try again next tick */ });
+        }
+        setInterval(check, 30000);
+    })();
+</script>

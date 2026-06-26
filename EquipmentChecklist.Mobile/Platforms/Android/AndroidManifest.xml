@@ -19,6 +19,44 @@
                  android:icon="@mipmap/appicon"
                  android:roundIcon="@mipmap/appicon_round"
                  android:supportsRtl="true"></application>
+    <!--
+      Phase 8.3 — The foreground service that keeps the BLE peer-alert
+      scanner alive in the background is registered via the [Service]
+      attribute on PeerAlertForegroundService.cs (foregroundServiceType =
+      "connectedDevice" set there). The attribute generator emits the
+      correct <service> element automatically so the type name and
+      manifest stay in sync if the class is renamed.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      Phase 8.2 + 8.3 — Bluetooth LE peer-alert broadcast + scan.
+      Android 12+ split the older BLUETOOTH permission into role-specific
+      permissions (ADVERTISE, SCAN, CONNECT) all granted at runtime.
+      ACCESS_FINE_LOCATION is required ONLY on Android 6-11 to receive
+      BLE scan results — kept here for back-compat though SDK 33+
+      targets ignore it.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+                     android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+                     android:maxSdkVersion="30" />
+
+    <!--
+      Phase 8.3 — Foreground service permissions.
+      FOREGROUND_SERVICE has been required since Android 9 for any service
+      that calls startForeground(); FOREGROUND_SERVICE_CONNECTED_DEVICE
+      is the Android 14 (API 34) specific type that matches our
+      service's foregroundServiceType attribute. POST_NOTIFICATIONS
+      lets us display the persistent "scanning for alerts" notification
+      that keeps the service alive.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
 

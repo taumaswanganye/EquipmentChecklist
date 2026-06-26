@@ -8,6 +8,10 @@
 @inject LocalCache       Cache
 @inject ToastService     Toasts
 @inject NavigationManager Nav
+@inject UrgentAlertService UrgentAlert
+@inject IPeerAlertService PeerAlert
+@inject IPeerAlertPermissions PeerAlertPermissions
+@inject AppLifecycleService Lifecycle
 @implements IDisposable
 
 <div class="app @(drawerOpen ? "drawer-open" : "")">
@@ -114,6 +118,27 @@
             }
         }
 
+        @* Phase 8.5 — peer-alert permission denied banner. Surfaces only
+           when permissions were prompted previously and at least one is
+           still denied. Persistent (not dismissable) because the only
+           proper resolution is to grant the permissions; ignoring it
+           leaves the operator without background peer-alert coverage in
+           a dead zone. The "Enable" button deep-links to the OS Settings
+           page for our app. *@
+        @if (peerAlertDenied)
+        {
+            <div class="peer-perm-banner">
+                <div class="peer-perm-icon">🔕</div>
+                <div class="peer-perm-body">
+                    <strong>Background peer alerts disabled.</strong>
+                    Bluetooth or notifications were denied. Peer NO-GO alerts will only fire while this app is open.
+                </div>
+                <button class="peer-perm-btn" @onclick="OpenPeerAlertSettings">
+                    Enable
+                </button>
+            </div>
+        }
+
         <header class="topbar">
             <button class="hamburger" @onclick="ToggleDrawer" title="Menu">
                 <span></span><span></span><span></span>
@@ -172,6 +197,130 @@
 @* Global toast stack — one instance owns the queue for the entire app.
    Pages just inject ToastService and call Success/Error/Info/Warning. *@
 <Toaster />
+
+@* ── Phase 8.1 — Loud Alert full-screen overlay ──────────────────────
+   Fires when an operator raises a NO-GO while the device is offline.
+   Red flashing background + huge text + a Dismiss button. The siren +
+   vibration are driven from UrgentAlertService; this is just the
+   visual half. Sits ABOVE everything (z-index 9999) so a passing
+   supervisor sees it the moment they look at the tablet.
+
+   Animation: 1s ramp red→darker-red→red so it pulses without flickering
+   so hard it triggers photosensitive seizures. CSS animation, no JS.
+   Pure full-coverage div — no navigation interaction beneath it. *@
+@if (UrgentAlert.IsActive)
+{
+    <div class="urgent-alert-overlay" @onclick="DismissUrgentAlert">
+        <div class="urgent-alert-card" @onclick:stopPropagation="true">
+            <div class="urgent-alert-icon">🚨</div>
+            <div class="urgent-alert-title">NO-GO RAISED</div>
+            <div class="urgent-alert-sub">No server connectivity — alert anyone nearby.</div>
+            <div class="urgent-alert-sub2">Show this screen to your supervisor.</div>
+            <button class="urgent-alert-dismiss" @onclick="DismissUrgentAlert">
+                ✓ I'VE NOTIFIED SOMEBODY
+            </button>
+        </div>
+    </div>
+    <style>
+        .urgent-alert-overlay {
+            position: fixed; inset: 0; z-index: 9999;
+            display: flex; align-items: center; justify-content: center;
+            background: #ef4444;
+            animation: urgent-flash 1s ease-in-out infinite;
+        }
+        @@keyframes urgent-flash {
+            0%   { background: #ef4444; }
+            50%  { background: #7f1d1d; }
+            100% { background: #ef4444; }
+        }
+        .urgent-alert-card {
+            background: rgba(255,255,255,.96); color: #0b1726;
+            border-radius: 14px; padding: 32px 28px;
+            max-width: 460px; width: calc(100% - 32px);
+            text-align: center; box-shadow: 0 24px 64px rgba(0,0,0,.45);
+        }
+        .urgent-alert-icon { font-size: 72px; margin-bottom: 6px; }
+        .urgent-alert-title { font-size: 28px; font-weight: 800; letter-spacing: 1.5px; color: #ef4444; margin-bottom: 4px; }
+        .urgent-alert-sub  { font-size: 14px; color: #475569; margin-top: 8px; }
+        .urgent-alert-sub2 { font-size: 13px; color: #64748b; margin-top: 4px; font-style: italic; }
+        .urgent-alert-dismiss {
+            margin-top: 22px; background: #16a34a; color: #fff;
+            border: none; border-radius: 10px;
+            padding: 14px 18px; font-size: 14px; font-weight: 700; letter-spacing: .5px;
+            cursor: pointer; width: 100%;
+        }
+        .urgent-alert-dismiss:active { transform: translateY(1px); }
+    </style>
+}
+
+@* ── Phase 8.4 — Peer-alert permission explainer ─────────────────────
+   One-time modal on first launch (Android 12+ only). Explains why we
+   need the Bluetooth + Notifications permissions before triggering the
+   OS dialog. If we just popped the OS dialog without context, operators
+   would tap Deny by reflex and lose peer-alert coverage permanently.
+   The modal is dismissable but tapping Continue triggers the OS prompt
+   chain — we mark HasPromptedBefore inside PromptAsync so even a kill-
+   the-app dismissal doesn't re-show this. *@
+@if (showPermissionExplainer)
+{
+    <div class="perm-explainer-overlay" @onclick="ContinuePermissionPrompt">
+        <div class="perm-explainer-card" @onclick:stopPropagation="true">
+            <div class="perm-explainer-icon">📡</div>
+            <div class="perm-explainer-title">Enable peer NO-GO alerts</div>
+            <p class="perm-explainer-body">
+                Your tablet can warn you when another operator nearby raises a
+                NO-GO — even if there's no network. We need two permissions to
+                make this work:
+            </p>
+            <ul class="perm-explainer-list">
+                <li><strong>Bluetooth</strong> — to send and receive alerts to other tablets within ~30 metres.</li>
+                <li><strong>Notifications</strong> — so the alert monitoring stays running while the screen is off.</li>
+            </ul>
+            <p class="perm-explainer-footer">
+                Android will ask you for each one in turn. You can always change your mind in
+                <em>Settings → Apps → Equipment Checklist → Permissions</em>.
+            </p>
+            <button class="perm-explainer-continue" @onclick="ContinuePermissionPrompt">
+                Continue
+            </button>
+        </div>
+    </div>
+    <style>
+        .perm-explainer-overlay {
+            position: fixed; inset: 0; z-index: 9000;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(11, 23, 38, .8);
+        }
+        .perm-explainer-card {
+            background: #fff; color: #0b1726;
+            border-radius: 14px; padding: 28px 26px;
+            max-width: 460px; width: calc(100% - 32px);
+            box-shadow: 0 24px 64px rgba(0,0,0,.45);
+        }
+        .perm-explainer-icon { font-size: 52px; text-align: center; }
+        .perm-explainer-title {
+            font-size: 20px; font-weight: 700;
+            text-align: center; margin: 8px 0 16px; color: #0e7490;
+        }
+        .perm-explainer-body { font-size: 14px; line-height: 1.55; color: #334155; margin: 0 0 12px; }
+        .perm-explainer-list {
+            font-size: 13px; line-height: 1.7; color: #334155;
+            margin: 0 0 16px; padding-left: 22px;
+        }
+        .perm-explainer-list li { margin-bottom: 6px; }
+        .perm-explainer-footer {
+            font-size: 11px; line-height: 1.6; color: #64748b;
+            margin: 0 0 18px; font-style: italic;
+        }
+        .perm-explainer-continue {
+            width: 100%; background: #0e7490; color: #fff;
+            border: none; border-radius: 10px;
+            padding: 14px 18px; font-size: 14px; font-weight: 700;
+            letter-spacing: .5px; cursor: pointer;
+        }
+        .perm-explainer-continue:active { transform: translateY(1px); }
+    </style>
+}
 
 <style>
     .app { display:flex; min-height:100vh; background:#0b1726; color:#e5e7eb;
@@ -232,6 +381,28 @@
     .stale-banner .msg { flex:1; min-width:0; }
     .stale-banner.warn     { background:#7c5302; color:#fde68a; border-bottom-color:#a16207; }
     .stale-banner.warn  strong { color:#fef3c7; }
+
+    /* Phase 8.5 — peer-alert permission denied banner. Sits beneath the
+       stale-data banner (if present) and above the topbar. Slate-grey
+       so it doesn't compete with the amber stale banner or the red
+       urgent overlay — it's important but not urgent. Always has the
+       Enable button because the only fix is to grant permissions. */
+    .peer-perm-banner {
+        display: flex; align-items: center; gap: 12px;
+        padding: 10px 18px;
+        background: #1e293b; color: #cbd5e1;
+        border-bottom: 1px solid #334155;
+        font-size: 12px;
+    }
+    .peer-perm-icon { font-size: 18px; opacity: .9; }
+    .peer-perm-body { flex: 1; line-height: 1.45; }
+    .peer-perm-body strong { color: #f1f5f9; margin-right: 4px; }
+    .peer-perm-btn {
+        background: #0e7490; color: #fff; border: none;
+        border-radius: 6px; padding: 7px 14px;
+        font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .peer-perm-btn:active { transform: translateY(1px); }
     .stale-banner.critical { background:#7f1d1d; color:#fecaca; border-bottom-color:#b91c1c; }
     .stale-banner.critical strong { color:#fff; }
 
@@ -297,6 +468,17 @@
     /// regardless of this flag once the viewport is wide enough.
     /// </summary>
     private bool  drawerOpen;
+    // Phase 8.4 — controls the peer-alert permission explainer overlay.
+    // True only on first launch when permissions are denied; flips back
+    // to false the instant the operator taps Continue (regardless of
+    // whether the OS prompt was accepted).
+    private bool  showPermissionExplainer;
+
+    // Phase 8.5 — persistent banner shown when permissions were prompted
+    // previously and at least one is still denied. Re-evaluated whenever
+    // the app comes back to the foreground because the operator may have
+    // toggled the grant in OS Settings between launches.
+    private bool  peerAlertDenied;
 
     /// <summary>
     /// Whole days between now and the most recent successful API ping for
@@ -353,8 +535,189 @@
         // are already cleared at that point).
         Auth.Deactivated    += OnDeactivated;
 
+        // Phase 8.1 — Loud Alert overlay repaint signal. UrgentAlertService
+        // fires StateChanged when IsActive flips; we just relay it into
+        // the layout's render cycle so the @if (UrgentAlert.IsActive)
+        // block above re-evaluates.
+        UrgentAlert.StateChanged += OnUrgentAlertChanged;
+
+        // Phase 8.2 — BLE peer-alert receiver. When another Equipment
+        // Checklist device within ~30m broadcasts a NO-GO via BLE, fire
+        // the same loud-alert overlay on this device — but with a label
+        // that says "peer alert from operator X on machine Y" so the
+        // recipient knows it's not THEIR machine.
+        PeerAlert.PeerAlertReceived += OnPeerAlertReceived;
+
+        // Phase 8.4 — runtime permission orchestration. On Android 12+,
+        // check if we've ever prompted for BLE + Notifications. If not
+        // AND any permission is denied, show the explainer modal. The
+        // modal's Continue button fires the OS prompts. We only start
+        // the scanner AFTER permissions are sorted — otherwise the
+        // service launch would fail silently on permission deny.
+        if (PeerAlertPermissions.IsApplicable && !PeerAlertPermissions.HasPromptedBefore)
+        {
+            try
+            {
+                var status = await PeerAlertPermissions.StatusAsync();
+                if (status != PeerAlertPermissionStatus.Granted)
+                {
+                    showPermissionExplainer = true;
+                }
+                else
+                {
+                    // Already granted somehow (manual grant in OS settings) —
+                    // skip explainer + start listener immediately.
+                    try { await PeerAlert.StartListeningAsync(); } catch { }
+                }
+            }
+            catch
+            {
+                // Permission check threw — start the scanner anyway in
+                // degraded mode (foreground only); the operator can grant
+                // permissions later via OS settings.
+                try { await PeerAlert.StartListeningAsync(); } catch { }
+            }
+        }
+        else
+        {
+            // No prompt needed (iOS / Windows / pre-Android-12 / already
+            // prompted before) — go straight to starting the scanner.
+            // Phase 8.3 foreground service handles graceful failure if
+            // permissions were denied previously.
+            try { await PeerAlert.StartListeningAsync(); } catch { }
+        }
+
+        // Phase 8.5 — evaluate the "denied" banner state. Only shown
+        // when the user has already been prompted at least once AND a
+        // permission is currently denied. Re-checked on every layout
+        // init so a grant from OS Settings clears the banner next time
+        // the app comes back to the foreground.
+        await RefreshPeerAlertPermissionBannerAsync();
+
+        // Phase 8.6 — also re-check on every app resume so the operator
+        // returning from OS Settings sees the banner clear without
+        // having to navigate. The AppLifecycleService.Resumed event is
+        // raised from the platform-specific lifecycle hooks wired in
+        // MauiProgram.ConfigureLifecycleEvents.
+        Lifecycle.Resumed += OnAppResumed;
+
         queuedCount = await Queue.CountAsync() + await Actions.CountAsync();
         await RefreshDaysSinceSyncAsync();
+    }
+
+    private void OnUrgentAlertChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnPeerAlertReceived(PeerAlertPayload payload) => InvokeAsync(async () =>
+    {
+        // The popup is the loud-alert overlay — same UX as raising your
+        // own NO-GO. The toast above adds the context that it's a peer
+        // alert (so the recipient doesn't think THEIR machine is the one).
+        Toasts.Error(
+            $"🚨 Peer NO-GO: {payload.MachineNumber} (operator: {payload.OperatorName})",
+            durationMs: 12000);
+        try { await UrgentAlert.TriggerAsync(); } catch { }
+    });
+
+    private async Task DismissUrgentAlert()
+    {
+        await UrgentAlert.StopAsync();
+    }
+
+    /// <summary>
+    /// Phase 8.4 — operator tapped Continue on the explainer modal.
+    /// Hide the modal, fire the OS permission prompts, then start the
+    /// scanner regardless of outcome (the foreground service degrades
+    /// gracefully if notifications were denied — still works in
+    /// foreground, just gets killed by Android battery optimisation
+    /// in the background).
+    /// </summary>
+    private async Task ContinuePermissionPrompt()
+    {
+        showPermissionExplainer = false;
+        StateHasChanged();   // hide the modal immediately so the OS prompt isn't obscured
+
+        try
+        {
+            var outcome = await PeerAlertPermissions.PromptAsync();
+            if (outcome == PeerAlertPermissionStatus.Denied)
+            {
+                // Soft warning — peer-alert won't work in background but
+                // the rest of the app is unaffected. The OS settings
+                // page is where they can change their mind.
+                Toasts.Warning(
+                    "Bluetooth or notifications denied — peer alerts will work only while the app is open. Change in Settings → Apps → Equipment Checklist → Permissions.",
+                    durationMs: 9000);
+            }
+        }
+        catch { /* permission API edge case — silent */ }
+
+        try { await PeerAlert.StartListeningAsync(); } catch { }
+        await RefreshPeerAlertPermissionBannerAsync();
+    }
+
+    /// <summary>
+    /// Phase 8.5 — re-check current permission status + flip the
+    /// banner field. Called from OnInitializedAsync and after the
+    /// post-prompt flow. Could also be wired to an
+    /// <c>App.Current.Resumed</c> event in the future so the banner
+    /// updates the instant the operator returns from Settings.
+    /// </summary>
+    /// <summary>Phase 8.6 — fired by the AppLifecycleService when the
+    /// app returns to the foreground. Re-evaluates the permission banner
+    /// so a grant from OS Settings clears immediately + restarts the
+    /// scanner if it stopped while backgrounded.</summary>
+    private void OnAppResumed() => InvokeAsync(async () =>
+    {
+        await RefreshPeerAlertPermissionBannerAsync();
+        // Restart the listener too in case Android killed the scanner
+        // while we were away. Idempotent — the publisher handles
+        // double-starts gracefully.
+        try { await PeerAlert.StartListeningAsync(); } catch { }
+    });
+
+    private async Task RefreshPeerAlertPermissionBannerAsync()
+    {
+        if (!PeerAlertPermissions.IsApplicable || !PeerAlertPermissions.HasPromptedBefore)
+        {
+            peerAlertDenied = false;
+            return;
+        }
+        try
+        {
+            var status = await PeerAlertPermissions.StatusAsync();
+            peerAlertDenied = status == PeerAlertPermissionStatus.Denied;
+        }
+        catch
+        {
+            peerAlertDenied = false;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Phase 8.5 — banner "Enable" button. Opens the OS app-details
+    /// Settings page via the platform-specific deep-link. On Android
+    /// the operator lands directly on the Equipment Checklist
+    /// permission panel; on other platforms we fall back to the
+    /// generic AppInfo.ShowSettingsUI.
+    /// </summary>
+    private async Task OpenPeerAlertSettings()
+    {
+        try
+        {
+            var opened = await PeerAlertPermissions.OpenAppSettingsAsync();
+            if (!opened)
+            {
+                try { AppInfo.Current.ShowSettingsUI(); }
+                catch
+                {
+                    Toasts.Warning(
+                        "Could not open Settings automatically. Open it manually: Settings → Apps → Equipment Checklist → Permissions.",
+                        durationMs: 9000);
+                }
+            }
+        }
+        catch { /* defensive — banner stays so the user can retry */ }
     }
 
     private void OnDeactivated() => InvokeAsync(() =>
@@ -445,5 +808,12 @@
         Auth.Deactivated    -= OnDeactivated;
         Nav.LocationChanged -= OnLocationChanged;
         Connectivity.ConnectivityChanged -= OnConnectivityChanged;
+        UrgentAlert.StateChanged -= OnUrgentAlertChanged;
+        PeerAlert.PeerAlertReceived -= OnPeerAlertReceived;
+        Lifecycle.Resumed -= OnAppResumed;
+        // Don't await StopListeningAsync inside Dispose — fire-and-forget
+        // because Dispose is synchronous and the BLE scanner stop is
+        // idempotent on the next startup.
+        _ = PeerAlert.StopListeningAsync();
     }
 }

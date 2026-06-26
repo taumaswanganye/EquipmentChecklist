@@ -10,6 +10,8 @@
 @inject SubmissionQueue  Queue
 @inject SyncWorker       Sync
 @inject ApiHealth        Health
+@inject UrgentAlertService UrgentAlert
+@inject IPeerAlertService PeerAlert
 @inject LocalPdfService  LocalPdf
 @inject IAudioManager    AudioMgr
 @inject ToastService     Toasts
@@ -1042,6 +1044,42 @@
             Toasts.Error(serverAccepted
                 ? "NO-GO submitted — machine is immobilised."
                 : "NO-GO saved offline — machine immobilised. Will sync.");
+
+            // ── Phase 8.1 — Loud Alert escalation when offline ───────────
+            // If the submission was queued (no server connectivity), the
+            // planner / supervisor won't know about this NO-GO until the
+            // device reaches WiFi again — could be hours. Fire the loud
+            // alert overlay so anyone within audio/visual range of this
+            // tablet knows immediately. The MainLayout's overlay paints,
+            // siren loops via Web Audio, vibration cycles for 30s.
+            //
+            // Skipped when the server accepted the submission because
+            // the upstream notifications already fired and there's no
+            // emergency to escalate.
+            if (!serverAccepted)
+            {
+                try { await UrgentAlert.TriggerAsync(); }
+                catch { /* never block submit on alert failure */ }
+
+                // Phase 8.2 — BLE peer broadcast. Other Equipment
+                // Checklist devices within ~30m will receive this and
+                // pop their own alert modal. Defaults to 5-minute
+                // broadcast window; auto-stops via the advertise
+                // settings timeout. Fire-and-forget — if Bluetooth is
+                // off or the device is iOS-without-impl-yet, the
+                // NoOp implementation just logs.
+                try
+                {
+                    var payload = new PeerAlertPayload(
+                        MachineNumber: machine?.MachineNumber ?? "?",
+                        MachineId:     machine?.Id ?? 0,
+                        OperatorName:  Auth.CurrentUser?.FullName ?? "Operator",
+                        Status:        "NOGO",
+                        RaisedAtUtc:   DateTime.UtcNow);
+                    await PeerAlert.StartBroadcastAsync(payload);
+                }
+                catch { /* same fail-safe */ }
+            }
         }
         else if (hasAnyDefect)
         {

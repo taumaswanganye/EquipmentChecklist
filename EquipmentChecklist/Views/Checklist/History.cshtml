@@ -101,6 +101,20 @@ else
                         <td>
                             <strong>@s.Machine.MachineNumber</strong>
                             <div style="font-size:11px;color:var(--text-muted)">@s.Machine.MachineName</div>
+                            @* Phase 4.6 — RE-CHECK chip surfaces the linkage
+                               when this submission was created after a NO-GO
+                               or GO-BUT within the linkage window. Helps the
+                               operator see at a glance "this is the follow-up
+                               check, not a fresh one". *@
+                            @if (s.OriginalSubmissionId.HasValue)
+                            {
+                                <div style="margin-top:3px">
+                                    <span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;background:#0e9488;color:#fff"
+                                          title="This is a re-check of submission #@s.OriginalSubmissionId after a previous failure">
+                                        🔁 RE-CHECK of #@s.OriginalSubmissionId
+                                    </span>
+                                </div>
+                            }
                         </td>
                         <td style="font-family:var(--font-mono);font-size:12px">
                             @s.SubmittedAt.ToString("yyyy-MM-dd")<br/>

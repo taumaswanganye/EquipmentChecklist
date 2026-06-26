@@ -31,10 +31,23 @@ public enum Shift
 
 public enum UserRole
 {
-    Admin = 1,
-    Operator = 2,
-    Supervisor = 3,
-    Mechanic = 4
+    Admin       = 1,
+    Operator    = 2,
+    Supervisor  = 3,
+    /// <summary>Internal role name kept as "Mechanic" for backward
+    /// compatibility with existing data. UI labels say "Artisan" — the
+    /// SA mining term operations staff actually use.</summary>
+    Mechanic    = 4,
+
+    /// <summary>Plant Maintenance Planner — captures supervisor-approved
+    /// defects into SAP / the work-order system and converts each to a
+    /// formal jobcard before dispatch. New in Phase 3.</summary>
+    Planner     = 5,
+
+    /// <summary>Mine Control Room dispatcher — sees the queue of jobcards
+    /// needing an Artisan and assigns the right person based on fleet
+    /// (Mota-Engil, Moolmans, etc.) and availability. New in Phase 3.</summary>
+    ControlRoom = 6
 }
 
 public enum RepairStatus

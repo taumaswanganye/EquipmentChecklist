@@ -41,6 +41,13 @@
       instead of stubbing the HTTP layer.
     -->
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.0" />
+    <!--
+      Phase 6.9 — Moq for faking IHubContext<NotificationHub> when
+      direct-instantiating ControlRoomController in unit tests.
+      Could go without it by hand-rolling a tiny IHubContext stub, but
+      Moq is so small + universally familiar it's not worth the toil.
+    -->
+    <PackageReference Include="Moq" Version="4.20.72" />
   </ItemGroup>
 
   <ItemGroup>

@@ -612,6 +612,21 @@ public class EmailService
         return await SendBrandedAsync(toEmail, toName, subject, body);
     }
 
+    /// <summary>
+    /// Phase 7.1 — send the pre-built ops digest HTML to one recipient.
+    /// The body is built by <see cref="OpsDigestService.RenderHtml"/>; this
+    /// just stamps the subject + handles the SMTP send. Returns the
+    /// SendBrandedAsync success bool so the worker can count failures.
+    /// </summary>
+    public async Task<bool> SendOpsDigestAsync(
+        string toEmail,
+        string toName,
+        string subject,
+        string htmlBody)
+    {
+        return await SendBrandedAsync(toEmail, toName, subject, htmlBody);
+    }
+
     /// <summary>Common send wrapper. Reads SMTP config + handles the
     /// "email not configured" no-op the same way the existing methods
     /// do.</summary>

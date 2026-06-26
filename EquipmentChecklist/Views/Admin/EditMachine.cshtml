@@ -99,6 +99,24 @@
                     <input type="hidden" name="IsActive" value="false" />
                 </div>
 
+                <!-- Phase 7.3 — Key Control physical interlock slot -->
+                <div class="form-group" style="margin:0;grid-column:1/-1">
+                    <label class="form-label">
+                        🔐 Key Control slot
+                        <span style="font-weight:400;color:var(--text-muted);font-size:11px;margin-left:6px">
+                            optional · enables physical key cabinet interlock on NO-GO
+                        </span>
+                    </label>
+                    <input type="text" name="KeyControlSlotId" class="form-control"
+                           value="@Model.KeyControlSlotId"
+                           maxlength="50"
+                           placeholder="e.g. SLOT-042 (vendor-specific identifier)"
+                           style="font-family:ui-monospace,monospace;font-size:13px" />
+                    <small style="display:block;margin-top:4px;font-size:11px;color:var(--text-muted);line-height:1.6">
+                        The slot identifier from your Key Control cabinet (Traka / Morse Watchmans / KEYper). Leave blank to skip physical interlock on this machine — the system will continue to immobilise at the software level.
+                    </small>
+                </div>
+
                 <!-- Description -->
                 <div class="form-group" style="margin:0;grid-column:1/-1">
                     <label class="form-label">Description</label>

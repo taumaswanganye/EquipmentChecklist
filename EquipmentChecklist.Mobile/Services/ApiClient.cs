@@ -248,6 +248,16 @@ public class ApiClient
         return await _http.GetFromJsonAsync<SyncOperatorStatsDto>("api/sync/stats");
     }
 
+    /// <summary>Phase 6.7 — machines the operator raised NO-GO on that
+    /// admin has since cleared, where a fresh re-check hasn't been done
+    /// yet. Backs the "Awaiting your re-check" tile on the mobile
+    /// dashboard.</summary>
+    public async Task<List<AwaitingRecheckDto>?> AwaitingRecheckAsync()
+    {
+        await ApplyAuthAsync();
+        return await _http.GetFromJsonAsync<List<AwaitingRecheckDto>>("api/sync/operator/awaiting-recheck");
+    }
+
     // ── Supervisor ───────────────────────────────────────────────────────────
     public async Task<List<SupervisorQueueItemDto>?> SupervisorQueueAsync()
     {

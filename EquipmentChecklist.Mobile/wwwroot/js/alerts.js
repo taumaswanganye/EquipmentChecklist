@@ -110,6 +110,45 @@ window.MineAlerts = (function () {
         test: function () {
             try { beep(880, 250, 0, 0.20); }
             catch (e) { console.warn("MineAlerts.test:", e); }
+        },
+
+        // ── Phase 8.1 — URGENT siren loop ────────────────────────────────
+        // Two-tone rising-falling siren that loops for up to durationSec
+        // seconds (default 30). Fires from C# when an operator raises a
+        // NO-GO AND the device has no server connectivity — anyone within
+        // audio range knows immediately without needing the app.
+        //
+        // Returns a handle the C# layer can use to stopUrgent() early if
+        // the operator dismisses (e.g. taps a "I've notified somebody"
+        // button). Without a stop call the siren self-cancels at duration.
+        _urgentTimer: null,
+        startUrgent: function (durationSec) {
+            durationSec = durationSec || 30;
+            this.stopUrgent();   // never stack two sirens
+            const self = this;
+            // Each cycle = high (900 Hz) for 500ms then low (650 Hz) for
+            // 500ms. Classic European emergency-vehicle siren cadence
+            // chosen because it's loud, recognisable, and not easily
+            // confused with the existing playNoGo trill.
+            const fire = function () {
+                try {
+                    beep(900, 480, 0.00, 0.55);
+                    beep(650, 480, 0.50, 0.55);
+                } catch (e) {
+                    console.warn("MineAlerts.startUrgent:", e);
+                }
+            };
+            fire();
+            this._urgentTimer = setInterval(fire, 1000);
+            // Auto-stop after the configured duration so a forgotten
+            // alert doesn't drain the battery + irritate the team.
+            setTimeout(function () { self.stopUrgent(); }, durationSec * 1000);
+        },
+        stopUrgent: function () {
+            if (this._urgentTimer != null) {
+                clearInterval(this._urgentTimer);
+                this._urgentTimer = null;
+            }
         }
     };
 })();

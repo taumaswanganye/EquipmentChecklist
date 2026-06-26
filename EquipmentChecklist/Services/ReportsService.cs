@@ -146,19 +146,345 @@ public class ReportsService
         // ── Configuration / policy audit section (Power BI Page 6) ────────
         var configAudit = await BuildConfigAuditSectionAsync();
 
+        // ── Phase 6.4 + 6.5 — operational queues + workshop load ──────────
+        // Both are computed against CURRENT state (not the date window),
+        // because the question "what's stuck right now?" doesn't change
+        // based on the From/To filter.
+        var operationalQueues = await BuildOperationalQueuesSectionAsync();
+        var artisanLoad       = await BuildArtisanLoadAsync();
+
+        // ── Phase 6.10 — fleet performance split ──────────────────────────
+        // Scoped to the same window as the other KPIs because the
+        // question "how is each contractor doing?" is naturally a
+        // period question, not a current-state one.
+        var fleetPerformance = await BuildFleetPerformanceAsync(subs, fromUtc, toUtc);
+
         return new ReportsDashboard
         {
-            From            = fromUtc,
-            To              = toUtc,
-            Kpis            = kpis,
-            SubmissionTrend = submissionTrend,
-            DefectTrend     = defectTrend,
-            TopMachines     = topMachines,
-            TopOperators    = topOperators,
-            Aging           = aging,
-            Competency      = competency,
-            ConfigAudit     = configAudit
+            From              = fromUtc,
+            To                = toUtc,
+            Kpis              = kpis,
+            SubmissionTrend   = submissionTrend,
+            DefectTrend       = defectTrend,
+            TopMachines       = topMachines,
+            TopOperators      = topOperators,
+            Aging             = aging,
+            Competency        = competency,
+            ConfigAudit       = configAudit,
+            OperationalQueues = operationalQueues,
+            ArtisanLoad       = artisanLoad,
+            FleetPerformance  = fleetPerformance
         };
+    }
+
+    /// <summary>
+    /// Phase 6.10 — per-fleet performance split. Buckets submissions and
+    /// defects by the operating machine's Fleet. Machines without a fleet
+    /// (or operating under "Belfast Direct"/floating) go into a synthetic
+    /// "(Unfleeted)" group so the totals match the period KPIs.
+    /// </summary>
+    private async Task<List<FleetPerformanceRow>> BuildFleetPerformanceAsync(
+        List<ChecklistSubmission> windowSubs,
+        DateTime fromUtc,
+        DateTime toUtc)
+    {
+        // Load every fleet once (small table) + active machines so we can
+        // count machines per fleet even for fleets that had no submissions
+        // this window — the fleet still exists, just had zero activity.
+        var fleets = await _db.Fleets
+            .Where(f => f.IsActive)
+            .OrderBy(f => f.Name)
+            .ToListAsync();
+
+        var machinesByFleet = await _db.Machines
+            .Where(m => m.IsActive)
+            .GroupBy(m => m.FleetId)
+            .Select(g => new { FleetId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.FleetId ?? -1, x => x.Count);
+
+        // Open defects by fleet — current state, not window-scoped (the
+        // table is meant to show "where do active issues live right now?"
+        // alongside the period throughput numbers).
+        var openByFleet = await (
+            from d in _db.DefectOrders
+            join s in _db.ChecklistSubmissions on d.SubmissionId equals s.Id
+            join m in _db.Machines             on s.MachineId    equals m.Id
+            where d.RepairStatus != RepairStatus.Completed
+            group d by m.FleetId into g
+            select new { FleetId = g.Key, Count = g.Count() }
+        ).ToDictionaryAsync(x => x.FleetId ?? -1, x => x.Count);
+
+        // Avg resolution time — completed defects in the window, dispatched
+        // → resolved. Pulled raw + diff in memory for provider portability
+        // (same reason as the Artisan-load query).
+        var closures = await (
+            from d in _db.DefectOrders
+            join s in _db.ChecklistSubmissions on d.SubmissionId equals s.Id
+            join m in _db.Machines             on s.MachineId    equals m.Id
+            where d.RepairStatus == RepairStatus.Completed
+               && d.ResolvedAt != null
+               && d.ResolvedAt >= fromUtc && d.ResolvedAt <= toUtc
+               && d.DispatchedAt != null
+            select new {
+                FleetId      = m.FleetId,
+                DispatchedAt = d.DispatchedAt,
+                ResolvedAt   = d.ResolvedAt
+            }
+        ).ToListAsync();
+
+        var avgResByFleet = closures
+            .GroupBy(c => c.FleetId ?? -1)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => (x.ResolvedAt!.Value - x.DispatchedAt!.Value).TotalHours).Average());
+
+        // Group the in-memory windowSubs by the machine's FleetId.
+        var subsByFleet = windowSubs
+            .GroupBy(s => s.Machine.FleetId ?? -1)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var rows = new List<FleetPerformanceRow>();
+
+        foreach (var f in fleets)
+        {
+            var grp        = subsByFleet.TryGetValue(f.Id, out var g) ? g : new List<ChecklistSubmission>();
+            var total      = grp.Count;
+            var go         = grp.Count(s => s.Status == ChecklistStatus.Go);
+            var gobut      = grp.Count(s => s.Status == ChecklistStatus.GoButRepair24H
+                                         || s.Status == ChecklistStatus.GoTillNextService);
+            var nogo       = grp.Count(s => s.Status == ChecklistStatus.NoGo);
+
+            rows.Add(new FleetPerformanceRow
+            {
+                FleetId          = f.Id,
+                FleetName        = f.Name,
+                FleetColor       = string.IsNullOrEmpty(f.Color) ? "#475569" : f.Color,
+                MachineCount     = machinesByFleet.TryGetValue(f.Id, out var mc) ? mc : 0,
+                Submissions      = total,
+                GoCount          = go,
+                GoButCount       = gobut,
+                NoGoCount        = nogo,
+                GoRatePct        = total == 0 ? 0 : Math.Round(100.0 * go / total, 1),
+                OpenDefects      = openByFleet.TryGetValue(f.Id, out var od) ? od : 0,
+                AvgResolutionHrs = avgResByFleet.TryGetValue(f.Id, out var ar) ? Math.Round(ar, 1) : 0
+            });
+        }
+
+        // Synthetic "(Unfleeted)" row for machines with FleetId = null.
+        // We compute it whether or not there are any so an empty zero-row
+        // doesn't suddenly appear / disappear between page loads.
+        var unfleetSubs   = subsByFleet.TryGetValue(-1, out var u) ? u : new List<ChecklistSubmission>();
+        var unfleetTotal  = unfleetSubs.Count;
+        if (unfleetTotal > 0 || (machinesByFleet.TryGetValue(-1, out var unfleetMc) && unfleetMc > 0))
+        {
+            var unfleetGo  = unfleetSubs.Count(s => s.Status == ChecklistStatus.Go);
+            rows.Add(new FleetPerformanceRow
+            {
+                FleetId          = null,
+                FleetName        = "(Unfleeted)",
+                FleetColor       = "#94a3b8",
+                MachineCount     = machinesByFleet.TryGetValue(-1, out var muc) ? muc : 0,
+                Submissions      = unfleetTotal,
+                GoCount          = unfleetGo,
+                GoButCount       = unfleetSubs.Count(s => s.Status == ChecklistStatus.GoButRepair24H
+                                                       || s.Status == ChecklistStatus.GoTillNextService),
+                NoGoCount        = unfleetSubs.Count(s => s.Status == ChecklistStatus.NoGo),
+                GoRatePct        = unfleetTotal == 0 ? 0 : Math.Round(100.0 * unfleetGo / unfleetTotal, 1),
+                OpenDefects      = openByFleet.TryGetValue(-1, out var uod) ? uod : 0,
+                AvgResolutionHrs = avgResByFleet.TryGetValue(-1, out var uar) ? Math.Round(uar, 1) : 0
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Phase 6.4 — depth + age of every operational queue in the workflow.
+    /// All numbers are "right now", not aggregated against the window —
+    /// when an admin looks at this tile they want to know what's stuck
+    /// at this instant, not what the average was last month.
+    /// </summary>
+    private async Task<OperationalQueuesSection> BuildOperationalQueuesSectionAsync()
+    {
+        var now = DateTime.UtcNow;
+
+        // Planner queue — defects awaiting capture.
+        var plannerPending = await _db.DefectOrders
+            .Where(d => d.PlannerCapturedAt == null
+                     && d.RepairStatus     != RepairStatus.Completed)
+            .Select(d => new { d.CreatedAt })
+            .ToListAsync();
+
+        // Planner submissions queue (Phase 4.B) — clean GO + signed-off
+        // GO-BUT awaiting shift-log capture. 48h window matches the
+        // queue's own filter on /Planner.
+        var captureCutoff = now.AddHours(-48);
+        var plannerSubsPending = await _db.ChecklistSubmissions
+            .CountAsync(s => s.CapturedAt == null
+                          && s.SubmittedAt >= captureCutoff
+                          && (s.Status == ChecklistStatus.Go
+                              || (s.Status == ChecklistStatus.GoButRepair24H
+                                  && s.SupervisorSignedAt != null)
+                              || (s.Status == ChecklistStatus.GoTillNextService
+                                  && s.SupervisorSignedAt != null)));
+
+        // Control Room queue — captured-by-Planner but not yet dispatched.
+        var dispatchPending = await _db.DefectOrders
+            .Where(d => d.PlannerCapturedAt != null
+                     && d.DispatchedAt      == null
+                     && d.RepairStatus      != RepairStatus.Completed)
+            .Select(d => new { d.PlannerCapturedAt })
+            .ToListAsync();
+
+        // Phase 7.6 — Control Room acknowledge inbox depth.
+        var ackCutoff = now.AddHours(-48);
+        var acknowledgeInbox = await _db.ChecklistSubmissions
+            .CountAsync(s => s.AcknowledgedAt == null
+                          && s.SubmittedAt >= ackCutoff
+                          && s.SupervisorSignedAt != null
+                          && (s.Status == ChecklistStatus.Go
+                              || s.Status == ChecklistStatus.GoButRepair24H
+                              || s.Status == ChecklistStatus.GoTillNextService));
+
+        // Workshop queue — dispatched and in-progress (or awaiting parts).
+        var workshopOpen = await _db.DefectOrders
+            .CountAsync(d => d.DispatchedAt != null
+                          && d.RepairStatus != RepairStatus.Completed);
+
+        // Admin clearance queue — machines artisan finished but admin
+        // hasn't signed off yet (back-to-service gate).
+        var awaitingClearance = await _db.Machines
+            .CountAsync(m => m.AwaitingAdminClearance);
+
+        // Supervisor queue — submissions awaiting supervisor approval.
+        // Phase 7.5 tightened this to also include unapproved clean GO
+        // (per the user's strict-approval reading of the no-defect-route
+        // spec). NO-GOs still go straight to Planner without supervisor
+        // sign-off (Phase 4.7 awareness-only model).
+        // 48h window matches the Supervisor page's own Quick Approve query.
+        var supCutoff = now.AddHours(-48);
+        var supervisorPending = await _db.ChecklistSubmissions
+            .CountAsync(s => s.SupervisorSignedAt == null
+                          && (s.Status == ChecklistStatus.GoButRepair24H
+                              || s.Status == ChecklistStatus.GoTillNextService
+                              || (s.Status == ChecklistStatus.Go && s.SubmittedAt >= supCutoff)));
+
+        // Age of the oldest items in the two highest-friction queues —
+        // tells the admin "is the queue old or is it freshly arrived?".
+        int oldestPlanner  = plannerPending.Count == 0
+                                ? 0
+                                : (int)plannerPending.Max(d => (now - d.CreatedAt).TotalHours);
+        int oldestDispatch = dispatchPending.Count == 0 || !dispatchPending.Any(d => d.PlannerCapturedAt.HasValue)
+                                ? 0
+                                : (int)dispatchPending
+                                       .Where(d => d.PlannerCapturedAt.HasValue)
+                                       .Max(d => (now - d.PlannerCapturedAt!.Value).TotalHours);
+
+        return new OperationalQueuesSection
+        {
+            PlannerPendingDefects       = plannerPending.Count,
+            PlannerPendingSubmissions   = plannerSubsPending,
+            ControlRoomQueue            = dispatchPending.Count,
+            ControlRoomAcknowledgeInbox = acknowledgeInbox,
+            WorkshopOpenDefects         = workshopOpen,
+            AwaitingAdminClearance      = awaitingClearance,
+            SupervisorPendingSignOff    = supervisorPending,
+            OldestPlannerDefectHours    = oldestPlanner,
+            OldestDispatchHours         = oldestDispatch
+        };
+    }
+
+    /// <summary>
+    /// Phase 6.5 — per-Artisan workshop load. For every Mechanic-role
+    /// user (active), compute current open-defect load + 7-day throughput
+    /// + average closure time. The view sorts descending by OpenLoad so
+    /// the over-loaded artisans surface at the top.
+    /// </summary>
+    private async Task<List<ArtisanLoadRow>> BuildArtisanLoadAsync()
+    {
+        var since7d = DateTime.UtcNow.AddDays(-7);
+
+        // Pull every active Mechanic via the IdentityUserRole table.
+        // Two-step rather than a single join projection so .Include
+        // attaches cleanly — Include after a select(u) projection is
+        // unreliable across EF Core versions.
+        var mechanicRoleId = await _db.Roles
+            .Where(r => r.Name == "Mechanic")
+            .Select(r => r.Id)
+            .FirstOrDefaultAsync();
+        if (mechanicRoleId == null) return new List<ArtisanLoadRow>();
+
+        var mechanicUserIds = await _db.UserRoles
+            .Where(ur => ur.RoleId == mechanicRoleId)
+            .Select(ur => ur.UserId)
+            .ToListAsync();
+
+        var artisans = await _db.Users
+            .Include(u => u.Fleet)
+            .Where(u => u.IsActive && mechanicUserIds.Contains(u.Id))
+            .ToListAsync();
+
+        if (artisans.Count == 0) return new List<ArtisanLoadRow>();
+
+        // Current open load + awaiting-parts split.
+        var openLoad = await _db.DefectOrders
+            .Where(d => d.AssignedMechanicId != null
+                     && d.RepairStatus != RepairStatus.Completed)
+            .GroupBy(d => d.AssignedMechanicId!)
+            .Select(g => new {
+                ArtisanId      = g.Key,
+                Total          = g.Count(),
+                AwaitingParts  = g.Count(d => d.RepairStatus == RepairStatus.AwaitingParts)
+            })
+            .ToDictionaryAsync(x => x.ArtisanId, x => x);
+
+        // 7-day throughput + average closure time. Closure time = the
+        // period the artisan actually had the jobcard on their plate
+        // (DispatchedAt → ResolvedAt). We project raw timestamps and
+        // do the diff in memory so the query stays provider-portable
+        // (EF.Functions.DateDiffHour is SQL Server only; Npgsql would
+        // throw at runtime).
+        var closures = await _db.DefectOrders
+            .Where(d => d.AssignedMechanicId != null
+                     && d.RepairStatus == RepairStatus.Completed
+                     && d.ResolvedAt    != null
+                     && d.ResolvedAt    >= since7d)
+            .Select(d => new {
+                ArtisanId    = d.AssignedMechanicId!,
+                DispatchedAt = d.DispatchedAt,
+                ResolvedAt   = d.ResolvedAt
+            })
+            .ToListAsync();
+
+        var closureByArtisan = closures
+            .GroupBy(c => c.ArtisanId)
+            .ToDictionary(g => g.Key, g => {
+                var withTimes = g.Where(x => x.DispatchedAt.HasValue && x.ResolvedAt.HasValue)
+                                 .Select(x => (x.ResolvedAt!.Value - x.DispatchedAt!.Value).TotalHours)
+                                 .ToList();
+                return new {
+                    Count = g.Count(),
+                    Avg   = withTimes.Count == 0 ? 0 : withTimes.Average()
+                };
+            });
+
+        var rows = artisans.Select(u => new ArtisanLoadRow
+        {
+            ArtisanId       = u.Id,
+            ArtisanName     = u.FullName,
+            EmployeeNumber  = u.EmployeeNumber ?? "",
+            FleetName       = u.Fleet?.Name,
+            FleetColor      = u.Fleet?.Color,
+            OpenLoad        = openLoad.TryGetValue(u.Id, out var o) ? o.Total         : 0,
+            AwaitingParts   = openLoad.TryGetValue(u.Id, out var p) ? p.AwaitingParts : 0,
+            ClosedLast7d    = closureByArtisan.TryGetValue(u.Id, out var c) ? c.Count             : 0,
+            AvgClosureHours = closureByArtisan.TryGetValue(u.Id, out var a) ? Math.Round(a.Avg, 1): 0
+        })
+        .OrderByDescending(r => r.OpenLoad)
+        .ThenBy(r => r.ArtisanName, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+        return rows;
     }
 
     /// <summary>
@@ -388,6 +714,70 @@ public class ReportsDashboard
 
     /// <summary>Settings + admin-policy audit — mirrors Power BI Page 6.</summary>
     public ConfigAuditSection ConfigAudit { get; set; } = new();
+
+    /// <summary>Phase 6.4 — depth of every operational queue in the workflow,
+    /// computed against current state (not the date window). Lets the admin
+    /// see "is anything stuck right now?" at a glance.</summary>
+    public OperationalQueuesSection OperationalQueues { get; set; } = new();
+
+    /// <summary>Phase 6.5 — per-Artisan workshop load: current open defects
+    /// + 7-day throughput. Surfaces over-loaded artisans the dispatcher
+    /// should rebalance away from.</summary>
+    public List<ArtisanLoadRow> ArtisanLoad { get; set; } = new();
+
+    /// <summary>Phase 6.10 — per-fleet performance split (Mota-Engil vs
+    /// Moolmans vs Belfast Direct etc.). Scoped to the dashboard date
+    /// window so a fleet manager can see "how is each contractor doing
+    /// this month?".</summary>
+    public List<FleetPerformanceRow> FleetPerformance { get; set; } = new();
+}
+
+/// <summary>Phase 6.4 — operational queue depths snapshot.</summary>
+public class OperationalQueuesSection
+{
+    public int PlannerPendingDefects     { get; set; }
+    public int PlannerPendingSubmissions { get; set; }
+    public int ControlRoomQueue          { get; set; }
+    public int ControlRoomAcknowledgeInbox { get; set; }   // Phase 7.6
+    public int WorkshopOpenDefects       { get; set; }
+    public int AwaitingAdminClearance    { get; set; }
+    public int SupervisorPendingSignOff  { get; set; }
+    public int OldestPlannerDefectHours  { get; set; }
+    public int OldestDispatchHours       { get; set; }
+}
+
+/// <summary>Phase 6.10 — one row per fleet (Mota-Engil, Moolmans, Belfast
+/// Direct, …). Scoped to the dashboard date window. Lets a fleet manager
+/// compare contractor performance side-by-side.</summary>
+public class FleetPerformanceRow
+{
+    public int?    FleetId           { get; set; }
+    public string  FleetName         { get; set; } = "";
+    public string  FleetColor        { get; set; } = "#475569";
+    public int     MachineCount      { get; set; }
+    public int     Submissions       { get; set; }
+    public int     GoCount           { get; set; }
+    public int     GoButCount        { get; set; }
+    public int     NoGoCount         { get; set; }
+    public double  GoRatePct         { get; set; }
+    public int     OpenDefects       { get; set; }
+    public double  AvgResolutionHrs  { get; set; }
+}
+
+/// <summary>Phase 6.5 — one row per active Artisan, capturing current load
+/// and recent throughput so the dispatcher can spot over-loaded or
+/// under-utilised technicians.</summary>
+public class ArtisanLoadRow
+{
+    public string ArtisanId        { get; set; } = "";
+    public string ArtisanName      { get; set; } = "";
+    public string EmployeeNumber   { get; set; } = "";
+    public string? FleetName       { get; set; }
+    public string? FleetColor      { get; set; }
+    public int    OpenLoad         { get; set; }
+    public int    AwaitingParts    { get; set; }
+    public int    ClosedLast7d     { get; set; }
+    public double AvgClosureHours  { get; set; }
 }
 
 public class ReportsKpis
