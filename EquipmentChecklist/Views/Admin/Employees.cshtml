@@ -11,13 +11,16 @@
     var supervisors = Model.Where(u => u.Role == UserRole.Supervisor).OrderBy(u => u.FullName).ToList();
     var mechanics   = Model.Where(u => u.Role == UserRole.Mechanic).OrderBy(u => u.FullName).ToList();
     var operators   = Model.Where(u => u.Role == UserRole.Operator).OrderBy(u => u.FullName).ToList();
+    // Phase 3+4 roles — slot in alongside the original four.
+    var planners     = Model.Where(u => u.Role == UserRole.Planner).OrderBy(u => u.FullName).ToList();
+    var controlRooms = Model.Where(u => u.Role == UserRole.ControlRoom).OrderBy(u => u.FullName).ToList();
 }
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
     <div>
         <h2 style="font-size:20px;margin:0">All Employees</h2>
         <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">
-            @Model.Count total · @admins.Count admin · @supervisors.Count supervisor · @mechanics.Count mechanic · @operators.Count operator
+            @Model.Count total · @admins.Count admin · @supervisors.Count supervisor · @mechanics.Count mechanic · @operators.Count operator · @planners.Count planner · @controlRooms.Count control room
         </p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -77,6 +80,12 @@ else
         <button type="button" class="emp-tab" data-tab="mechanic" role="tab">
             🔧 Mechanic <span class="emp-tab-count">@mechanics.Count</span>
         </button>
+        <button type="button" class="emp-tab" data-tab="planner" role="tab">
+            📋 Planner <span class="emp-tab-count">@planners.Count</span>
+        </button>
+        <button type="button" class="emp-tab" data-tab="controlroom" role="tab">
+            🚦 Control Room <span class="emp-tab-count">@controlRooms.Count</span>
+        </button>
     </div>
 
     @* ─── Per-role panes ───
@@ -102,6 +111,16 @@ else
     @* Mechanic tab *@
     <div class="emp-pane" data-pane="mechanic" style="display:none">
         @await Html.PartialAsync("_EmployeeTable", mechanics)
+    </div>
+
+    @* Planner tab *@
+    <div class="emp-pane" data-pane="planner" style="display:none">
+        @await Html.PartialAsync("_EmployeeTable", planners)
+    </div>
+
+    @* Control Room tab *@
+    <div class="emp-pane" data-pane="controlroom" style="display:none">
+        @await Html.PartialAsync("_EmployeeTable", controlRooms)
     </div>
 }
 
